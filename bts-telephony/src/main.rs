@@ -1,5 +1,5 @@
 use anyhow::Context;
-use asterisk_ari::{AriClient, Config};
+use asterisk_ari::{apis::channels, AriClient, Config};
 use bts_protocol::{EventKind, NewEvent};
 use reqwest::Client;
 use tracing::{error, info, warn};
@@ -7,6 +7,12 @@ use tracing_subscriber::EnvFilter;
 
 const APPLICATION_NAME: &str = "bts";
 const EVENT_SOURCE: &str = "bts-telephony";
+const DEFAULT_MENU_MEDIA_URIS: &str = concat!(
+    "sound:bts/welcome,",
+    "sound:bts/press-2-time,",
+    "sound:bts/press-3-weather,",
+    "sound:bts/press-0-clear"
+);
 
 #[derive(Clone)]
 struct EventPublisher {
@@ -55,6 +61,9 @@ async fn main() -> anyhow::Result<()> {
     let core_url =
         std::env::var("BTS_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned());
 
+    let menu_media_uris = std::env::var("BTS_MENU_MEDIA_URIS")
+        .unwrap_or_else(|_| DEFAULT_MENU_MEDIA_URIS.to_owned());
+
     let config = Config::new(&ari_url, &ari_username, &ari_password);
     let mut ari = AriClient::with_config(config);
 
@@ -64,9 +73,11 @@ async fn main() -> anyhow::Result<()> {
      * A call has entered Stasis(bts).
      */
     let start_publisher = publisher.clone();
+    let start_menu_media_uris = menu_media_uris.clone();
 
     ari.on_stasis_start(move |client, event| {
         let publisher = start_publisher.clone();
+        let menu_media_uris = start_menu_media_uris.clone();
 
         async move {
             let channel = event.data.channel;
@@ -86,6 +97,22 @@ async fn main() -> anyhow::Result<()> {
                 );
 
                 return Ok(());
+            }
+
+            if let Err(error) = client
+                .channels()
+                .play(channels::params::PlayRequest::new(
+                    &channel_id,
+                    &menu_media_uris,
+                ))
+                .await
+            {
+                warn!(
+                    channel_id = %channel_id,
+                    media_uri = %menu_media_uris,
+                    %error,
+                    "failed to play menu prompts"
+                );
             }
 
             if let Err(error) = publisher
@@ -180,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
         application = APPLICATION_NAME,
         ari_url = %ari_url,
         core_url = %core_url,
+        menu_media_uris = %menu_media_uris,
         "starting BTS telephony"
     );
 
