@@ -45,6 +45,5 @@ package() {
   install -Dm640 deploy/bts.env.example "$pkgdir/etc/bts/bts.env"
   install -Dm755 scripts/bts-install "$pkgdir/usr/bin/bts-install"
   install -Dm755 scripts/generate-voice-prompts.sh "$pkgdir/usr/lib/bts/generate-voice-prompts"
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }
