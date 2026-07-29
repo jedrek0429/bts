@@ -22,7 +22,7 @@ if ! id bts-display >/dev/null 2>&1; then
     useradd --system --gid bts-display --home-dir /var/lib/bts-display --create-home --shell /usr/bin/nologin bts-display
 fi
 
-for group in video render input; do
+for group in video render input seat; do
     if getent group "$group" >/dev/null; then
         usermod -aG "$group" bts-display
     fi
@@ -41,6 +41,7 @@ if grep -q '^BTS_ARI_PASSWORD=CHANGE_ME$' "$config"; then
 fi
 
 systemctl daemon-reload
+systemctl enable --now seatd.service
 systemctl disable --now getty@tty1.service 2>/dev/null || true
 systemctl mask getty@tty1.service
 systemctl enable bts.target
@@ -51,5 +52,5 @@ if grep -q '^BTS_ARI_PASSWORD=CHANGE_ME$' "$config"; then
     echo "BTS display installed. Configure ARI, then run: systemctl enable --now bts-telephony.service"
 else
     systemctl start bts.target
-    echo "BTS installed and started. The display owns tty1 through Cage."
+    echo "BTS installed and started. Cage displays on the last-connected output and owns tty1."
 fi
