@@ -5,7 +5,7 @@ BTS is a phone-controlled home information system written in Rust. It uses Aster
 The system consists of small, independent processes communicating via HTTP and WebSockets.
 
 * bts-core: The central event bus. It assigns IDs, timestamps, broadcasts via WebSocket, and retains the current display state. It contains no application logic.
-* bts-telephony: The Asterisk bridge. It connects via ARI, translates calls and DTMF inputs into system events, and pushes them to bts-core.
+* bts-telephony: The Asterisk bridge. It connects via ARI, translates calls and DTMF inputs into system events, plays telephone prompts, and pushes events to bts-core.
 * bts-addons: The application layer. Independent modules (clock, weather, messages) process events and publish full display states back to bts-core.
 * bts-display: A pure, full-screen graphical renderer. It displays the state retained by bts-core without making any logical decisions.
 * bts-protocol: Shared event and state types.
@@ -44,6 +44,29 @@ cargo run -p bts-addons
 Run `bts-display` using `cage`.
 
 ------------------------------
+# 🔊 Voice prompts
+
+BTS uses the local Kokoro service with the British `bf_emma` voice. The generated prompt is stored in Asterisk's sounds directory, so calls work without internet access after setup.
+
+Start Kokoro on the BTS server:
+
+```sh
+docker run -d \
+    --name kokoro \
+    --restart unless-stopped \
+    -p 127.0.0.1:8880:8880 \
+    ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0
+```
+
+Install `curl` and `ffmpeg`, then generate the prompt:
+
+```sh
+sudo -E bash scripts/generate-voice-prompts.sh
+```
+
+The first Kokoro image download requires internet access. Prompt generation and telephone playback are local after that.
+
+------------------------------
 # ⚙️ Configuration & API
 Configure components using environment variables:
 
@@ -51,6 +74,14 @@ Configure components using environment variables:
 BTS_CORE_HTTP_URL=http://127.0.0.1:3100
 BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
 BTS_ARI_PASSWORD=CHANGE_ME
+BTS_WELCOME_MEDIA_URI=sound:bts/welcome
+```
+
+`scripts/generate-voice-prompts.sh` also accepts:
+
+```env
+BTS_KOKORO_URL=http://127.0.0.1:8880/v1/audio/speech
+BTS_ASTERISK_SOUNDS_DIR=/var/lib/asterisk/sounds/en/bts
 ```
 
 # Core API Endpoints (Port 3100)
@@ -69,10 +100,11 @@ BTS_ARI_PASSWORD=CHANGE_ME
 * ✅ Asterisk ARI integration working
 * ✅ Modular addon system ready
 * ✅ Live background updates (Clock/Weather) functional
+* ✅ Local Kokoro welcome prompt playback
 
 ## Next Steps
 
 1. bts-cli — Build the control utility to monitor health, state, and trigger actions.
-2. Voice System — Implement cached, calm British TTS announcements for the interactive menu.
+2. Voice System — Add cached dynamic announcements and interruptible playback.
 3. Deployment — Create systemd service units with proper startup dependencies and restart policies.
 
