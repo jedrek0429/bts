@@ -122,7 +122,7 @@ download_latest_package() {
         "${auth_header[@]}" \
         "$api_url" > "$tmp/release.json"
 
-    local tag package_url checksum_url
+    local tag package_name package_url checksum_url
     readarray -t release_data < <(python3 - "$tmp/release.json" <<'PY'
 import json
 import sys
@@ -143,26 +143,29 @@ if not package or not checksum:
     raise SystemExit("Latest release does not contain the expected Arch package and SHA256SUMS assets.")
 
 print(release.get("tag_name", "unknown"))
+print(next((asset.get("name", "") for asset in release.get("assets", [])
+            if asset.get("url") == package), "bts.pkg.tar.zst"))
 print(package)
 print(checksum)
 PY
 )
     tag=${release_data[0]}
-    package_url=${release_data[1]}
-    checksum_url=${release_data[2]}
+    package_name=${release_data[1]}
+    package_url=${release_data[2]}
+    checksum_url=${release_data[3]}
 
     echo "Downloading BTS $tag..."
     curl --fail --silent --show-error --location \
         -H 'Accept: application/octet-stream' \
         "${auth_header[@]}" \
-        "$package_url" -o "$tmp/bts.pkg.tar.zst"
+        "$package_url" -o "$tmp/$package_name"
     curl --fail --silent --show-error --location \
         -H 'Accept: application/octet-stream' \
         "${auth_header[@]}" \
         "$checksum_url" -o "$tmp/SHA256SUMS"
 
     (cd "$tmp" && sha256sum --check SHA256SUMS)
-    install_package "$tmp/bts.pkg.tar.zst"
+    install_package "$tmp/$package_name"
 }
 
 if $build; then
