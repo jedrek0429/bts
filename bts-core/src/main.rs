@@ -14,7 +14,7 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, post},
 };
-use bts_protocol::{BtsState, DisplayState, Event, EventKind, NewEvent, ServerMessage};
+use bts_protocol::{BtsState, Event, EventKind, NewEvent, ServerMessage};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, broadcast};
 use tracing::{error, info, warn};
@@ -33,7 +33,6 @@ async fn main() -> anyhow::Result<()> {
     initialise_logging();
 
     let bind_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3100);
-
     let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
     let state = AppState {
@@ -107,42 +106,15 @@ async fn submit_event(
         state: updated_state,
     };
 
-    // Sending fails only when no WebSocket receivers currently exist.
-    // That is normal and must not reject the event.
+    // No active WebSocket receivers is normal and must not reject the event.
     let _ = state.events.send(message);
 
     (StatusCode::ACCEPTED, Json(event))
 }
 
 fn apply_event(state: &mut BtsState, event: &Event) {
-    match &event.kind {
-        EventKind::DisplayShowClock => {
-            state.display = DisplayState::Clock;
-        }
-
-        EventKind::DisplayShowWeather { location } => {
-            state.display = DisplayState::Weather {
-                location: location.clone(),
-            };
-        }
-
-        EventKind::DisplayShowMessage { title, body } => {
-            state.display = DisplayState::Message {
-                title: title.clone(),
-                body: body.clone(),
-            };
-        }
-
-        EventKind::DisplayBlank => {
-            state.display = DisplayState::Blank;
-        }
-
-        EventKind::SystemStarted { .. }
-        | EventKind::PhoneCallStarted { .. }
-        | EventKind::PhoneDtmfReceived { .. }
-        | EventKind::PhoneCallEnded { .. } => {
-            // These events do not directly alter retained state yet.
-        }
+    if let EventKind::DisplaySet { display } = &event.kind {
+        state.display = display.clone();
     }
 }
 
@@ -211,8 +183,7 @@ async fn websocket_connection(socket: WebSocket, state: AppState) {
                     }
 
                     Some(Ok(_)) => {
-                        // Clients currently receive BTS events but do not
-                        // submit commands through the WebSocket.
+                        // WebSocket clients receive events only.
                     }
 
                     Some(Err(error)) => {

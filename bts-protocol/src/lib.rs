@@ -40,8 +40,8 @@ pub struct NewEvent {
 /// `tag = "type"` produces JSON such as:
 ///
 /// {
-///   "type": "display.show_weather",
-///   "location": "Gdynia"
+///   "type": "display.set",
+///   "display": "..."
 /// }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -50,18 +50,9 @@ pub enum EventKind {
         component: String,
     },
 
-    DisplayShowClock,
-
-    DisplayShowWeather {
-        location: String,
+    DisplaySet {
+        display: DisplayState,
     },
-
-    DisplayShowMessage {
-        title: String,
-        body: String,
-    },
-
-    DisplayBlank,
 
     PhoneCallStarted {
         channel_id: String,
@@ -100,11 +91,24 @@ impl Default for BtsState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "screen", rename_all = "snake_case")]
 pub enum DisplayState {
-    Clock,
+    Clock {
+        time: String,
+        seconds: String,
+        date: String,
+    },
 
-    Weather { location: String },
+    Weather {
+        location: String,
+        temperature: String,
+        condition: String,
+        details: Vec<String>,
+        updated_at: String,
+    },
 
-    Message { title: String, body: String },
+    Message {
+        title: String,
+        body: String,
+    },
 
     Blank,
 }

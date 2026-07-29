@@ -8,7 +8,6 @@ use std::{
 
 use anyhow::Context;
 use bts_protocol::{BtsState, DisplayState, ServerMessage};
-use chrono::{Local, Timelike};
 use eframe::egui::{
     self, Align, Align2, CentralPanel, Color32, FontData, FontDefinitions, FontFamily, FontId,
     Frame, Layout, Margin, RichText, Stroke, Vec2, ViewportBuilder,
@@ -127,9 +126,28 @@ impl eframe::App for BtsDisplayApp {
                 ui.set_min_size(ui.available_size());
 
                 match &self.state.display {
-                    DisplayState::Clock => draw_clock(ui),
-                    DisplayState::Weather { location } => draw_weather(ui, location),
-                    DisplayState::Message { title, body } => draw_message(ui, title, body),
+                    DisplayState::Clock {
+                        time,
+                        seconds,
+                        date,
+                    } => {
+                        draw_clock(ui, time, seconds, date);
+                    }
+
+                    DisplayState::Weather {
+                        location,
+                        temperature,
+                        condition,
+                        details,
+                        updated_at,
+                    } => {
+                        draw_weather(ui, location, temperature, condition, details, updated_at);
+                    }
+
+                    DisplayState::Message { title, body } => {
+                        draw_message(ui, title, body);
+                    }
+
                     DisplayState::Blank => {}
                 }
 
@@ -162,12 +180,7 @@ fn draw_message(ui: &mut egui::Ui, title: &str, body: &str) {
     });
 }
 
-fn draw_clock(ui: &mut egui::Ui) {
-    let now = Local::now();
-    let time = format!("{:02}:{:02}", now.hour(), now.minute());
-    let seconds = format!("{:02}", now.second());
-    let date = now.format("%A, %-d %B %Y").to_string();
-
+fn draw_clock(ui: &mut egui::Ui, time: &str, seconds: &str, date: &str) {
     draw_service_heading(ui, "BANSLEBEN TELEPHONE SERVICES");
 
     ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
@@ -201,8 +214,15 @@ fn draw_clock(ui: &mut egui::Ui) {
     });
 }
 
-fn draw_weather(ui: &mut egui::Ui, location: &str) {
-    draw_service_heading(ui, "WEATHER SERVICE");
+fn draw_weather(
+    ui: &mut egui::Ui,
+    location: &str,
+    temperature: &str,
+    condition: &str,
+    details: &[String],
+    updated_at: &str,
+) {
+    draw_service_heading(ui, "Weather Service");
 
     ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
         vertical_space_fraction(ui, 0.12);
@@ -219,7 +239,7 @@ fn draw_weather(ui: &mut egui::Ui, location: &str) {
             ui.spacing_mut().item_spacing.x = 42.0;
 
             ui.label(
-                RichText::new("17°C")
+                RichText::new(temperature)
                     .font(FontId::new(128.0, FontFamily::Proportional))
                     .color(PRIMARY_TEXT),
             );
@@ -227,18 +247,29 @@ fn draw_weather(ui: &mut egui::Ui, location: &str) {
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
                 ui.add_space(26.0);
                 ui.label(
-                    RichText::new("Cloudy")
+                    RichText::new(condition)
                         .font(FontId::new(38.0, FontFamily::Proportional))
                         .color(SECONDARY_TEXT),
                 );
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new("Demonstration information")
-                        .font(FontId::new(20.0, FontFamily::Proportional))
-                        .color(MUTED_TEXT),
-                );
             });
         });
+
+        ui.add_space(40.0);
+
+        for detail in details {
+            ui.label(
+                RichText::new(detail)
+                    .font(FontId::new(28.0, FontFamily::Proportional))
+                    .color(SECONDARY_TEXT),
+            );
+        }
+
+        ui.add_space(40.0);
+        ui.label(
+            RichText::new(format!("Updated at {updated_at}"))
+                .font(FontId::new(22.0, FontFamily::Proportional))
+                .color(MUTED_TEXT),
+        );
     });
 }
 
@@ -312,10 +343,9 @@ fn configure_cabin_font(context: &egui::Context) {
     info!(path = %font_path.display(), "loaded Cabin font");
 
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "Cabin".to_owned(),
-        FontData::from_owned(font_bytes).into(),
-    );
+    fonts
+        .font_data
+        .insert("Cabin".to_owned(), FontData::from_owned(font_bytes).into());
 
     fonts
         .families
@@ -346,10 +376,7 @@ fn load_cabin_font() -> Option<(PathBuf, Vec<u8>)> {
 }
 
 fn read_font_file(path: &Path) -> Option<Vec<u8>> {
-    match fs::read(path) {
-        Ok(bytes) => Some(bytes),
-        Err(_) => None,
-    }
+    fs::read(path).ok()
 }
 
 fn spawn_websocket_worker(
