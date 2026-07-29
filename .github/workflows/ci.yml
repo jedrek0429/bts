@@ -35,7 +35,7 @@ jobs:
       - name: Install deployment dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cage shellcheck
+          sudo apt-get install -y cage seatd shellcheck
       - name: Validate shell scripts
         run: shellcheck scripts/bts-install scripts/generate-voice-prompts.sh
       - name: Build release binaries
@@ -54,7 +54,8 @@ jobs:
           install -m755 target/release/bts-telephony "$stage/usr/bin/bts-telephony"
           install -m755 target/release/bts-display "$stage/usr/bin/bts-display"
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
-          install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
+          install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
+          install -m755 "$(command -v install)" "$stage/usr/bin/install"
 
           install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
@@ -63,7 +64,7 @@ jobs:
           cat <<'EOF' > "$stage/etc/passwd"
           root:x:0:0:root:/root:/usr/bin/nologin
           bts:x:973:973:bts:/var/lib/bts:/usr/bin/nologin
-          bts-display:x:974:974:bts-display:/var/lib/bts:/usr/bin/nologin
+          bts-display:x:974:974:bts-display:/var/lib/bts-display:/usr/bin/nologin
           EOF
           cat <<'EOF' > "$stage/etc/group"
           root:x:0:
@@ -72,6 +73,7 @@ jobs:
           video:x:39:
           render:x:9730:
           input:x:995:
+          seat:x:996:
           EOF
           cp -a /usr/lib/systemd/system/. "$stage/usr/lib/systemd/system/"
 
