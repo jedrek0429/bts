@@ -56,6 +56,8 @@ jobs:
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
           install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
           install -m755 "$(command -v install)" "$stage/usr/bin/install"
+          install -m755 "$(command -v env)" "$stage/usr/bin/env"
+          install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
 
           install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
@@ -75,7 +77,19 @@ jobs:
           input:x:995:
           seat:x:996:
           EOF
+
           cp -a /usr/lib/systemd/system/. "$stage/usr/lib/systemd/system/"
+
+          cat <<'EOF' > "$stage/usr/lib/systemd/system/asterisk.service"
+          [Unit]
+          Description=CI stub for Asterisk
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/true
+          RemainAfterExit=yes
+          EOF
+          install -m755 "$(command -v true)" "$stage/usr/bin/true"
 
           printf 'BTS_STAGE_ROOT=%s\n' "$stage" >> "$GITHUB_ENV"
       - name: Validate staged systemd deployment
