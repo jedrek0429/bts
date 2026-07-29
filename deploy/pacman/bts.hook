@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = bts-git
+
+[Action]
+Description = Reloading BTS systemd units...
+When = PostTransaction
+Exec = /usr/bin/systemctl daemon-reload
