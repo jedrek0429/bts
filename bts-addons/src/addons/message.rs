@@ -1,3 +1,6 @@
+use anyhow::Result;
+use bts_protocol::{DisplayState, EventKind};
+
 use crate::AddonContext;
 
 pub(crate) async fn show(
