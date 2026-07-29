@@ -25,7 +25,7 @@ TTYVHangup=yes
 TTYVTDisallocate=yes
 UtmpIdentifier=tty1
 UtmpMode=user
-ExecStart=/usr/bin/cage -m last -- /usr/bin/bts-display
+ExecStart=/usr/bin/env BTS_CORE_URL=${BTS_CORE_WS_URL} /usr/bin/cage -m last -- /usr/bin/bts-display
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=yes
