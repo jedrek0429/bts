@@ -114,3 +114,20 @@ Core listens on port 3100:
 * `GET /api/v1/events/ws`
 * `GET /api/v1/state`
 * `GET /health`
+
+## Roadmap
+
+- [x] Event bus (bts-core)
+- [x] Display application (bts-display)
+- [x] Telephony integration (bts-telephony)
+- [x] Basic addon framework (bts-addons)
+- [x] Basic voice system
+- [x] systemd services (bts-install)
+- [x] Partial CI/CD
+- [ ] Full CI/CD
+- [ ] Full Addon API
+- [ ] `btscli` administration interface
+- [ ] Full voice integration
+- [ ] Display polish and additional screens
+- [ ] Home Assistant addon
+- [ ] Jarvis AI board
