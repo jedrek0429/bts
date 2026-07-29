@@ -1,16 +1,17 @@
 pkgname=bts-git
 pkgver=0.1.0.r0
-pkgrel=1
+pkgrel=2
 pkgdesc="Bansleben Telephone Services phone-controlled display system"
 arch=('x86_64')
 url="https://github.com/jedrek0429/bts"
 license=('MIT')
-depends=('asterisk' 'cage' 'fontconfig' 'ttf-impallari-cabin-font')
+depends=('asterisk' 'cage' 'seatd' 'fontconfig' 'ttf-impallari-cabin-font')
 makedepends=('cargo' 'git')
 provides=('bts')
 conflicts=('bts')
 backup=('etc/bts/bts.env')
-source=("git+$url.git")
+options=('!debug')
+source=("bts::git+file://$startdir")
 sha256sums=('SKIP')
 
 pkgver() {
