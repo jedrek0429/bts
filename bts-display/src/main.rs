@@ -31,7 +31,9 @@ const STATUS_MARGIN: f32 = 26.0;
 fn main() -> anyhow::Result<()> {
     initialise_logging();
 
-    let core_url = std::env::var("BTS_CORE_URL").unwrap_or_else(|_| DEFAULT_CORE_URL.to_owned());
+    let core_url = std::env::var("BTS_CORE_WS_URL")
+        .or_else(|_| std::env::var("BTS_CORE_URL"))
+        .unwrap_or_else(|_| DEFAULT_CORE_URL.to_owned());
 
     info!(%core_url, "starting BTS Display");
 

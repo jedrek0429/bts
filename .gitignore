@@ -1,5 +1,7 @@
 /target/
 
+*.pkg.tar.zst
+
 **/*.rs.bk
 
 .env

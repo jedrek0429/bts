@@ -1,5 +1,5 @@
 use anyhow::Context;
-use asterisk_ari::{apis::channels, AriClient, Config};
+use asterisk_ari::{AriClient, Config, apis::channels};
 use bts_protocol::{EventKind, NewEvent};
 use reqwest::Client;
 use tracing::{error, info, warn};
@@ -61,8 +61,8 @@ async fn main() -> anyhow::Result<()> {
     let core_url =
         std::env::var("BTS_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned());
 
-    let menu_media_uris = std::env::var("BTS_MENU_MEDIA_URIS")
-        .unwrap_or_else(|_| DEFAULT_MENU_MEDIA_URIS.to_owned());
+    let menu_media_uris =
+        std::env::var("BTS_MENU_MEDIA_URIS").unwrap_or_else(|_| DEFAULT_MENU_MEDIA_URIS.to_owned());
 
     let config = Config::new(&ari_url, &ari_username, &ari_password);
     let mut ari = AriClient::with_config(config);

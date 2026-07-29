@@ -1,0 +1,10 @@
+[Unit]
+Description=Bansleben Telephone Services
+Documentation=https://github.com/jedrek0429/bts
+Requires=bts-core.service
+Wants=bts-addons.service bts-telephony.service bts-display.service
+After=bts-core.service
+AllowIsolate=yes
+
+[Install]
+WantedBy=multi-user.target

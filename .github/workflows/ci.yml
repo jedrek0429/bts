@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Check
+        run: cargo check --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  deployment-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install deployment dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cage seatd shellcheck
+      - name: Validate shell scripts
+        run: shellcheck scripts/bts-install scripts/generate-voice-prompts.sh
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked
+      - name: Stage packaged filesystem
+        run: |
+          stage="$RUNNER_TEMP/bts-root"
+
+          install -d \
+            "$stage/etc/bts" \
+            "$stage/usr/bin" \
+            "$stage/usr/lib/systemd/system"
+
+          install -m755 target/release/bts-core "$stage/usr/bin/bts-core"
+          install -m755 target/release/bts-addons "$stage/usr/bin/bts-addons"
+          install -m755 target/release/bts-telephony "$stage/usr/bin/bts-telephony"
+          install -m755 target/release/bts-display "$stage/usr/bin/bts-display"
+          install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
+          install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
+          install -m755 "$(command -v install)" "$stage/usr/bin/install"
+          install -m755 "$(command -v env)" "$stage/usr/bin/env"
+          install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
+          install -m755 /usr/bin/true "$stage/usr/bin/true"
+
+          install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
+          install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
+          install -m644 deploy/systemd/bts.target "$stage/usr/lib/systemd/system/bts.target"
+
+          cat <<'EOF' > "$stage/etc/passwd"
+          root:x:0:0:root:/root:/usr/bin/nologin
+          bts:x:973:973:bts:/var/lib/bts:/usr/bin/nologin
+          bts-display:x:974:974:bts-display:/var/lib/bts-display:/usr/bin/nologin
+          EOF
+          cat <<'EOF' > "$stage/etc/group"
+          root:x:0:
+          bts:x:973:
+          bts-display:x:974:
+          video:x:39:
+          render:x:9730:
+          input:x:995:
+          seat:x:996:
+          EOF
+
+          cp -a /usr/lib/systemd/system/. "$stage/usr/lib/systemd/system/"
+
+          cat <<'EOF' > "$stage/usr/lib/systemd/system/asterisk.service"
+          [Unit]
+          Description=CI stub for Asterisk
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/true
+          RemainAfterExit=yes
+          EOF
+
+          printf 'BTS_STAGE_ROOT=%s\n' "$stage" >> "$GITHUB_ENV"
+      - name: Validate staged systemd deployment
+        run: |
+          systemd-analyze \
+            --root="$BTS_STAGE_ROOT" \
+            --man=no \
+            verify \
+            bts-core.service \
+            bts-addons.service \
+            bts-telephony.service \
+            bts-display.service \
+            bts.target

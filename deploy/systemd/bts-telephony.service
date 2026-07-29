@@ -1,0 +1,29 @@
+[Unit]
+Description=Bansleben Telephone Services telephony bridge
+Documentation=https://github.com/jedrek0429/bts
+After=network-online.target asterisk.service bts-core.service
+Wants=network-online.target asterisk.service
+Requires=bts-core.service asterisk.service
+
+[Service]
+Type=simple
+User=bts
+Group=bts
+EnvironmentFile=-/etc/bts/bts.env
+ExecCondition=/usr/bin/sh -c '[ -f /etc/bts/bts.env ] && grep -Eq "^BTS_ARI_PASSWORD=[^[:space:]]+$" /etc/bts/bts.env && ! grep -Eq "^BTS_ARI_PASSWORD=CHANGE_ME$" /etc/bts/bts.env'
+ExecStart=/usr/bin/bts-telephony
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=bts.target

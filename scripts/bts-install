@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( EUID != 0 )); then
+    echo "Run bts-install as root." >&2
+    exit 1
+fi
+
+config=/etc/bts/bts.env
+
+if ! getent group bts >/dev/null; then
+    groupadd --system bts
+fi
+if ! id bts >/dev/null 2>&1; then
+    useradd --system --gid bts --home-dir /var/lib/bts --create-home --shell /usr/bin/nologin bts
+fi
+
+if ! getent group bts-display >/dev/null; then
+    groupadd --system bts-display
+fi
+if ! id bts-display >/dev/null 2>&1; then
+    useradd --system --gid bts-display --home-dir /var/lib/bts-display --create-home --shell /usr/bin/nologin bts-display
+fi
+
+for group in video render input seat; do
+    if getent group "$group" >/dev/null; then
+        usermod -aG "$group" bts-display
+    fi
+done
+
+install -d -m 0750 -o root -g bts /etc/bts
+if [[ ! -f "$config" ]]; then
+    install -m 0640 -o root -g bts /dev/null "$config"
+fi
+chown root:bts "$config"
+chmod 0640 "$config"
+
+if grep -q '^BTS_ARI_PASSWORD=CHANGE_ME$' "$config"; then
+    echo "Set BTS_ARI_PASSWORD in $config before telephony can start." >&2
+    echo "The core, addons and display can still be enabled now." >&2
+fi
+
+systemctl daemon-reload
+systemctl enable --now seatd.service
+systemctl disable --now getty@tty1.service 2>/dev/null || true
+systemctl mask getty@tty1.service
+systemctl enable bts.target
+
+if grep -q '^BTS_ARI_PASSWORD=CHANGE_ME$' "$config"; then
+    systemctl enable bts-core.service bts-addons.service bts-display.service
+    systemctl start bts-core.service bts-addons.service bts-display.service
+    echo "BTS display installed. Configure ARI, then run: systemctl enable --now bts-telephony.service"
+else
+    systemctl start bts.target
+    echo "BTS installed and started. Cage displays on the last-connected output and owns tty1."
+fi

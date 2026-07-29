@@ -1,56 +1,58 @@
 # Bansleben Telephone Services (BTS)
-BTS is a phone-controlled home information system written in Rust. It uses Asterisk for calls, routes telephone events through a central service, and updates a dedicated graphical display via independent addons.
-------------------------------
-# 🏗️ System Architecture
-The system consists of small, independent processes communicating via HTTP and WebSockets.
 
-* bts-core: The central event bus. It assigns IDs, timestamps, broadcasts via WebSocket, and retains the current display state. It contains no application logic.
-* bts-telephony: The Asterisk bridge. It connects via ARI, translates calls and DTMF inputs into system events, plays telephone prompts, and pushes events to bts-core.
-* bts-addons: The application layer. Independent modules (clock, weather, messages) process events and publish full display states back to bts-core.
-* bts-display: A pure, full-screen graphical renderer. It displays the state retained by bts-core without making any logical decisions.
-* bts-protocol: Shared event and state types.
-* bts-cli: The planned command-line management tool.
+BTS is a phone-controlled home information system written in Rust. Asterisk handles calls, BTS routes telephone events through a central service, and independent addons update a dedicated graphical display.
 
-------------------------------
-# 🛠️ Development Commands
+The processes communicate over HTTP and WebSockets:
 
-## Build & Test
+* `bts-core` retains display state and distributes events.
+* `bts-telephony` bridges Asterisk ARI calls and DTMF to BTS.
+* `bts-addons` supplies clock, weather and message behaviour.
+* `bts-display` renders the current state full-screen.
+* `bts-protocol` contains shared event and state types.
 
-```sh
-cargo build --workspace          # Build development version
-cargo build --workspace --release  # Build optimized release
-cargo test --workspace           # Run all tests
-```
+## Deployment on Arch Linux
 
-# Quality Control
+The package installs the release binaries, systemd units, Cage kiosk session and a persistent configuration file. On boot, `bts-display` takes ownership of `tty1` through Cage and renders directly to the connected DRM display, while Core, Addons and Telephony run as isolated system services.
+
+Build and install from a checkout:
 
 ```sh
-cargo check --workspace          # Fast compilation check
-cargo fmt --all --check          # Check code formatting
-cargo clippy --workspace --all-targets -- -D warnings  # Run linter
+makepkg -si
+sudoedit /etc/bts/bts.env
+sudo bts-install
 ```
 
-# Running the System
-Start each service in a separate terminal:
+Set at least `BTS_ARI_PASSWORD` in `/etc/bts/bts.env`. The installer creates dedicated service accounts, grants the display account access to DRM/input devices, reserves `tty1`, enables `bts.target`, and starts every configured component.
+
+Useful commands:
 
 ```sh
-cargo run -p bts-core
-cargo run -p bts-telephony
-cargo run -p bts-addons
+systemctl status bts.target
+systemctl status bts-core bts-addons bts-telephony bts-display
+journalctl -u 'bts-*' -f
+sudo systemctl restart bts.target
 ```
 
-# Running display
+The display service deliberately conflicts with `getty@tty1.service`. Other virtual terminals remain available. To restore a login prompt on tty1:
 
-Run `bts-display` using `cage`.
+```sh
+sudo systemctl disable --now bts.target
+sudo systemctl unmask --now getty@tty1.service
+```
 
-------------------------------
-# 🔊 Voice prompts
+### Sony TV and DRM output
 
-BTS uses the local Kokoro service with the British `bf_emma` voice. The welcome and each menu option are generated as separate files in Asterisk's sounds directory, then played as one playlist. Calls work without internet access after setup.
+Cage normally selects the connected DRM output automatically. Where a host has several graphics devices, set `WLR_DRM_DEVICES=/dev/dri/card0` in `/etc/bts/bts.env`. Output mode and overscan remain compositor/DRM concerns; BTS itself fills the surface supplied by Cage.
 
-Kokoro does not expose a direct emotion setting. BTS synthesises each phrase separately at a slightly brisker speed so Emma sounds clearer and less subdued.
+### Continuous integration and delivery
 
-Start Kokoro on the BTS server:
+Every pull request runs formatting, compilation, Clippy, tests, ShellCheck and systemd unit validation. Tags matching `v*` build an Arch package as a GitHub Actions artifact. Installing a newer package preserves `/etc/bts/bts.env` and reloads systemd unit definitions through a pacman hook.
+
+## Voice prompts
+
+BTS uses a local Kokoro service with the British `bf_emma` voice. The welcome and each menu option are generated separately in Asterisk's sounds directory and played as one playlist. Calls work without internet access after initial setup.
+
+Start Kokoro:
 
 ```sh
 docker run -d \
@@ -60,26 +62,13 @@ docker run -d \
     ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0
 ```
 
-Install `curl` and `ffmpeg`, then generate the prompts:
+Generate prompts:
 
 ```sh
-sudo -E bash scripts/generate-voice-prompts.sh
+sudo -E /usr/lib/bts/generate-voice-prompts
 ```
 
-The first Kokoro image download requires internet access. Prompt generation and telephone playback are local after that.
-
-------------------------------
-# ⚙️ Configuration & API
-Configure components using environment variables:
-
-```env
-BTS_CORE_HTTP_URL=http://127.0.0.1:3100
-BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
-BTS_ARI_PASSWORD=CHANGE_ME
-BTS_MENU_MEDIA_URIS=sound:bts/welcome,sound:bts/press-2-time,sound:bts/press-3-weather,sound:bts/press-0-clear
-```
-
-`scripts/generate-voice-prompts.sh` also accepts:
+Supported prompt settings:
 
 ```env
 BTS_KOKORO_URL=http://127.0.0.1:8880/v1/audio/speech
@@ -88,27 +77,57 @@ BTS_KOKORO_VOICE=bf_emma
 BTS_KOKORO_SPEED=1.05
 ```
 
-# Core API Endpoints (Port 3100)
+## Development
 
-* POST /api/v1/events — Publish a new event
-* GET /api/v1/events/ws — WebSocket event subscription stream
-* GET /api/v1/state — Fetch current canonical display state
-* GET /health — Health check endpoint
+```sh
+cargo build --workspace
+cargo test --workspace
+cargo check --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
-------------------------------
-# 🎯 Project Status & Roadmap
-## Current Status
+Run the processes manually in separate terminals:
 
-* ✅ Core event bus operational
-* ✅ Display state abstraction complete
-* ✅ Asterisk ARI integration working
-* ✅ Modular addon system ready
-* ✅ Live background updates (Clock/Weather) functional
-* ✅ Local Kokoro menu prompt playback
+```sh
+cargo run -p bts-core
+cargo run -p bts-telephony
+cargo run -p bts-addons
+cage -- cargo run -p bts-display
+```
 
-## Next Steps
+## Configuration
 
-1. bts-cli — Build the control utility to monitor health, state, and trigger actions.
-2. Voice System — Add cached dynamic announcements and interruptible playback.
-3. Deployment — Create systemd service units with proper startup dependencies and restart policies.
+```env
+BTS_CORE_URL=http://127.0.0.1:3100
+BTS_CORE_HTTP_URL=http://127.0.0.1:3100
+BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
+BTS_ARI_URL=http://127.0.0.1:8088
+BTS_ARI_USERNAME=bts
+BTS_ARI_PASSWORD=CHANGE_ME
+BTS_MENU_MEDIA_URIS=sound:bts/welcome,sound:bts/press-2-time,sound:bts/press-3-weather,sound:bts/press-0-clear
+```
 
+Core listens on port 3100:
+
+* `POST /api/v1/events`
+* `GET /api/v1/events/ws`
+* `GET /api/v1/state`
+* `GET /health`
+
+## Roadmap
+
+- [x] Event bus (bts-core)
+- [x] Display application (bts-display)
+- [x] Telephony integration (bts-telephony)
+- [x] Basic addon framework (bts-addons)
+- [x] Basic voice system
+- [x] systemd services (bts-install)
+- [x] Partial CI/CD
+- [ ] Full CI/CD
+- [ ] Full Addon API
+- [ ] `btscli` administration interface
+- [ ] Full voice integration
+- [ ] Display polish and additional screens
+- [ ] Home Assistant addon
+- [ ] Jarvis AI board

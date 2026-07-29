@@ -1,0 +1,27 @@
+[Unit]
+Description=Bansleben Telephone Services core
+Documentation=https://github.com/jedrek0429/bts
+After=network.target
+
+[Service]
+Type=simple
+User=bts
+Group=bts
+EnvironmentFile=-/etc/bts/bts.env
+ExecStart=/usr/bin/bts-core
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
