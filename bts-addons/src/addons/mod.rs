@@ -24,7 +24,9 @@ impl Addons {
         match &event.kind {
             EventKind::PhoneDtmfReceived { digit, .. } => {
                 if let Some(action) = action_for_digit(digit) {
-                    context.publish(EventKind::ActionRequested { action }).await?;
+                    context
+                        .publish(EventKind::ActionRequested { action })
+                        .await?;
                 }
 
                 Ok(())

@@ -72,10 +72,7 @@ pub enum EventKind {
 pub enum Action {
     Clock,
     Weather,
-    Message {
-        title: String,
-        body: String,
-    },
+    Message { title: String, body: String },
     Blank,
 }
 
