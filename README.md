@@ -46,7 +46,9 @@ Run `bts-display` using `cage`.
 ------------------------------
 # 🔊 Voice prompts
 
-BTS uses the local Kokoro service with the British `bf_emma` voice. The generated prompt is stored in Asterisk's sounds directory, so calls work without internet access after setup.
+BTS uses the local Kokoro service with the British `bf_emma` voice. The welcome and each menu option are generated as separate files in Asterisk's sounds directory, then played as one playlist. Calls work without internet access after setup.
+
+Kokoro does not expose a direct emotion setting. BTS synthesises each phrase separately at a slightly brisker speed so Emma sounds clearer and less subdued.
 
 Start Kokoro on the BTS server:
 
@@ -58,7 +60,7 @@ docker run -d \
     ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0
 ```
 
-Install `curl` and `ffmpeg`, then generate the prompt:
+Install `curl` and `ffmpeg`, then generate the prompts:
 
 ```sh
 sudo -E bash scripts/generate-voice-prompts.sh
@@ -74,7 +76,7 @@ Configure components using environment variables:
 BTS_CORE_HTTP_URL=http://127.0.0.1:3100
 BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
 BTS_ARI_PASSWORD=CHANGE_ME
-BTS_WELCOME_MEDIA_URI=sound:bts/welcome
+BTS_MENU_MEDIA_URIS=sound:bts/welcome,sound:bts/press-2-time,sound:bts/press-3-weather,sound:bts/press-0-clear
 ```
 
 `scripts/generate-voice-prompts.sh` also accepts:
@@ -82,6 +84,8 @@ BTS_WELCOME_MEDIA_URI=sound:bts/welcome
 ```env
 BTS_KOKORO_URL=http://127.0.0.1:8880/v1/audio/speech
 BTS_ASTERISK_SOUNDS_DIR=/var/lib/asterisk/sounds/en/bts
+BTS_KOKORO_VOICE=bf_emma
+BTS_KOKORO_SPEED=1.05
 ```
 
 # Core API Endpoints (Port 3100)
@@ -100,7 +104,7 @@ BTS_ASTERISK_SOUNDS_DIR=/var/lib/asterisk/sounds/en/bts
 * ✅ Asterisk ARI integration working
 * ✅ Modular addon system ready
 * ✅ Live background updates (Clock/Weather) functional
-* ✅ Local Kokoro welcome prompt playback
+* ✅ Local Kokoro menu prompt playback
 
 ## Next Steps
 
