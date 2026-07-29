@@ -1,6 +1,6 @@
 pkgname=bts-git
 pkgver=0.1.0.r0
-pkgrel=4
+pkgrel=5
 pkgdesc="Bansleben Telephone Services phone-controlled display system"
 arch=('x86_64')
 url="https://github.com/jedrek0429/bts"
