@@ -1,6 +1,6 @@
 pkgname=bts-git
 pkgver=0.1.0.r0
-pkgrel=2
+pkgrel=3
 pkgdesc="Bansleben Telephone Services phone-controlled display system"
 arch=('x86_64')
 url="https://github.com/jedrek0429/bts"
@@ -11,26 +11,26 @@ provides=('bts')
 conflicts=('bts')
 backup=('etc/bts/bts.env')
 options=('!debug')
-source=("bts::git+file://$startdir")
-sha256sums=('SKIP')
+source=()
+sha256sums=()
 
 pkgver() {
-  cd bts
+  cd "$startdir"
   printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
 }
 
 build() {
-  cd bts
+  cd "$startdir"
   cargo build --locked --release --workspace
 }
 
 check() {
-  cd bts
+  cd "$startdir"
   cargo test --locked --workspace
 }
 
 package() {
-  cd bts
+  cd "$startdir"
 
   install -Dm755 target/release/bts-core "$pkgdir/usr/bin/bts-core"
   install -Dm755 target/release/bts-addons "$pkgdir/usr/bin/bts-addons"
