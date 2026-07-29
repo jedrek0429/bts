@@ -34,5 +34,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Validate shell scripts
         run: shellcheck scripts/bts-install scripts/generate-voice-prompts.sh
+      - name: Provide executable placeholders
+        run: |
+          for executable in bts-core bts-addons bts-telephony bts-display cage; do
+            sudo install -Dm755 /bin/true "/usr/bin/$executable"
+          done
       - name: Validate systemd units
         run: systemd-analyze verify deploy/systemd/*.service deploy/systemd/bts.target
