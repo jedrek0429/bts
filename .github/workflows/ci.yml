@@ -59,7 +59,19 @@ jobs:
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
           install -m644 deploy/systemd/bts.target "$stage/usr/lib/systemd/system/bts.target"
 
-          cp /etc/passwd /etc/group "$stage/etc/"
+          cat <<'EOF' > "$stage/etc/passwd"
+          root:x:0:0:root:/root:/usr/bin/nologin
+          bts:x:973:973:bts:/var/lib/bts:/usr/bin/nologin
+          bts-display:x:974:974:bts-display:/var/lib/bts:/usr/bin/nologin
+          EOF
+          cat <<'EOF' > "$stage/etc/group"
+          root:x:0:
+          bts:x:973:
+          bts-display:x:974:
+          video:x:39:
+          render:x:9730:
+          input:x:995:
+          EOF
           cp -a /usr/lib/systemd/system/. "$stage/usr/lib/systemd/system/"
 
           printf 'BTS_STAGE_ROOT=%s\n' "$stage" >> "$GITHUB_ENV"
