@@ -1,5 +1,5 @@
 use anyhow::Context;
-use asterisk_ari::{AriClient, Config, apis::channels};
+use asterisk_ari::{apis::channels, AriClient, Config};
 use bts_protocol::{EventKind, NewEvent};
 use reqwest::Client;
 use tracing::{error, info, warn};
