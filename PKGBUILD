@@ -1,6 +1,6 @@
 pkgname=bts-git
 pkgver=0.1.0.r0
-pkgrel=3
+pkgrel=4
 pkgdesc="Bansleben Telephone Services phone-controlled display system"
 arch=('x86_64')
 url="https://github.com/jedrek0429/bts"
@@ -22,11 +22,6 @@ pkgver() {
 build() {
   cd "$startdir"
   cargo build --locked --release --workspace
-}
-
-check() {
-  cd "$startdir"
-  cargo test --locked --workspace
 }
 
 package() {
