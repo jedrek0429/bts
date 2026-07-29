@@ -1,0 +1,29 @@
+[Unit]
+Description=Bansleben Telephone Services addons
+Documentation=https://github.com/jedrek0429/bts
+After=network-online.target bts-core.service
+Wants=network-online.target
+Requires=bts-core.service
+
+[Service]
+Type=simple
+User=bts
+Group=bts
+EnvironmentFile=-/etc/bts/bts.env
+ExecStart=/usr/bin/bts-addons
+Restart=always
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=bts.target
