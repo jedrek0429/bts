@@ -3,7 +3,7 @@ pub(crate) mod message;
 pub(crate) mod weather;
 
 use anyhow::Result;
-use bts_protocol::Event;
+use bts_protocol::{Action, DisplayState, Event, EventKind};
 
 use crate::AddonContext;
 
@@ -21,17 +21,42 @@ impl Addons {
     }
 
     pub(crate) async fn handle(&self, context: &AddonContext, event: &Event) -> Result<()> {
-        match requested_digit(event) {
-            Some(clock::DIGIT) => self.clock.handle(context, event).await,
-            Some(weather::DIGIT) => self.weather.handle(context, event).await,
+        match &event.kind {
+            EventKind::PhoneDtmfReceived { digit, .. } => {
+                if let Some(action) = action_for_digit(digit) {
+                    context
+                        .publish(EventKind::ActionRequested { action })
+                        .await?;
+                }
+
+                Ok(())
+            }
+            EventKind::ActionRequested { action } => self.handle_action(context, action).await,
             _ => Ok(()),
+        }
+    }
+
+    async fn handle_action(&self, context: &AddonContext, action: &Action) -> Result<()> {
+        match action {
+            Action::Clock => self.clock.show(context).await,
+            Action::Weather => self.weather.show(context).await,
+            Action::Message { title, body } => message::show(context, title, body).await,
+            Action::Blank => {
+                context
+                    .publish(EventKind::DisplaySet {
+                        display: DisplayState::Blank,
+                    })
+                    .await
+            }
         }
     }
 }
 
-pub(crate) fn requested_digit(event: &Event) -> Option<&str> {
-    match &event.kind {
-        bts_protocol::EventKind::PhoneDtmfReceived { digit, .. } => Some(digit.as_str()),
+fn action_for_digit(digit: &str) -> Option<Action> {
+    match digit {
+        "2" => Some(Action::Clock),
+        "3" => Some(Action::Weather),
+        "0" => Some(Action::Blank),
         _ => None,
     }
 }

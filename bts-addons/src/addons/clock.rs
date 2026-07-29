@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use bts_protocol::{DisplayState, Event, EventKind};
+use bts_protocol::{DisplayState, EventKind};
 use chrono::Local;
 use tokio::{
     sync::Mutex,
@@ -10,9 +10,8 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::{AddonContext, addons::requested_digit};
+use crate::AddonContext;
 
-pub(crate) const DIGIT: &str = "2";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub(crate) struct ClockAddon {
@@ -26,11 +25,7 @@ impl ClockAddon {
         }
     }
 
-    pub(crate) async fn handle(&self, context: &AddonContext, event: &Event) -> Result<()> {
-        if requested_digit(event) != Some(DIGIT) {
-            return Ok(());
-        }
-
+    pub(crate) async fn show(&self, context: &AddonContext) -> Result<()> {
         self.stop_update_task().await;
         publish_clock(context).await?;
 
@@ -39,7 +34,6 @@ impl ClockAddon {
             let mut ticker = interval(UPDATE_INTERVAL);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            // The first state was published above. Wait for the next second.
             ticker.tick().await;
 
             loop {
