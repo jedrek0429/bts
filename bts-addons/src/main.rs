@@ -120,11 +120,6 @@ async fn run_connection(
 }
 
 async fn dispatch_event(context: &AddonContext, addons: &addons::Addons, event: &Event) {
-    // Addon-produced events are outputs, not new input commands.
-    if event.source == "bts-addons" {
-        return;
-    }
-
     if let Err(error) = addons.handle(context, event).await {
         error!(%error, "addon failed");
         publish_addon_error(context, &error).await;
