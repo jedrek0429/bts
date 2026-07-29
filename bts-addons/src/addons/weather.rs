@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use bts_protocol::{DisplayState, Event, EventKind};
+use bts_protocol::{DisplayState, EventKind};
 use serde::Deserialize;
 use tokio::{
     sync::Mutex,
@@ -10,9 +10,8 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::{AddonContext, addons::requested_digit};
+use crate::AddonContext;
 
-pub(crate) const DIGIT: &str = "3";
 const LOCATION: &str = "Gdynia";
 const LATITUDE: f64 = 54.5189;
 const LONGITUDE: f64 = 18.5305;
@@ -44,11 +43,7 @@ impl WeatherAddon {
         }
     }
 
-    pub(crate) async fn handle(&self, context: &AddonContext, event: &Event) -> Result<()> {
-        if requested_digit(event) != Some(DIGIT) {
-            return Ok(());
-        }
-
+    pub(crate) async fn show(&self, context: &AddonContext) -> Result<()> {
         self.stop_update_task().await;
         publish_weather(context).await?;
 
@@ -57,7 +52,6 @@ impl WeatherAddon {
             let mut ticker = interval(UPDATE_INTERVAL);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            // The first state was published above. Wait for the refresh interval.
             ticker.tick().await;
 
             loop {
