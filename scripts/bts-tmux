@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION="${BTS_TMUX_SESSION:-bts}"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if ! command -v tmux >/dev/null 2>&1; then
+    printf 'tmux is required but was not found in PATH.\n' >&2
+    exit 1
+fi
+
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    tmux new-session -d -s "$SESSION" -n core -c "$ROOT" \
+        'cargo run -p bts-core; exec "${SHELL:-/bin/sh}"'
+
+    tmux new-window -t "$SESSION:" -n telephony -c "$ROOT" \
+        'cargo run -p bts-telephony; exec "${SHELL:-/bin/sh}"'
+
+    tmux new-window -t "$SESSION:" -n addons -c "$ROOT" \
+        'cargo run -p bts-addons; exec "${SHELL:-/bin/sh}"'
+
+    tmux select-window -t "$SESSION:core"
+fi
+
+exec tmux new-session -A -s "$SESSION"

@@ -222,7 +222,7 @@ fn draw_weather(
     details: &[String],
     updated_at: &str,
 ) {
-    draw_service_heading(ui, "Weather Service");
+    draw_service_heading(ui, "BANSLEBEN TELEPHONE SERVICES");
 
     ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
         vertical_space_fraction(ui, 0.12);
