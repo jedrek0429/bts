@@ -36,18 +36,15 @@ pub struct NewEvent {
 }
 
 /// Every event type understood by BTS.
-///
-/// `tag = "type"` produces JSON such as:
-///
-/// {
-///   "type": "display.set",
-///   "display": "..."
-/// }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
     SystemStarted {
         component: String,
+    },
+
+    ActionRequested {
+        action: Action,
     },
 
     DisplaySet {
@@ -67,6 +64,19 @@ pub enum EventKind {
     PhoneCallEnded {
         channel_id: String,
     },
+}
+
+/// A user-facing action which may be requested by any BTS input client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum Action {
+    Clock,
+    Weather,
+    Message {
+        title: String,
+        body: String,
+    },
+    Blank,
 }
 
 /// State retained by bts-core.
