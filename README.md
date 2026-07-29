@@ -52,9 +52,11 @@ Run `bts-display` using `cage`.
 # ⚙️ Configuration & API
 Configure components using environment variables:
 
+```env
 BTS_CORE_HTTP_URL=http://127.0.0.1:3100
 BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
 BTS_ARI_PASSWORD=CHANGE_ME
+```
 
 # Core API Endpoints (Port 3100)
 
