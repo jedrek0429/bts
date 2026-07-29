@@ -1,251 +1,80 @@
-# Bansleben Telephone Services
+# Bansleben Telephone Services (BTS)
+BTS is a phone-controlled home information system written in Rust. It uses Asterisk for calls, routes telephone events through a central service, and updates a dedicated graphical display via independent addons.
+------------------------------
+# 🏗️ System Architecture
+The system consists of small, independent processes communicating via HTTP and WebSockets.
 
-Bansleben Telephone Services is a phone-controlled home information system.
-
-Calls enter through Asterisk. Telephone events are distributed through a central event service, interpreted by independent addons and shown on a dedicated display.
-
-The system is written in Rust and designed as a collection of small, independent processes communicating over the network.
-
-## Components
-
-### `bts-core`
-
-The central event service.
-
-It:
-
-- receives events over HTTP;
-- assigns event IDs and timestamps;
-- broadcasts events over WebSocket;
-- retains the current canonical display state;
-- provides the current state to newly connected clients.
-
-Core does not interpret DTMF digits or decide which service should run.
-
-### `bts-telephony`
-
-The connection between Asterisk and BTS.
-
-It:
-
-- connects to Asterisk through ARI;
-- receives call and DTMF events;
-- publishes telephone events to core;
-- will later provide spoken telephone menus and responses.
-
-### `bts-addons`
-
-The application layer.
-
-Each addon lives in its own module and independently reacts to events received from core.
-
-Current addons include:
-
-- clock;
-- weather;
-- messages.
-
-Addons may publish complete display states back to core. DTMF mappings and service behaviour belong here, not in core.
-
-### `bts-display`
-
-The fullscreen graphical client.
-
-It:
-
-- receives the retained display state from core;
-- renders clock, weather, message and blank screens;
-- contains presentation logic only.
-
-It does not interpret telephone input or fetch external data.
-
-### `bts-protocol`
-
-Shared event and state types used by all components.
-
-### `bts-cli`
-
-Planned command-line client for inspecting and controlling BTS.
-
-## Event flow
+* bts-core: The central event bus. It assigns IDs, timestamps, broadcasts via WebSocket, and retains the current display state. It contains no application logic.
+* bts-telephony: The Asterisk bridge. It connects via ARI, translates calls and DTMF inputs into system events, and pushes them to bts-core.
+* bts-addons: The application layer. Independent modules (clock, weather, messages) process events and publish full display states back to bts-core.
+* bts-display: A pure, full-screen graphical renderer. It displays the state retained by bts-core without making any logical decisions.
+* bts-protocol: Shared event and state types.
+* bts-cli: The planned command-line management tool.
 
 ```text
-Telephone
-    │
-FRITZ!Box
-    │
-Asterisk
-    │ ARI
-    ▼
-bts-telephony
-    │ HTTP
-    ▼
-bts-core
-    │ WebSocket
-    ├──────────────► bts-display
-    │
-    └──────────────► bts-addons
-                         │
-                         │ HTTP
-                         └────────► bts-core
-```
-For example:
-```
-DTMF 2
-    │
-    ▼
-bts-telephony publishes PhoneDtmfReceived
-    │
-    ▼
-bts-core broadcasts the event unchanged
-    │
-    ▼
-clock addon handles digit 2
-    │
-    ▼
-clock addon publishes DisplaySet
-    │
-    ▼
-bts-core retains and broadcasts the new display state
-    │
-    ▼
-bts-display renders the clock
-```
-Architecture
-
-All communication between runtime components takes place through the BTS HTTP and WebSocket interfaces.
-
-bts-core acts as an event bus and retained-state service. It knows how to store a complete display state, but does not know why that state was selected.
-
-Application behaviour lives in bts-addons. This includes DTMF routing, weather retrieval, clock updates, messages and future services.
-
-bts-display renders complete display states without making application decisions.
-
-## Building
-
-Build the complete workspace:
-
-```bash
-cargo build --workspace
+[ Telephone ] ──► [ Asterisk ] ──► [ bts-telephony ]
+        │ (HTTP)
+        ▼
+[ bts-display ] ◄── (WS) ─────────── [ bts-core ] ◄── (HTTP) ── [ bts-addons ]
 ```
 
-Build an optimised release:
+------------------------------
+# 🛠️ Development Commands# Build & Test
 
-```bash
-cargo build --workspace --release
+```sh
+cargo build --workspace          # Build development version
+cargo build --workspace --release  # Build optimized release
+cargo test --workspace           # Run all tests
 ```
 
-Check the workspace:
+# Quality Control
 
-```bash
-cargo check --workspace
+```sh
+cargo check --workspace          # Fast compilation check
+cargo fmt --all --check          # Check code formatting
+cargo clippy --workspace --all-targets -- -D warnings  # Run linter
 ```
 
-Run formatting and lint checks:
+# Running the System
+Start each service in a separate terminal:
 
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
-Run tests:
-
-```bash
-cargo test --workspace
-```
-
-## Running
-
-Start each service separately:
-
-```bash
+```sh
 cargo run -p bts-core
-cargo run -p bts-display
 cargo run -p bts-telephony
 cargo run -p bts-addons
 ```
 
-By default, core listens on port 3100.
+# Running display
 
-The event endpoints are:
+Run `bts-display` using `cage`.
 
-```
-POST /api/v1/events
-GET  /api/v1/events/ws
-GET  /api/v1/state
-GET  /health
-```
+------------------------------
+# ⚙️ Configuration & API
+Configure components using environment variables:
 
-## Configuration
-
-Components may be configured through environment variables.
-
-Typical values include:
-
-```bash
 BTS_CORE_HTTP_URL=http://127.0.0.1:3100
 BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
-```
+BTS_ARI_PASSWORD=CHANGE_ME
 
-Telephony additionally requires access to the configured Asterisk ARI service.
+# Core API Endpoints (Port 3100)
 
-Current milestone
+* POST /api/v1/events — Publish a new event
+* GET /api/v1/events/ws — WebSocket event subscription stream
+* GET /api/v1/state — Fetch current canonical display state
+* GET /health — Health check endpoint
 
-The current milestone is complete addon-controlled display operation.
+------------------------------
+# 🎯 Project Status & Roadmap# Current Status
 
-This includes:
+* ✅ Core event bus operational
+* ✅ Display state abstraction complete
+* ✅ Asterisk ARI integration working
+* ✅ Modular addon system ready
+* ✅ Live background updates (Clock/Weather) functional
 
-addons receiving telephone events from core;
-addons selecting actions from DTMF input;
-addons publishing complete display states;
-the clock remaining live and showing seconds correctly;
-weather updating automatically while its screen is active;
-display state surviving client reconnection;
-core remaining independent of DTMF mappings and addon behaviour.
+# Next Steps
 
-The clock and weather services should continue updating only while their respective screen is active. Switching to another screen should stop the previous addon from publishing display updates.
+1. bts-cli — Build the control utility to monitor health, state, and trigger actions.
+2. Voice System — Implement cached, calm British TTS announcements for the interactive menu.
+3. Deployment — Create systemd service units with proper startup dependencies and restart policies.
 
-Roadmap
-1. Live addon-controlled display
-complete the generic DisplaySet protocol;
-update core to retain complete display states;
-make display a pure renderer;
-keep the clock updated every second;
-refresh weather periodically;
-stop inactive addons from overwriting the selected screen;
-verify reconnection and retained-state behaviour.
-2. bts-cli
-
-Provide a btscli command for:
-
-checking core health;
-inspecting current state;
-watching events;
-requesting clock, weather and message actions;
-blanking the display.
-
-CLI requests should use the same addon logic as telephone requests.
-
-3. Telephone speech
-
-Add spoken prompts and responses to bts-telephony.
-
-The initial menu should follow this form:
-
-Welcome to Bansleben Telephone Services.
-For the clock, press 2.
-For the weather, press 3.
-
-Fixed prompts should be generated in advance and cached. The voice should be a licensed, calm British announcement voice suitable for a transport-style information system.
-
-4. Deployment
-systemd service units;
-automatic startup;
-dependency ordering;
-restart policies;
-production configuration;
-logging and diagnostics.
-Status
-
-BTS is under active development. Its internal protocol may change before the first stable release. 
-                        
