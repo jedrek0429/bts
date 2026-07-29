@@ -1,0 +1,42 @@
+[Unit]
+Description=Bansleben Telephone Services display kiosk
+Documentation=https://github.com/jedrek0429/bts
+After=systemd-user-sessions.service bts-core.service
+Requires=bts-core.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+Type=simple
+User=bts-display
+Group=bts-display
+EnvironmentFile=-/etc/bts/bts.env
+Environment=XDG_RUNTIME_DIR=/run/bts-display
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+RuntimeDirectory=bts-display
+RuntimeDirectoryMode=0700
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+UtmpIdentifier=tty1
+UtmpMode=user
+ExecStart=/usr/bin/cage -- /usr/bin/bts-display
+Restart=always
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SupplementaryGroups=video render input
+
+[Install]
+WantedBy=bts.target
