@@ -5,6 +5,7 @@ repo="${BTS_GITHUB_REPOSITORY:-jedrek0429/bts}"
 config=/etc/bts/bts.env
 build=false
 source_dir=
+release_data=()
 
 usage() {
     cat <<'EOF'
@@ -56,12 +57,13 @@ require() {
 
 install_package() {
     local package=$1
+    require pacman
     pacman -U --noconfirm --needed "$package"
 }
 
 build_package() {
     require makepkg
-    require sudo
+    require runuser
 
     if [[ -z "$source_dir" ]]; then
         local script_dir
@@ -89,10 +91,10 @@ build_package() {
     fi
 
     echo "Building BTS from $source_dir as $build_user..."
-    sudo -u "$build_user" makepkg --clean --force --noconfirm --dir "$source_dir"
+    runuser -u "$build_user" -- makepkg --clean --force --noconfirm --dir "$source_dir"
 
     local package
-    package=$(sudo -u "$build_user" bash -c "cd \"$source_dir\" && makepkg --packagelist" | tail -n1)
+    package=$(runuser -u "$build_user" -- bash -c "cd \"$source_dir\" && makepkg --packagelist" | tail -n1)
     [[ -f "$package" ]] || {
         echo "Built package not found: $package" >&2
         exit 1
