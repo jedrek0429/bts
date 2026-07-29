@@ -30,14 +30,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install validators
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install deployment dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cage shellcheck
       - name: Validate shell scripts
         run: shellcheck scripts/bts-install scripts/generate-voice-prompts.sh
-      - name: Provide executable placeholders
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked
+      - name: Stage packaged filesystem
         run: |
-          for executable in bts-core bts-addons bts-telephony bts-display cage; do
-            sudo install -Dm755 /bin/true "/usr/bin/$executable"
-          done
-      - name: Validate systemd units
-        run: systemd-analyze verify deploy/systemd/*.service deploy/systemd/bts.target
+          stage="$RUNNER_TEMP/bts-root"
+
+          install -d \
+            "$stage/etc/bts" \
+            "$stage/usr/bin" \
+            "$stage/usr/lib/systemd/system"
+
+          install -m755 target/release/bts-core "$stage/usr/bin/bts-core"
+          install -m755 target/release/bts-addons "$stage/usr/bin/bts-addons"
+          install -m755 target/release/bts-telephony "$stage/usr/bin/bts-telephony"
+          install -m755 target/release/bts-display "$stage/usr/bin/bts-display"
+          install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
+
+          install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
+          install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
+          install -m644 deploy/systemd/bts.target "$stage/usr/lib/systemd/system/bts.target"
+
+          cp /etc/passwd /etc/group "$stage/etc/"
+          cp -a /usr/lib/systemd/system/. "$stage/usr/lib/systemd/system/"
+
+          printf 'BTS_STAGE_ROOT=%s\n' "$stage" >> "$GITHUB_ENV"
+      - name: Validate staged systemd deployment
+        run: |
+          systemd-analyze \
+            --root="$BTS_STAGE_ROOT" \
+            --man=no \
+            verify \
+            bts-core.service \
+            bts-addons.service \
+            bts-telephony.service \
+            bts-display.service \
+            bts.target
