@@ -7,7 +7,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   arch-package:
@@ -15,7 +15,7 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install build tools
-        run: pacman -Syu --noconfirm git rust sudo
+        run: pacman -Syu --noconfirm git rust sudo github-cli
       - name: Create build user
         run: |
           useradd -m builder
@@ -25,8 +25,28 @@ jobs:
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE"
           sudo -u builder makepkg --nodeps --noconfirm --clean
+      - name: Name release package
+        run: |
+          package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)
+          test -n "$package"
+          release_package="bts-${GITHUB_REF_NAME}-x86_64.pkg.tar.zst"
+          mv "$package" "$release_package"
+          sha256sum "$release_package" > SHA256SUMS
+          printf 'RELEASE_PACKAGE=%s\n' "$release_package" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: bts-arch-package
-          path: '*.pkg.tar.zst'
+          path: |
+            ${{ env.RELEASE_PACKAGE }}
+            SHA256SUMS
           if-no-files-found: error
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          gh release upload "$GITHUB_REF_NAME" \
+            "$RELEASE_PACKAGE" SHA256SUMS \
+            --clobber

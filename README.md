@@ -14,12 +14,24 @@ The processes communicate over HTTP and WebSockets:
 
 The package installs the release binaries, systemd units, Cage kiosk session and a persistent configuration file. On boot, `bts-display` takes ownership of `tty1` through Cage and renders directly to the connected DRM display, while Core, Addons and Telephony run as isolated system services.
 
-Build and install from a checkout:
+Install or update to the latest tagged release:
 
 ```sh
-makepkg -si
-sudoedit /etc/bts/bts.env
 sudo bts-install
+```
+
+For a first installation, download the installer from the repository or copy it from a checkout. The installer retrieves the latest GitHub Release package, verifies its SHA-256 checksum, installs it through pacman, preserves `/etc/bts/bts.env`, reloads systemd and restarts BTS.
+
+Build and install from a source checkout instead:
+
+```sh
+sudo ./scripts/bts-install --build
+```
+
+An explicit checkout may also be supplied:
+
+```sh
+sudo bts-install --build /path/to/bts
 ```
 
 Set at least `BTS_ARI_PASSWORD` in `/etc/bts/bts.env`. The installer creates dedicated service accounts, grants the display account access to DRM/input devices, reserves `tty1`, enables `bts.target`, and starts every configured component.
@@ -46,7 +58,15 @@ Cage normally selects the connected DRM output automatically. Where a host has s
 
 ### Continuous integration and delivery
 
-Every pull request runs formatting, compilation, Clippy, tests, ShellCheck and systemd unit validation. Tags matching `v*` build an Arch package as a GitHub Actions artifact. Installing a newer package preserves `/etc/bts/bts.env` and reloads systemd unit definitions through a pacman hook.
+Every pull request runs formatting, compilation, Clippy, tests, ShellCheck and systemd unit validation. Tags matching `v*` build an Arch package, create or update the corresponding GitHub Release, and publish both the package and its `SHA256SUMS` file. `bts-install` consumes those release assets, making tagged releases directly deployable. Installing a newer package preserves `/etc/bts/bts.env` and reloads systemd unit definitions through a pacman hook.
+
+Private repositories require a GitHub token with permission to read repository contents:
+
+```sh
+sudo GITHUB_TOKEN="$(gh auth token)" bts-install
+```
+
+Public repositories require no token.
 
 ## Voice prompts
 
@@ -115,6 +135,12 @@ Core listens on port 3100:
 * `GET /api/v1/state`
 * `GET /health`
 
+## Licence
+
+BTS is free software licensed under the GNU General Public License version 3 or, at your option, any later version. See [`LICENSE`](LICENSE).
+
+Copyright © 2026 Andrzej Bansleben.
+
 ## Roadmap
 
 - [x] Event bus (bts-core)
@@ -124,7 +150,7 @@ Core listens on port 3100:
 - [x] Basic voice system
 - [x] systemd services (bts-install)
 - [x] Partial CI/CD
-- [ ] Full CI/CD
+- [x] Full CI/CD
 - [ ] Full Addon API
 - [ ] `btscli` administration interface
 - [ ] Full voice integration

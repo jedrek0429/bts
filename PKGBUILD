@@ -1,14 +1,12 @@
-pkgname=bts-git
-pkgver=0.1.0.r0
-pkgrel=5
+pkgname=bts
+pkgver=0.0.0
+pkgrel=1
 pkgdesc="Bansleben Telephone Services phone-controlled display system"
 arch=('x86_64')
 url="https://github.com/jedrek0429/bts"
-license=('MIT')
+license=('GPL-3.0-or-later')
 depends=('asterisk' 'cage' 'seatd' 'fontconfig' 'ttf-impallari-cabin-font')
 makedepends=('cargo' 'git')
-provides=('bts')
-conflicts=('bts')
 backup=('etc/bts/bts.env')
 options=('!debug')
 source=()
@@ -16,7 +14,7 @@ sha256sums=()
 
 pkgver() {
   cd "$startdir"
-  printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  git describe --tags --abbrev=7 | sed -e 's/^v//' -e 's/-\([0-9]\+\)-g/.r\1.g/'
 }
 
 build() {
@@ -43,4 +41,5 @@ package() {
   install -Dm755 scripts/bts-install "$pkgdir/usr/bin/bts-install"
   install -Dm755 scripts/generate-voice-prompts.sh "$pkgdir/usr/lib/bts/generate-voice-prompts"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
