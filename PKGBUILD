@@ -41,6 +41,7 @@ package() {
   install -Dm644 deploy/systemd/bts-telephony.service "$pkgdir/usr/lib/systemd/system/bts-telephony.service"
   install -Dm644 deploy/systemd/bts-display.service "$pkgdir/usr/lib/systemd/system/bts-display.service"
   install -Dm644 deploy/systemd/bts.target "$pkgdir/usr/lib/systemd/system/bts.target"
+  install -Dm644 deploy/pacman/bts.hook "$pkgdir/usr/share/libalpm/hooks/bts.hook"
 
   install -Dm640 deploy/bts.env.example "$pkgdir/etc/bts/bts.env"
   install -Dm755 scripts/bts-install "$pkgdir/usr/bin/bts-install"
