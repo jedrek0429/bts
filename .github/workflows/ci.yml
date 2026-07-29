@@ -58,6 +58,7 @@ jobs:
           install -m755 "$(command -v install)" "$stage/usr/bin/install"
           install -m755 "$(command -v env)" "$stage/usr/bin/env"
           install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
+          install -m755 /usr/bin/true "$stage/usr/bin/true"
 
           install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
@@ -89,7 +90,6 @@ jobs:
           ExecStart=/usr/bin/true
           RemainAfterExit=yes
           EOF
-          install -m755 "$(command -v true)" "$stage/usr/bin/true"
 
           printf 'BTS_STAGE_ROOT=%s\n' "$stage" >> "$GITHUB_ENV"
       - name: Validate staged systemd deployment
