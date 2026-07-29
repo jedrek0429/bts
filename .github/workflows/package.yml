@@ -15,9 +15,7 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install build tools
-        run: pacman -Syu --noconfirm git rustup sudo
-      - name: Configure Rust
-        run: rustup default stable
+        run: pacman -Syu --noconfirm git rust sudo
       - name: Create build user
         run: |
           useradd -m builder
