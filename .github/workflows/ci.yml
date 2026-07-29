@@ -54,6 +54,7 @@ jobs:
           install -m755 target/release/bts-telephony "$stage/usr/bin/bts-telephony"
           install -m755 target/release/bts-display "$stage/usr/bin/bts-display"
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
+          install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
 
           install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"

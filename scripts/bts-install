@@ -29,6 +29,9 @@ for group in video render input; do
 done
 
 install -d -m 0750 -o root -g bts /etc/bts
+if [[ ! -f "$config" ]]; then
+    install -m 0640 -o root -g bts /dev/null "$config"
+fi
 chown root:bts "$config"
 chmod 0640 "$config"
 

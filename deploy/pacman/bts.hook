@@ -7,4 +7,4 @@ Target = bts-git
 [Action]
 Description = Reloading BTS systemd units...
 When = PostTransaction
-Exec = /usr/bin/systemctl daemon-reload
+Exec = /usr/bin/sh -c '/usr/bin/systemctl daemon-reload || true'
