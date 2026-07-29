@@ -60,11 +60,13 @@ Cage normally selects the connected DRM output automatically. Where a host has s
 
 Every pull request runs formatting, compilation, Clippy, tests, ShellCheck and systemd unit validation. Tags matching `v*` build an Arch package, create or update the corresponding GitHub Release, and publish both the package and its `SHA256SUMS` file. `bts-install` consumes those release assets, making tagged releases directly deployable. Installing a newer package preserves `/etc/bts/bts.env` and reloads systemd unit definitions through a pacman hook.
 
-Because the repository is private, unattended hosts must provide a GitHub token that can read repository contents:
+Private repositories require a GitHub token with permission to read repository contents:
 
 ```sh
 sudo GITHUB_TOKEN="$(gh auth token)" bts-install
 ```
+
+Public repositories require no token.
 
 ## Voice prompts
 
@@ -132,6 +134,12 @@ Core listens on port 3100:
 * `GET /api/v1/events/ws`
 * `GET /api/v1/state`
 * `GET /health`
+
+## Licence
+
+BTS is free software licensed under the GNU General Public License version 3 or, at your option, any later version. See [`LICENSE`](LICENSE).
+
+Copyright © 2026 Andrzej Bansleben.
 
 ## Roadmap
 
