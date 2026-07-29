@@ -1,12 +1,173 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo="${BTS_GITHUB_REPOSITORY:-jedrek0429/bts}"
+config=/etc/bts/bts.env
+build=false
+source_dir=
+
+usage() {
+    cat <<'EOF'
+Usage: bts-install [--build [SOURCE_DIR]]
+
+Without arguments, install or update BTS from the latest GitHub Release package.
+With --build, build and install an Arch package from source. SOURCE_DIR defaults
+first to the repository containing this script, then to the current directory.
+
+Environment:
+  BTS_GITHUB_REPOSITORY  GitHub repository to use (default: jedrek0429/bts)
+  GITHUB_TOKEN           Optional token for private-repository API access
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+        --build)
+            build=true
+            if [[ ${2-} && ${2-} != --* ]]; then
+                source_dir=$2
+                shift
+            fi
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
 if (( EUID != 0 )); then
     echo "Run bts-install as root." >&2
     exit 1
 fi
 
-config=/etc/bts/bts.env
+require() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "Required command not found: $1" >&2
+        exit 1
+    }
+}
+
+install_package() {
+    local package=$1
+    pacman -U --noconfirm --needed "$package"
+}
+
+build_package() {
+    require makepkg
+    require sudo
+
+    if [[ -z "$source_dir" ]]; then
+        local script_dir
+        script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+        if [[ -f "$script_dir/../PKGBUILD" ]]; then
+            source_dir=$(cd -- "$script_dir/.." && pwd -P)
+        else
+            source_dir=$PWD
+        fi
+    fi
+
+    source_dir=$(cd -- "$source_dir" && pwd -P)
+    [[ -f "$source_dir/PKGBUILD" ]] || {
+        echo "No PKGBUILD found in $source_dir" >&2
+        exit 1
+    }
+
+    local build_user=${SUDO_USER:-}
+    if [[ -z "$build_user" || "$build_user" == root ]]; then
+        build_user=$(stat -c '%U' "$source_dir")
+    fi
+    if [[ -z "$build_user" || "$build_user" == root ]]; then
+        echo "--build must be run with sudo from a source checkout owned by a non-root user." >&2
+        exit 1
+    fi
+
+    echo "Building BTS from $source_dir as $build_user..."
+    sudo -u "$build_user" makepkg --clean --force --noconfirm --dir "$source_dir"
+
+    local package
+    package=$(sudo -u "$build_user" bash -c "cd \"$source_dir\" && makepkg --packagelist" | tail -n1)
+    [[ -f "$package" ]] || {
+        echo "Built package not found: $package" >&2
+        exit 1
+    }
+    install_package "$package"
+}
+
+download_latest_package() {
+    require curl
+    require python3
+    require sha256sum
+
+    local tmp api_url auth_header=()
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    api_url="https://api.github.com/repos/$repo/releases/latest"
+    if [[ -n ${GITHUB_TOKEN:-} ]]; then
+        auth_header=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    fi
+
+    echo "Checking the latest BTS release from $repo..."
+    curl --fail --silent --show-error --location \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        "${auth_header[@]}" \
+        "$api_url" > "$tmp/release.json"
+
+    local tag package_url checksum_url
+    readarray -t release_data < <(python3 - "$tmp/release.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    release = json.load(handle)
+
+package = None
+checksum = None
+for asset in release.get("assets", []):
+    name = asset.get("name", "")
+    if name.endswith("-x86_64.pkg.tar.zst"):
+        package = asset.get("url")
+    elif name == "SHA256SUMS":
+        checksum = asset.get("url")
+
+if not package or not checksum:
+    raise SystemExit("Latest release does not contain the expected Arch package and SHA256SUMS assets.")
+
+print(release.get("tag_name", "unknown"))
+print(package)
+print(checksum)
+PY
+)
+    tag=${release_data[0]}
+    package_url=${release_data[1]}
+    checksum_url=${release_data[2]}
+
+    echo "Downloading BTS $tag..."
+    curl --fail --silent --show-error --location \
+        -H 'Accept: application/octet-stream' \
+        "${auth_header[@]}" \
+        "$package_url" -o "$tmp/bts.pkg.tar.zst"
+    curl --fail --silent --show-error --location \
+        -H 'Accept: application/octet-stream' \
+        "${auth_header[@]}" \
+        "$checksum_url" -o "$tmp/SHA256SUMS"
+
+    (cd "$tmp" && sha256sum --check SHA256SUMS)
+    install_package "$tmp/bts.pkg.tar.zst"
+}
+
+if $build; then
+    build_package
+else
+    download_latest_package
+fi
 
 if ! getent group bts >/dev/null; then
     groupadd --system bts
@@ -48,9 +209,9 @@ systemctl enable bts.target
 
 if grep -q '^BTS_ARI_PASSWORD=CHANGE_ME$' "$config"; then
     systemctl enable bts-core.service bts-addons.service bts-display.service
-    systemctl start bts-core.service bts-addons.service bts-display.service
+    systemctl restart bts-core.service bts-addons.service bts-display.service
     echo "BTS display installed. Configure ARI, then run: systemctl enable --now bts-telephony.service"
 else
-    systemctl start bts.target
+    systemctl restart bts.target
     echo "BTS installed and started. Cage displays on the last-connected output and owns tty1."
 fi
