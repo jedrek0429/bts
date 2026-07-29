@@ -11,15 +11,10 @@ The system consists of small, independent processes communicating via HTTP and W
 * bts-protocol: Shared event and state types.
 * bts-cli: The planned command-line management tool.
 
-```text
-[ Telephone ] ──► [ Asterisk ] ──► [ bts-telephony ]
-        │ (HTTP)
-        ▼
-[ bts-display ] ◄── (WS) ─────────── [ bts-core ] ◄── (HTTP) ── [ bts-addons ]
-```
-
 ------------------------------
-# 🛠️ Development Commands# Build & Test
+# 🛠️ Development Commands
+
+## Build & Test
 
 ```sh
 cargo build --workspace          # Build development version
@@ -66,7 +61,8 @@ BTS_ARI_PASSWORD=CHANGE_ME
 * GET /health — Health check endpoint
 
 ------------------------------
-# 🎯 Project Status & Roadmap# Current Status
+# 🎯 Project Status & Roadmap
+## Current Status
 
 * ✅ Core event bus operational
 * ✅ Display state abstraction complete
@@ -74,7 +70,7 @@ BTS_ARI_PASSWORD=CHANGE_ME
 * ✅ Modular addon system ready
 * ✅ Live background updates (Clock/Weather) functional
 
-# Next Steps
+## Next Steps
 
 1. bts-cli — Build the control utility to monitor health, state, and trigger actions.
 2. Voice System — Implement cached, calm British TTS announcements for the interactive menu.
