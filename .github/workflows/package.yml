@@ -15,7 +15,7 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install build tools
-        run: pacman -Syu --noconfirm git rust sudo github-cli
+        run: pacman -Syu --noconfirm git rust sudo
       - name: Create build user
         run: |
           useradd -m builder
@@ -25,32 +25,79 @@ jobs:
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE"
           sudo -u builder makepkg --nodeps --noconfirm --clean
-      - name: Name release package
+      - name: Name package
         run: |
           package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)
           test -n "$package"
           release_package="bts-${GITHUB_REF_NAME}-x86_64.pkg.tar.zst"
           mv "$package" "$release_package"
-          sha256sum "$release_package" > SHA256SUMS
+          sha256sum "$release_package" > "${release_package}.sha256"
           printf 'RELEASE_PACKAGE=%s\n' "$release_package" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: bts-arch-package
           path: |
             ${{ env.RELEASE_PACKAGE }}
-            SHA256SUMS
+            ${{ env.RELEASE_PACKAGE }}.sha256
           if-no-files-found: error
+
+  arm64-display:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev \
+            libudev-dev \
+            libfontconfig1-dev
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build display
+        run: cargo build --locked --release -p bts-display
+      - name: Package display
+        run: |
+          strip target/release/bts-display
+          install -Dm755 target/release/bts-display package/bts-display
+          archive="bts-display-${GITHUB_REF_NAME}-linux-aarch64.tar.gz"
+          tar -C package -czf "$archive" bts-display
+          sha256sum "$archive" > "${archive}.sha256"
+          printf 'DISPLAY_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bts-display-arm64
+          path: |
+            ${{ env.DISPLAY_ARCHIVE }}
+            ${{ env.DISPLAY_ARCHIVE }}.sha256
+          if-no-files-found: error
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - arch-package
+      - arm64-display
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
       - name: Publish GitHub Release assets
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" --draft=false
           else
             gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
           fi
-          gh release upload "$GITHUB_REF_NAME" \
-            "$RELEASE_PACKAGE" SHA256SUMS \
-            --clobber
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
