@@ -123,7 +123,7 @@ download_latest_package() {
         "$api_url" > "$tmp/release.json"
 
     local tag package_name package_url checksum_url
-    readarray -t release_data < <(python3 - "$tmp/release.json" <<'PY'
+    if ! readarray -t release_data < <(python3 - "$tmp/release.json" <<'PY'
 import json
 import sys
 
@@ -140,7 +140,7 @@ for asset in release.get("assets", []):
         checksum = asset.get("url")
 
 if not package or not checksum:
-    raise SystemExit("Latest release does not contain the expected Arch package and SHA256SUMS assets.")
+    raise SystemExit("Latest published release does not contain the expected Arch package and SHA256SUMS assets.")
 
 print(release.get("tag_name", "unknown"))
 print(next((asset.get("name", "") for asset in release.get("assets", [])
@@ -148,7 +148,17 @@ print(next((asset.get("name", "") for asset in release.get("assets", [])
 print(package)
 print(checksum)
 PY
-)
+    ); then
+        echo "Unable to select an installable package from the latest published release." >&2
+        echo "Check that the tagged package workflow completed and the release is not a draft." >&2
+        exit 1
+    fi
+
+    if ((${#release_data[@]} != 4)); then
+        echo "GitHub release metadata was incomplete; expected package and checksum assets." >&2
+        exit 1
+    fi
+
     tag=${release_data[0]}
     package_name=${release_data[1]}
     package_url=${release_data[2]}
