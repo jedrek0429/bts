@@ -14,7 +14,12 @@ sha256sums=()
 
 pkgver() {
   cd "$startdir"
-  git describe --tags --abbrev=7 | sed -e 's/^v//' -e 's/-\([0-9]\+\)-g/.r\1.g/'
+
+  if git describe --tags --abbrev=7 >/dev/null 2>&1; then
+    git describe --tags --abbrev=7 | sed -e 's/^v//' -e 's/-\([0-9]\+\)-g/.r\1.g/'
+  else
+    printf "0.0.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+  fi
 }
 
 build() {
