@@ -26,6 +26,15 @@ const ACCENT: Color32 = Color32::from_rgb(0xff, 0xb0, 0x00);
 const PAGE_MARGIN: f32 = 54.0;
 const STATUS_MARGIN: f32 = 26.0;
 
+const DISPLAY_LOG_TARGET: &str = "bts_display";
+const CABIN_FONT_PATHS: [&str; 5] = [
+    "/usr/share/fonts/TTF/impallari/Cabin-Regular.ttf",
+    "/usr/share/fonts/TTF/Cabin-Regular.ttf",
+    "/usr/share/fonts/cabin/Cabin-Regular.ttf",
+    "/usr/share/fonts/truetype/cabin/Cabin-Regular.ttf",
+    "/usr/local/share/fonts/Cabin-Regular.ttf",
+];
+
 fn main() -> anyhow::Result<()> {
     initialise_logging();
 
@@ -335,12 +344,13 @@ fn configure_fonts_and_style(context: &egui::Context) {
 fn configure_cabin_font(context: &egui::Context) {
     let Some((font_path, font_bytes)) = load_cabin_font() else {
         warn!(
-            "Cabin could not be found. Install the Cabin font package or set BTS_CABIN_FONT to a Cabin .ttf file"
+            target: DISPLAY_LOG_TARGET,
+            "Cabin could not be found; using the built-in fallback font. Install the Cabin font package or set BTS_CABIN_FONT to a Cabin .ttf file"
         );
         return;
     };
 
-    info!(path = %font_path.display(), "loaded Cabin font");
+    info!(target: DISPLAY_LOG_TARGET, path = %font_path.display(), "loaded Cabin font");
 
     let mut fonts = FontDefinitions::default();
     fonts
@@ -357,22 +367,27 @@ fn configure_cabin_font(context: &egui::Context) {
 }
 
 fn load_cabin_font() -> Option<(PathBuf, Vec<u8>)> {
-    let mut candidates = Vec::new();
+    load_cabin_font_from_root(
+        std::env::var_os("BTS_CABIN_FONT").map(PathBuf::from),
+        Path::new("/"),
+    )
+}
 
-    if let Ok(path) = std::env::var("BTS_CABIN_FONT") {
-        candidates.push(PathBuf::from(path));
-    }
+fn load_cabin_font_from_root(
+    explicit_override: Option<PathBuf>,
+    root: &Path,
+) -> Option<(PathBuf, Vec<u8>)> {
+    let mut candidates = explicit_override.into_iter().chain(
+        CABIN_FONT_PATHS
+            .iter()
+            .map(|path| rooted_path(root, Path::new(path))),
+    );
 
-    candidates.extend([
-        PathBuf::from("/usr/share/fonts/TTF/Cabin-Regular.ttf"),
-        PathBuf::from("/usr/share/fonts/cabin/Cabin-Regular.ttf"),
-        PathBuf::from("/usr/share/fonts/truetype/cabin/Cabin-Regular.ttf"),
-        PathBuf::from("/usr/local/share/fonts/Cabin-Regular.ttf"),
-    ]);
+    candidates.find_map(|path| read_font_file(&path).map(|bytes| (path, bytes)))
+}
 
-    candidates
-        .into_iter()
-        .find_map(|path| read_font_file(&path).map(|bytes| (path, bytes)))
+fn rooted_path(root: &Path, path: &Path) -> PathBuf {
+    root.join(path.strip_prefix("/").unwrap_or(path))
 }
 
 fn read_font_file(path: &Path) -> Option<Vec<u8>> {
@@ -499,4 +514,48 @@ fn initialise_logging() {
         .with_env_filter(filter)
         .compact()
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PACKAGED_CABIN_PATH: &str = "/usr/share/fonts/TTF/impallari/Cabin-Regular.ttf";
+    const LEGACY_CABIN_PATH: &str = "/usr/share/fonts/TTF/Cabin-Regular.ttf";
+
+    #[test]
+    fn packaged_cabin_path_is_selected_by_default() {
+        let root = tempfile::tempdir().unwrap();
+        let packaged = write_test_font(root.path(), PACKAGED_CABIN_PATH, b"packaged cabin");
+        write_test_font(root.path(), LEGACY_CABIN_PATH, b"legacy cabin");
+
+        let loaded = load_cabin_font_from_root(None, root.path()).unwrap();
+
+        assert_eq!(loaded, (packaged, b"packaged cabin".to_vec()));
+    }
+
+    #[test]
+    fn explicit_override_takes_precedence_over_packaged_font() {
+        let root = tempfile::tempdir().unwrap();
+        write_test_font(root.path(), PACKAGED_CABIN_PATH, b"packaged cabin");
+        let explicit = write_test_font(root.path(), "/custom/Cabin-Regular.ttf", b"custom cabin");
+
+        let loaded = load_cabin_font_from_root(Some(explicit.clone()), root.path()).unwrap();
+
+        assert_eq!(loaded, (explicit, b"custom cabin".to_vec()));
+    }
+
+    #[test]
+    fn missing_cabin_font_uses_fallback() {
+        let root = tempfile::tempdir().unwrap();
+
+        assert_eq!(load_cabin_font_from_root(None, root.path()), None);
+    }
+
+    fn write_test_font(root: &Path, path: &str, bytes: &[u8]) -> PathBuf {
+        let path = rooted_path(root, Path::new(path));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        path
+    }
 }
