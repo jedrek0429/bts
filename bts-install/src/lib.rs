@@ -16,6 +16,7 @@ pub mod system;
 pub const INSTALLER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_REPOSITORY: &str = "jedrek0429/bts";
 pub const DEFAULT_CHANNEL: &str = "stable";
+pub const LOCAL_RELEASE_CHANNEL: &str = "local";
 pub const COPYRIGHT: &str = "Copyright © 2026 BTS contributors";
 
 pub fn legal_notice() -> String {

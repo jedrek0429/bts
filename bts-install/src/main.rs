@@ -97,8 +97,6 @@ async fn run() -> Result<()> {
                 execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
                 next.selected_role = plan.role;
                 next.installed_components = plan.after.clone();
-                next.repository = cli.repository.clone();
-                next.release_channel = cli.channel.clone();
                 next.write_atomic(&state_path)?;
                 state = Some(next);
             }
@@ -274,6 +272,7 @@ async fn execute_plan(
         state.installer_version = INSTALLER_VERSION.into();
         state.platform = platform;
         state.architecture = architecture;
+        record_release_source(cli, state);
     }
     state
         .component_versions
@@ -292,6 +291,15 @@ fn release_client(cli: &Cli) -> Result<ReleaseClient> {
     )
 }
 
+fn record_release_source(cli: &Cli, state: &mut InstallerState) {
+    state.repository = cli.repository.clone();
+    state.release_channel = if cli.release_dir.is_some() {
+        bts_install::LOCAL_RELEASE_CHANNEL.into()
+    } else {
+        cli.channel.clone()
+    };
+}
+
 async fn install_component(
     cli: &Cli,
     system: &mut RealSystem,
@@ -300,6 +308,26 @@ async fn install_component(
     asset: &ComponentAsset,
     urls: &BTreeMap<String, String>,
 ) -> Result<()> {
+    let base = rooted(
+        &cli.root,
+        &format!("/usr/lib/bts/components/{component}/releases"),
+    );
+    fs::create_dir_all(&base)?;
+    let activation_id = activation_id(version, &asset.sha256);
+    let destination = base.join(&activation_id);
+    if destination.exists() {
+        ensure!(
+            destination.is_dir(),
+            "Preserved release path is not a directory."
+        );
+        validate_bundle_metadata(&destination, component, version)?;
+        install_bundle_integration(cli, component, &destination)?;
+        if cli.root == Path::new("/") {
+            systemctl(system, &cli.root, "daemon-reload", &[])?;
+        }
+        activation::activate(&cli.root, component, &activation_id)?;
+        return Ok(());
+    }
     if !cli.quiet {
         println!("Downloading and verifying {component}...");
     }
@@ -307,11 +335,6 @@ async fn install_component(
     let bytes = client
         .download_asset(urls, &asset.filename, &asset.sha256)
         .await?;
-    let base = rooted(
-        &cli.root,
-        &format!("/usr/lib/bts/components/{component}/releases"),
-    );
-    fs::create_dir_all(&base)?;
     let temporary = tempfile::Builder::new()
         .prefix(".stage-")
         .tempdir_in(&base)?;
@@ -323,12 +346,6 @@ async fn install_component(
         asset.filename
     );
     validate_bundle_metadata(&bundle, component, version)?;
-    let activation_id = activation_id(version, &asset.sha256);
-    let destination = base.join(&activation_id);
-    ensure!(
-        !destination.exists(),
-        "Release staging path already exists unexpectedly."
-    );
     fs::rename(&bundle, &destination)?;
     install_bundle_integration(cli, component, &destination)?;
     if cli.root == Path::new("/") {
@@ -346,8 +363,22 @@ async fn upgrade(
     architecture: bts_install::platform::Architecture,
 ) -> Result<()> {
     let (manifest, urls) = release_client(cli)?.fetch_manifest().await?;
-    let actions: Vec<_> = selected
-        .iter()
+    let mut pending = BTreeMap::new();
+    for component in selected {
+        let asset = manifest.select(*component, platform, architecture)?;
+        let activation_id = activation_id(&manifest.release_version, &asset.sha256);
+        let current = rooted(
+            &cli.root,
+            &format!("/usr/lib/bts/components/{component}/current"),
+        );
+        if fs::read_link(current).ok().as_deref()
+            != Some(Path::new("releases").join(&activation_id).as_path())
+        {
+            pending.insert(*component, activation_id);
+        }
+    }
+    let actions: Vec<_> = pending
+        .keys()
         .flat_map(|component| {
             [
                 Action::Download {
@@ -380,18 +411,8 @@ async fn upgrade(
     }
     let client = release_client(cli)?;
     let mut staged = Vec::new();
-    for component in selected {
+    for (component, activation_id) in &pending {
         let asset = manifest.select(*component, platform, architecture)?;
-        let activation_id = activation_id(&manifest.release_version, &asset.sha256);
-        let current = rooted(
-            &cli.root,
-            &format!("/usr/lib/bts/components/{component}/current"),
-        );
-        if fs::read_link(&current).ok().as_deref()
-            == Some(Path::new("releases").join(&activation_id).as_path())
-        {
-            continue;
-        }
         let bytes = client
             .download_asset(&urls, &asset.filename, &asset.sha256)
             .await?;
@@ -406,13 +427,13 @@ async fn upgrade(
         extract_tar_zst(Cursor::new(bytes), temporary.path())?;
         let bundle = temporary.path().join(component.binary());
         validate_bundle_metadata(&bundle, *component, &manifest.release_version)?;
-        let destination = base.join(&activation_id);
+        let destination = base.join(activation_id);
         if destination.exists() {
             fs::remove_dir_all(&destination)?;
         }
         fs::rename(bundle, &destination)?;
         install_bundle_integration(cli, *component, &destination)?;
-        staged.push((*component, activation_id));
+        staged.push((*component, activation_id.clone()));
     }
 
     let mut system = RealSystem;
@@ -474,7 +495,10 @@ async fn upgrade(
             .insert(*component, state.installed_version.clone());
     }
     state.installer_version = INSTALLER_VERSION.into();
-    state.updated_at = Some(timestamp());
+    record_release_source(cli, state);
+    if !pending.is_empty() {
+        state.updated_at = Some(timestamp());
+    }
     Ok(())
 }
 
@@ -846,38 +870,48 @@ async fn extend_remote_diagnostics(
     report: &mut diagnostics::DoctorReport,
 ) {
     let Some(state) = state else { return };
-    match ReleaseClient::new(
-        state.repository.clone(),
-        state.release_channel.clone(),
-        None,
-    ) {
-        Ok(client) => match client.fetch_manifest().await {
-            Ok((manifest, _)) => report.diagnostics.push(diagnostics::Diagnostic {
-                component: None,
-                severity: diagnostics::Severity::Ok,
-                message: format!(
-                    "Release manifest {} is compatible.",
-                    manifest.release_version
-                ),
-                suggested_action: None,
-            }),
+    if state.release_channel == bts_install::LOCAL_RELEASE_CHANNEL {
+        report.diagnostics.push(diagnostics::Diagnostic {
+            component: None,
+            severity: diagnostics::Severity::Ok,
+            message: "Installed from a verified local release; online availability check skipped."
+                .into(),
+            suggested_action: None,
+        });
+    } else {
+        match ReleaseClient::new(
+            state.repository.clone(),
+            state.release_channel.clone(),
+            None,
+        ) {
+            Ok(client) => match client.fetch_manifest().await {
+                Ok((manifest, _)) => report.diagnostics.push(diagnostics::Diagnostic {
+                    component: None,
+                    severity: diagnostics::Severity::Ok,
+                    message: format!(
+                        "Release manifest {} is compatible.",
+                        manifest.release_version
+                    ),
+                    suggested_action: None,
+                }),
+                Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+                    component: None,
+                    severity: diagnostics::Severity::Warning,
+                    message: format!("Release manifest could not be checked: {error}"),
+                    suggested_action: Some(
+                        "Check network access and the configured release repository.".into(),
+                    ),
+                }),
+            },
             Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
                 component: None,
-                severity: diagnostics::Severity::Warning,
-                message: format!("Release manifest could not be checked: {error}"),
+                severity: diagnostics::Severity::Error,
+                message: format!("Release client configuration is invalid: {error}"),
                 suggested_action: Some(
-                    "Check network access and the configured release repository.".into(),
+                    "Re-run installation with a valid --repository and --channel.".into(),
                 ),
             }),
-        },
-        Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
-            component: None,
-            severity: diagnostics::Severity::Error,
-            message: format!("Release client configuration is invalid: {error}"),
-            suggested_action: Some(
-                "Re-run installation with a valid --repository and --channel.".into(),
-            ),
-        }),
+        }
     }
 
     if state.installed_components.contains(&Component::Display) {
