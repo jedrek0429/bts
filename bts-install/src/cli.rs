@@ -105,6 +105,8 @@ impl Cli {
         }
         let mut repository = DEFAULT_REPOSITORY.to_owned();
         let mut channel = DEFAULT_CHANNEL.to_owned();
+        let mut repository_selected = false;
+        let mut channel_selected = false;
         let mut release_dir = None;
         let mut root = PathBuf::from("/");
         let mut yes = false;
@@ -132,8 +134,14 @@ impl Cli {
             match arg.as_str() {
                 "-h" | "--help" => return Ok(Self::simple(Command::Help)),
                 "-V" | "--version" => return Ok(Self::simple(Command::Version)),
-                "--repository" => repository = take_value("--repository")?,
-                "--channel" => channel = take_value("--channel")?,
+                "--repository" => {
+                    repository = take_value("--repository")?;
+                    repository_selected = true;
+                }
+                "--channel" => {
+                    channel = take_value("--channel")?;
+                    channel_selected = true;
+                }
                 "--release-dir" => release_dir = Some(PathBuf::from(take_value("--release-dir")?)),
                 "--root" => root = PathBuf::from(take_value("--root")?),
                 "--yes" => yes = true,
@@ -207,6 +215,9 @@ impl Cli {
             )
         {
             bail!("--release-dir is only valid for install, add and upgrade.");
+        }
+        if release_dir.is_some() && (repository_selected || channel_selected) {
+            bail!("--release-dir cannot be combined with --repository or --channel.");
         }
         validate_options(
             &command,
@@ -468,5 +479,17 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.release_dir, Some("/tmp/bts-release".into()));
         assert!(parse(&["bts-install", "status", "--release-dir", "/tmp/bts-release"]).is_err());
+        assert!(
+            parse(&[
+                "bts-install",
+                "install",
+                "display",
+                "--release-dir",
+                "/tmp/bts-release",
+                "--channel",
+                "v0.4.0-dev.1",
+            ])
+            .is_err()
+        );
     }
 }
