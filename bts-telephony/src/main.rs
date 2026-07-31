@@ -2,7 +2,8 @@ use anyhow::Context;
 use asterisk_ari::{AriClient, Config, apis::channels};
 use std::{collections::HashMap, sync::Arc};
 
-use bts_protocol::{ActionRequest, AddonManifest, EventKind, NewEvent};
+use bts_protocol::addons::v1::{ActionId, ActionRequest, AddonManifest};
+use bts_protocol::{EventKind, NewEvent};
 use reqwest::Client;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -240,9 +241,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn load_menu(
-    core_url: &str,
-) -> anyhow::Result<(String, HashMap<String, bts_protocol::ActionId>)> {
+async fn load_menu(core_url: &str) -> anyhow::Result<(String, HashMap<String, ActionId>)> {
     let endpoint = format!("{}/api/v1/addons", core_url.trim_end_matches('/'));
     let manifests = Client::new()
         .get(endpoint)
@@ -262,7 +261,7 @@ async fn load_menu(
     Ok(menu)
 }
 
-fn build_menu(manifests: Vec<AddonManifest>) -> (String, HashMap<String, bts_protocol::ActionId>) {
+fn build_menu(manifests: Vec<AddonManifest>) -> (String, HashMap<String, ActionId>) {
     let mut entries: Vec<_> = manifests
         .into_iter()
         .flat_map(|manifest| manifest.menu)
@@ -290,11 +289,11 @@ fn initialise_logging() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::{ADDON_API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
+    use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
 
     fn manifest(id: &str, digit: char, order: u16, prompt: &str) -> AddonManifest {
         AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new(id),
             name: id.into(),
             version: AddonVersion::new(1, 0, 0),

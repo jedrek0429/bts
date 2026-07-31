@@ -2,8 +2,9 @@ pub(crate) mod clock;
 pub(crate) mod message;
 pub(crate) mod weather;
 
-use bts_addons::{Addon, AddonContext, AddonFailure, AddonRegistry};
-use bts_protocol::{AddonId, Event, EventKind};
+use bts_addons::{AddonFailure, AddonRegistry, HttpAddonContext};
+use bts_protocol::addons::v1::{Addon, AddonId};
+use bts_protocol::{Event, EventKind};
 use std::path::PathBuf;
 
 pub(crate) struct Addons {
@@ -25,8 +26,8 @@ impl Addons {
             data_root,
         })
     }
-    fn context(&self, id: &AddonId) -> AddonContext {
-        AddonContext::new(&self.core_url, id.clone(), &self.data_root)
+    fn context(&self, id: &AddonId) -> HttpAddonContext {
+        HttpAddonContext::new(&self.core_url, id.clone(), &self.data_root)
     }
     pub(crate) async fn start(&self) -> Vec<AddonFailure> {
         let mut failures = Vec::new();
@@ -105,8 +106,9 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;
-    use bts_protocol::{
-        ADDON_API_VERSION, ActionId, ActionRegistration, ActionRequest, AddonManifest, AddonVersion,
+    use bts_protocol::addons::v1::{
+        API_VERSION, ActionId, ActionRegistration, ActionRequest, AddonContext, AddonManifest,
+        AddonVersion,
     };
     use std::sync::{
         Arc,
@@ -122,7 +124,7 @@ mod tests {
         fn manifest(&self) -> AddonManifest {
             self.manifest.clone()
         }
-        async fn handle_event(&self, _: &AddonContext, _: &Event) -> Result<()> {
+        async fn handle_event(&self, _: &dyn AddonContext, _: &Event) -> Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fails {
                 anyhow::bail!("failure")
@@ -133,7 +135,7 @@ mod tests {
     fn addon(id: &str, action: &str, calls: Arc<AtomicUsize>, fails: bool) -> Box<dyn Addon> {
         Box::new(TestAddon {
             manifest: AddonManifest {
-                api_version: ADDON_API_VERSION,
+                api_version: API_VERSION,
                 id: AddonId::new(id),
                 name: id.into(),
                 version: AddonVersion::new(1, 0, 0),

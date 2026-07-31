@@ -4,9 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{
-    ActionRequest, AddonManifest, BtsState, DisplayCommand, VoiceInputRequest, VoiceInputResult,
-};
+use crate::addons::v1::{ActionRequest, AddonId, AddonManifest};
+use crate::{BtsState, DisplayCommand, VoiceInputRequest, VoiceInputResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -45,7 +44,7 @@ pub enum EventKind {
         manifest: AddonManifest,
     },
     AddonStopped {
-        addon_id: crate::AddonId,
+        addon_id: AddonId,
     },
     ActionRequested {
         request: ActionRequest,

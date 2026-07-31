@@ -1,10 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use bts_addons::{Addon, AddonContext};
-use bts_protocol::{
-    ADDON_API_VERSION, ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest,
-    AddonVersion, DisplayState, Event, EventKind, MenuEntry, ScreenKind,
+use bts_protocol::addons::v1::{
+    API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
+    AddonManifest, AddonVersion, MenuEntry,
 };
+use bts_protocol::{DisplayState, Event, EventKind, ScreenKind};
 
 pub(crate) const ID: &str = "message";
 pub(crate) const SHOW: &str = "message.show";
@@ -15,7 +15,7 @@ pub(crate) struct MessageAddon;
 impl Addon for MessageAddon {
     fn manifest(&self) -> AddonManifest {
         AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new(ID),
             name: "Message Service".into(),
             version: AddonVersion::new(1, 0, 0),
@@ -39,7 +39,7 @@ impl Addon for MessageAddon {
             screens: vec![ScreenKind::Message, ScreenKind::Blank],
         }
     }
-    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
+    async fn handle_event(&self, context: &dyn AddonContext, event: &Event) -> Result<()> {
         let EventKind::ActionRequested { request } = &event.kind else {
             return Ok(());
         };

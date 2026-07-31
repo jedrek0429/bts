@@ -16,9 +16,10 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, post},
 };
+use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::{
-    ADDON_API_VERSION, ActionId, AddonId, AddonManifest, AssetId, AssetRef, AssetUpload, BtsState,
-    DisplayCommand, Event, EventKind, NewEvent, ServerMessage,
+    AssetId, AssetRef, AssetUpload, BtsState, DisplayCommand, Event, EventKind, NewEvent,
+    ServerMessage,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, broadcast};
@@ -128,10 +129,7 @@ async fn upload_asset(
         StatusCode::UNPROCESSABLE_ENTITY,
         format!("addon {} is not registered", upload.addon_id),
     ))?;
-    if !manifest
-        .capabilities
-        .contains(&bts_protocol::AddonCapability::Assets)
-    {
+    if !manifest.capabilities.contains(&AddonCapability::Assets) {
         return Err((
             StatusCode::FORBIDDEN,
             format!("addon {} did not declare asset access", upload.addon_id),
@@ -376,9 +374,7 @@ impl AddonRegistry {
             format!("addon {addon_id} is not registered"),
         ))?;
         if let Some(display) = display
-            && (!manifest
-                .capabilities
-                .contains(&bts_protocol::AddonCapability::Display)
+            && (!manifest.capabilities.contains(&AddonCapability::Display)
                 || !manifest.screens.contains(&display.kind()))
         {
             return Err((
@@ -394,7 +390,7 @@ impl AddonRegistry {
 }
 
 fn validate_manifest(manifest: &AddonManifest) -> Result<(), (StatusCode, String)> {
-    if manifest.api_version != ADDON_API_VERSION {
+    if manifest.api_version != API_VERSION {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported addon API version".to_owned(),
@@ -550,14 +546,14 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::{
-        ActionRegistration, AddonCapability, AddonVersion, DisplayLease, DisplayLeaseId,
-        DisplayState, MenuEntry, ScreenKind,
+    use bts_protocol::addons::v1::{
+        API_VERSION, ActionRegistration, AddonCapability, AddonVersion, MenuEntry,
     };
+    use bts_protocol::{DisplayLease, DisplayLeaseId, DisplayState, ScreenKind};
 
     fn manifest(id: &str, action: &str, digit: char) -> AddonManifest {
         AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new(id),
             name: id.to_owned(),
             version: AddonVersion::new(1, 0, 0),

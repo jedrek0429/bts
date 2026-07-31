@@ -1,6 +1,6 @@
 //! Core-managed binary asset references.
 
-use crate::AddonId;
+use crate::addons::v1::AddonId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

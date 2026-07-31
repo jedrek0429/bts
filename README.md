@@ -2,6 +2,8 @@
 
 BTS is a phone-controlled home information system written in Rust. Asterisk handles calls, BTS routes telephone events through a central service, and independent addons update a dedicated graphical display.
 
+Every component is independently deployable. Components communicate only through the versioned `bts-protocol` contracts via `bts-core`; endpoint environment variables allow any service or third-party addon to run on another host without code changes.
+
 The processes communicate over HTTP and WebSockets:
 
 * `bts-core` retains display state and distributes events.
@@ -14,7 +16,7 @@ Addon authors should start with the [Addon API v1 author guide](docs/addon-api-v
 
 ## Deployment on Arch Linux
 
-The package installs the release binaries, systemd units, Cage kiosk session and a persistent configuration file. On boot, `bts-display` takes ownership of `tty1` through Cage and renders directly to the connected DRM display, while Core, Addons and Telephony run as isolated system services.
+The package installs the release binaries, systemd units, Cage kiosk session and a persistent configuration file. On an all-in-one installation, `bts-display` takes ownership of `tty1` through Cage and renders directly to the connected DRM display, while Core, Addons and Telephony run as isolated system services. Individual units have no local BTS service dependency and may instead point at Core on another host.
 
 Install or update to the latest tagged release:
 

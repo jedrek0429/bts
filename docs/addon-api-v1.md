@@ -1,12 +1,14 @@
 # Addon API v1 author guide
 
-Addon API v1 is the internal contract for statically linked BTS services. An addon implements `bts_addons::Addon`, declares everything it may do in one `bts_protocol::AddonManifest`, and communicates only with `bts-core` through `AddonContext`. It must not import or contact `bts-display`, `bts-telephony`, Asterisk, egui or another addon's internals.
+Addon API v1 is the published BTS network contract at `bts_protocol::addons::v1`. An addon implements `Addon`, declares everything it may do in one `AddonManifest`, and communicates only with `bts-core` through the transport-neutral `AddonContext` interface. It must not depend on `bts-addons`, import or contact `bts-display` or `bts-telephony`, use Asterisk or egui APIs, or access another component's filesystem.
+
+`bts-addons` is one host implementation for the built-in addons. It does not own the API. A third-party host may implement `AddonContext` over the published Core HTTP and WebSocket endpoints and can run on any machine that can reach Core.
 
 ## Protocol boundaries
 
 The shared protocol is split by responsibility:
 
-- `bts_protocol::addons` contains addon IDs, manifests, generic action IDs, menu entries and capabilities.
+- `bts_protocol::addons::v1` contains the complete versioned addon contract: traits, IDs, manifests, generic actions, menu entries and capabilities.
 - `bts_protocol::display` contains declarative screens and opaque display leases.
 - `bts_protocol::telephony` contains generic voice-input request and result types.
 - `bts_protocol::events` contains event envelopes and the Core event stream.
@@ -27,11 +29,12 @@ Every addon returns one manifest from `Addon::manifest`. IDs and action IDs must
 ```rust
 use anyhow::Result;
 use async_trait::async_trait;
-use bts_addons::{Addon, AddonContext};
+use bts_protocol::addons::v1::{
+    API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability,
+    AddonContext, AddonId, AddonManifest, AddonVersion, MenuEntry,
+};
 use bts_protocol::{
-    ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest,
-    AddonVersion, DisplayState, Event, EventKind, MenuEntry, ScreenKind,
-    ADDON_API_VERSION,
+    DisplayState, Event, EventKind, ScreenKind,
 };
 
 struct NoticeAddon;
@@ -40,7 +43,7 @@ struct NoticeAddon;
 impl Addon for NoticeAddon {
     fn manifest(&self) -> AddonManifest {
         AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new("example-notice"),
             name: "Notice Service".into(),
             version: AddonVersion::new(1, 0, 0),
@@ -59,7 +62,7 @@ impl Addon for NoticeAddon {
         }
     }
 
-    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
+    async fn handle_event(&self, context: &dyn AddonContext, event: &Event) -> Result<()> {
         let EventKind::ActionRequested { request } = &event.kind else {
             return Ok(());
         };
@@ -77,7 +80,7 @@ impl Addon for NoticeAddon {
 }
 ```
 
-Add the implementation to the vector passed to `AddonRegistry::new`. Registration and dispatch after that point are generic; do not add a branch to the host.
+An in-process host such as `bts-addons` registers the implementation with its generic registry. A separately deployed addon host performs the equivalent registration and event dispatch over Core's published endpoints. Neither approach requires an addon-specific branch in Core, Display or Telephony.
 
 ## Actions and telephone menus
 
@@ -91,7 +94,7 @@ Display data is declarative. If an existing `DisplayState` variant is sufficient
 
 ## Configuration, data and lifecycle
 
-Configuration is read through `AddonContext::configuration`. Environment variables use `BTS_ADDON_<ID>_<KEY>`, with hyphens converted to underscores and the name upper-cased. `data_directory` returns the addon's isolated path under `BTS_ADDON_DATA_ROOT`; addons create only the files they own there.
+Configuration and persistent storage are host responsibilities, because local paths cannot be meaningful across machines. The built-in host supplies environment configuration using `BTS_ADDON_<ID>_<KEY>` and isolated local storage under `BTS_ADDON_DATA_ROOT`; these are `bts-addons` conveniences, not Addon API network guarantees. Portable addons receive configuration from their own deployment environment and exchange shared data only through published Core services such as assets.
 
 Use `start` to initialise resources, `handle_event` for requests and `stop` to cancel tasks. The host attributes errors to the manifest ID and continues invoking unrelated addons. Background display updates should stop when Core rejects the lease as stale.
 

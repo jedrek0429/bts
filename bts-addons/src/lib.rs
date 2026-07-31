@@ -8,14 +8,17 @@ use std::{
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use bts_protocol::addons::v1::{
+    API_VERSION, ActionId, ActionRequest, Addon, AddonContext, AddonId, AddonManifest,
+};
 use bts_protocol::{
-    ActionId, ActionRequest, AddonId, AddonManifest, AssetRef, AssetUpload, BtsState,
-    DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState, Event, EventKind, NewEvent,
+    AssetRef, AssetUpload, BtsState, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
+    EventKind, NewEvent,
 };
 use reqwest::Client;
 
 #[derive(Clone)]
-pub struct AddonContext {
+pub struct HttpAddonContext {
     http: Client,
     core_http_url: String,
     addon_id: AddonId,
@@ -23,7 +26,7 @@ pub struct AddonContext {
     data_directory: PathBuf,
 }
 
-impl AddonContext {
+impl HttpAddonContext {
     pub fn new(core_http_url: impl Into<String>, addon_id: AddonId, data_root: &Path) -> Self {
         let prefix = format!(
             "BTS_ADDON_{}_",
@@ -161,14 +164,36 @@ impl AddonContext {
 }
 
 #[async_trait]
-pub trait Addon: Send + Sync {
-    fn manifest(&self) -> AddonManifest;
-    async fn start(&self, _context: &AddonContext) -> Result<()> {
-        Ok(())
+impl AddonContext for HttpAddonContext {
+    fn clone_box(&self) -> Box<dyn AddonContext> {
+        Box::new(self.clone())
     }
-    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()>;
-    async fn stop(&self, _context: &AddonContext) -> Result<()> {
-        Ok(())
+    fn addon_id(&self) -> &AddonId {
+        HttpAddonContext::addon_id(self)
+    }
+    async fn publish(&self, kind: EventKind) -> Result<()> {
+        HttpAddonContext::publish(self, kind).await
+    }
+    async fn state(&self) -> Result<BtsState> {
+        HttpAddonContext::state(self).await
+    }
+    async fn request_action(&self, action: ActionId, parameters: serde_json::Value) -> Result<()> {
+        HttpAddonContext::request_action(self, action, parameters).await
+    }
+    async fn show(&self, display: DisplayState, priority: u8) -> Result<DisplayLeaseId> {
+        HttpAddonContext::show(self, display, priority).await
+    }
+    async fn update(&self, lease_id: DisplayLeaseId, display: DisplayState) -> Result<()> {
+        HttpAddonContext::update(self, lease_id, display).await
+    }
+    async fn release(&self, lease_id: DisplayLeaseId) -> Result<()> {
+        HttpAddonContext::release(self, lease_id).await
+    }
+    async fn release_all(&self) -> Result<()> {
+        HttpAddonContext::release_all(self).await
+    }
+    async fn upload_asset(&self, content_type: String, bytes: Vec<u8>) -> Result<AssetRef> {
+        HttpAddonContext::upload_asset(self, content_type, bytes).await
     }
 }
 
@@ -212,7 +237,7 @@ impl AddonRegistry {
     fn register(&mut self, addon: Box<dyn Addon>) -> Result<()> {
         let manifest = addon.manifest();
         anyhow::ensure!(
-            manifest.api_version == bts_protocol::ADDON_API_VERSION,
+            manifest.api_version == API_VERSION,
             "unsupported addon API version for {}",
             manifest.id
         );
@@ -283,7 +308,8 @@ impl AddonRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::{ADDON_API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
+    use bts_protocol::Event;
+    use bts_protocol::addons::v1::{API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
 
     struct Stub(AddonManifest);
     #[async_trait]
@@ -291,13 +317,13 @@ mod tests {
         fn manifest(&self) -> AddonManifest {
             self.0.clone()
         }
-        async fn handle_event(&self, _: &AddonContext, _: &Event) -> Result<()> {
+        async fn handle_event(&self, _: &dyn AddonContext, _: &Event) -> Result<()> {
             Ok(())
         }
     }
     fn stub(id: &str, action: &str, digit: char) -> Box<dyn Addon> {
         Box::new(Stub(AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new(id),
             name: id.into(),
             version: AddonVersion::new(1, 0, 0),

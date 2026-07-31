@@ -1,10 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use bts_addons::{Addon, AddonContext};
-use bts_protocol::{
-    ADDON_API_VERSION, ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest,
-    AddonVersion, DisplayLeaseId, DisplayState, Event, EventKind, MenuEntry, ScreenKind,
+use bts_protocol::addons::v1::{
+    API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
+    AddonManifest, AddonVersion, MenuEntry,
 };
+use bts_protocol::{DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
 use chrono::Local;
 use std::time::Duration;
 use tokio::{
@@ -33,7 +33,7 @@ impl ClockAddon {
 impl Addon for ClockAddon {
     fn manifest(&self) -> AddonManifest {
         AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new(ID),
             name: "Clock Service".into(),
             version: AddonVersion::new(1, 0, 0),
@@ -52,7 +52,7 @@ impl Addon for ClockAddon {
         }
     }
 
-    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
+    async fn handle_event(&self, context: &dyn AddonContext, event: &Event) -> Result<()> {
         let EventKind::ActionRequested { request } = &event.kind else {
             return Ok(());
         };
@@ -62,7 +62,7 @@ impl Addon for ClockAddon {
         self.stop(context).await?;
         let lease = context.show(clock_state(), 10).await?;
         *self.lease.lock().await = Some(lease);
-        let context = context.clone();
+        let context = context.clone_box();
         let task = tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(1));
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -78,7 +78,7 @@ impl Addon for ClockAddon {
         Ok(())
     }
 
-    async fn stop(&self, context: &AddonContext) -> Result<()> {
+    async fn stop(&self, context: &dyn AddonContext) -> Result<()> {
         if let Some(task) = self.task.lock().await.take() {
             task.abort();
         }
