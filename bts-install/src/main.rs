@@ -164,14 +164,7 @@ async fn run() -> Result<()> {
                 let mut next = current.clone();
                 execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
                 next.installed_components = plan.after.clone();
-                if next.installed_components.is_empty() {
-                    fs::remove_file(&state_path).ok();
-                    if cli.purge {
-                        fs::remove_file(rooted(&cli.root, "/etc/bts/bts.env")).ok();
-                    }
-                } else {
-                    next.write_atomic(&state_path)?;
-                }
+                persist_uninstall_state(&cli, &state_path, &mut state, next)?;
             }
         }
         _ => unreachable!(),
@@ -975,7 +968,7 @@ fn read_component_configuration(
 
 fn prepare_display_host(
     cli: &Cli,
-    system: &mut RealSystem,
+    system: &mut impl SystemAdapter,
     state: &mut InstallerState,
 ) -> Result<()> {
     if !cli.yes && !cli.dry_run && interactive(cli) {
@@ -1000,17 +993,27 @@ fn prepare_display_host(
             )?;
         }
         systemctl(system, &cli.root, "enable", &["seatd.service"])?;
-        systemctl(system, &cli.root, "disable", &["getty@tty1.service"])?;
+        systemctl(
+            system,
+            &cli.root,
+            "disable",
+            &["--now", "getty@tty1.service"],
+        )?;
         systemctl(system, &cli.root, "mask", &["getty@tty1.service"])?;
     }
     state.tty1_managed = true;
     Ok(())
 }
 
-fn restore_tty1(cli: &Cli, system: &mut RealSystem) -> Result<()> {
+fn restore_tty1(cli: &Cli, system: &mut impl SystemAdapter) -> Result<()> {
     if cli.root == Path::new("/") {
         systemctl(system, &cli.root, "unmask", &["getty@tty1.service"])?;
-        systemctl(system, &cli.root, "enable", &["getty@tty1.service"])?;
+        systemctl(
+            system,
+            &cli.root,
+            "enable",
+            &["--now", "getty@tty1.service"],
+        )?;
     }
     Ok(())
 }
@@ -1032,6 +1035,25 @@ fn remove_component(cli: &Cli, component: Component, purge: bool) -> Result<()> 
             &format!("/etc/bts/{}", component.config_name()),
         ))
         .ok();
+    }
+    Ok(())
+}
+
+fn persist_uninstall_state(
+    cli: &Cli,
+    state_path: &Path,
+    state: &mut Option<InstallerState>,
+    next: InstallerState,
+) -> Result<()> {
+    if next.installed_components.is_empty() {
+        fs::remove_file(state_path).ok();
+        if cli.purge {
+            fs::remove_file(rooted(&cli.root, "/etc/bts/bts.env")).ok();
+        }
+        *state = None;
+    } else {
+        next.write_atomic(state_path)?;
+        *state = Some(next);
     }
     Ok(())
 }
@@ -1281,7 +1303,7 @@ fn join_components(values: &BTreeSet<Component>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_install::platform::Architecture;
+    use bts_install::{platform::Architecture, system::RecordingSystem};
 
     #[test]
     fn upgrade_defaults_to_installed_and_rejects_others() {
@@ -1318,5 +1340,60 @@ mod tests {
         let contents = fs::read_to_string(root.path().join("etc/bts/display.env")).unwrap();
         assert!(contents.contains("ws://127.0.0.1:3100/api/v1/events/ws"));
         assert!(contents.contains("BTS_CAGE_ARGS=\"-m last\""));
+    }
+
+    #[test]
+    fn tty1_is_stopped_on_takeover_and_started_on_restore() {
+        let mut cli = Cli::parse(["bts-install", "status"]).unwrap();
+        cli.yes = true;
+        let mut system = RecordingSystem::default();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+
+        prepare_display_host(&cli, &mut system, &mut state).unwrap();
+        assert!(system.commands.contains(&(
+            "systemctl".into(),
+            vec![
+                "disable".into(),
+                "--now".into(),
+                "getty@tty1.service".into()
+            ]
+        )));
+
+        restore_tty1(&cli, &mut system).unwrap();
+        assert!(system.commands.contains(&(
+            "systemctl".into(),
+            vec!["enable".into(), "--now".into(), "getty@tty1.service".into()]
+        )));
+    }
+
+    #[test]
+    fn uninstall_updates_in_memory_state() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cli = Cli::parse(["bts-install", "status"]).unwrap();
+        cli.root = root.path().into();
+        let state_path = root.path().join("var/lib/bts-install/state.json");
+        let installed = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        let mut state = Some(installed);
+
+        persist_uninstall_state(
+            &cli,
+            &state_path,
+            &mut state,
+            InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64),
+        )
+        .unwrap();
+
+        assert!(state.is_none());
+
+        let mut remaining = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        remaining.installed_components.insert(Component::Core);
+        persist_uninstall_state(&cli, &state_path, &mut state, remaining).unwrap();
+
+        assert!(
+            state
+                .as_ref()
+                .is_some_and(|value| value.installed_components.contains(&Component::Core))
+        );
+        assert!(state_path.exists());
     }
 }
