@@ -1,0 +1,10 @@
+[Unit]
+Description=Bansleben Telephone Services display role
+Documentation=https://github.com/jedrek0429/bts
+Wants=bts-display.service network-online.target
+Requires=seatd.service
+After=network-online.target seatd.service
+AllowIsolate=yes
+
+[Install]
+WantedBy=multi-user.target

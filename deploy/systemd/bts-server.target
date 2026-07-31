@@ -1,7 +1,7 @@
 [Unit]
-Description=Bansleben Telephone Services
+Description=Bansleben Telephone Services server role
 Documentation=https://github.com/jedrek0429/bts
-Wants=bts-core.service bts-addons.service bts-telephony.service bts-display.service
+Wants=bts-core.service bts-addons.service bts-telephony.service
 After=network-online.target
 AllowIsolate=yes
 

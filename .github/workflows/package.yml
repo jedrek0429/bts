@@ -1,98 +1,90 @@
-name: Package
+name: Portable release
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*'
+      - 'v0.3.*'
 
 permissions:
   contents: write
 
 jobs:
-  arch-package:
+  linux-x86_64:
     runs-on: ubuntu-latest
-    container: archlinux:base-devel
     steps:
-      - name: Install build tools
-        run: pacman -Syu --noconfirm git rust sudo
-      - name: Create build user
-        run: |
-          useradd -m builder
-          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Build package
-        run: |
-          chown -R builder:builder "$GITHUB_WORKSPACE"
-          sudo -u builder makepkg --nodeps --noconfirm --clean
-      - name: Name package
-        run: |
-          package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print -quit)
-          test -n "$package"
-          release_package="bts-${GITHUB_REF_NAME}-x86_64.pkg.tar.zst"
-          mv "$package" "$release_package"
-          sha256sum "$release_package" > "${release_package}.sha256"
-          printf 'RELEASE_PACKAGE=%s\n' "$release_package" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bts-arch-package
-          path: |
-            ${{ env.RELEASE_PACKAGE }}
-            ${{ env.RELEASE_PACKAGE }}.sha256
-          if-no-files-found: error
-
-  arm64-display:
-    runs-on: ubuntu-22.04-arm
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install native dependencies
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build and bundle dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            pkg-config \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libegl1-mesa-dev \
-            libgl1-mesa-dev \
-            libudev-dev \
-            libfontconfig1-dev
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Build display
-        run: cargo build --locked --release -p bts-display
-      - name: Package display
+            pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
+      - name: Build installer and components
+        run: cargo build --locked --release --workspace
+      - name: Build portable assets
         run: |
-          strip target/release/bts-display
-          install -Dm755 target/release/bts-display package/bts-display
-          archive="bts-display-${GITHUB_REF_NAME}-linux-aarch64.tar.gz"
-          tar -C package -czf "$archive" bts-display
-          sha256sum "$archive" > "${archive}.sha256"
-          printf 'DISPLAY_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+          version=${GITHUB_REF_NAME#v}
+          assets="$RUNNER_TEMP/release-assets"
+          install -d "$assets"
+          for component in core display telephony addons; do
+            scripts/build-component-bundle \
+              "$component" "$version" x86_64 "target/release/bts-$component" "$assets"
+          done
+          install -m755 target/release/bts-install "$assets/bts-install"
+          install -m644 LICENSE "$assets/LICENSE"
+          printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
-          name: bts-display-arm64
-          path: |
-            ${{ env.DISPLAY_ARCHIVE }}
-            ${{ env.DISPLAY_ARCHIVE }}.sha256
+          name: bts-linux-x86_64
+          path: ${{ env.ASSET_DIRECTORY }}
+          if-no-files-found: error
+
+  linux-aarch64-display:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build and bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
+      - name: Build ARM64 Display
+        run: cargo build --locked --release -p bts-display
+      - name: Build ARM64 Display bundle
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          assets="$RUNNER_TEMP/release-assets"
+          scripts/build-component-bundle \
+            display "$version" aarch64 target/release/bts-display "$assets"
+          printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bts-linux-aarch64-display
+          path: ${{ env.ASSET_DIRECTORY }}
           if-no-files-found: error
 
   publish-release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs:
-      - arch-package
-      - arm64-display
+    if: startsWith(github.ref, 'refs/tags/v0.3.')
+    needs: [linux-x86_64, linux-aarch64-display]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Download release artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
+      - name: Generate and validate final manifest and checksums
+        run: |
+          scripts/generate-release-manifest.py "${GITHUB_REF_NAME#v}" release-assets
+          (cd release-assets && sha256sum --check SHA256SUMS)
       - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}

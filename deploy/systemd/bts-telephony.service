@@ -9,8 +9,9 @@ Type=simple
 User=bts
 Group=bts
 EnvironmentFile=-/etc/bts/bts.env
-ExecCondition=/usr/bin/sh -c '[ -f /etc/bts/bts.env ] && grep -Eq "^BTS_ARI_PASSWORD=[^[:space:]]+$" /etc/bts/bts.env && ! grep -Eq "^BTS_ARI_PASSWORD=CHANGE_ME$" /etc/bts/bts.env'
-ExecStart=/usr/bin/bts-telephony
+EnvironmentFile=-/etc/bts/telephony.env
+ExecCondition=/usr/bin/sh -c '[ -f /etc/bts/telephony.env ] && grep -Eq "^BTS_ARI_PASSWORD=[^[:space:]]+$" /etc/bts/telephony.env && ! grep -Eq "^BTS_ARI_PASSWORD=CHANGE_ME$" /etc/bts/telephony.env'
+ExecStart=/usr/lib/bts/components/telephony/current/bin/bts-telephony
 Restart=on-failure
 RestartSec=3s
 NoNewPrivileges=yes
@@ -25,4 +26,4 @@ LockPersonality=yes
 SystemCallArchitectures=native
 
 [Install]
-WantedBy=bts.target
+WantedBy=multi-user.target bts.target bts-server.target
