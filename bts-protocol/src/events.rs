@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::addons::v1::{ActionRequest, AddonId, AddonManifest};
 use crate::{
-    BtsState, DisplayCommand, GroupId, GroupName, PresentationId, PresentationRequest,
-    TerminalCapabilities, TerminalId, TerminalName, TerminalTag, TerminalTarget, VoiceInputRequest,
-    VoiceInputResult,
+    BtsState, DisplayCommand, GroupId, GroupName, PresentationDeliveryResult, PresentationId,
+    PresentationRequest, TerminalCapabilities, TerminalId, TerminalName, TerminalTag,
+    TerminalTarget, VoiceInputRequest, VoiceInputResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +109,9 @@ pub enum EventKind {
     TerminalGroupChanged {
         group_id: GroupId,
         change: TerminalGroupChange,
+    },
+    PresentationDeliveryCompleted {
+        result: PresentationDeliveryResult,
     },
     PhoneCallStarted {
         channel_id: String,
