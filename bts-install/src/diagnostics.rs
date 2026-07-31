@@ -273,11 +273,16 @@ fn validate_component_configuration(path: &Path, component: Component) -> anyhow
                 .ok_or_else(|| anyhow::anyhow!("BTS_CORE_BIND is missing"))?
                 .parse::<std::net::SocketAddr>()?;
         }
-        Component::Display => crate::config::validate_websocket_url(
-            values
-                .get("BTS_CORE_WS_URL")
-                .ok_or_else(|| anyhow::anyhow!("BTS_CORE_WS_URL is missing"))?,
-        )?,
+        Component::Display => {
+            crate::config::validate_websocket_url(
+                values
+                    .get("BTS_CORE_WS_URL")
+                    .ok_or_else(|| anyhow::anyhow!("BTS_CORE_WS_URL is missing"))?,
+            )?;
+            if let Some(arguments) = values.get("BTS_CAGE_ARGS") {
+                crate::config::validate_cage_args(arguments)?;
+            }
+        }
         Component::Telephony => {
             crate::config::validate_telephony(&values)?;
             crate::config::validate_http_url(

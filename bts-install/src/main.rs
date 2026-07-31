@@ -562,9 +562,11 @@ fn ensure_default_configuration(
                 }
             };
             config::validate_websocket_url(&core_url)?;
+            let cage_args = cli.cage_args.clone().unwrap_or_else(|| "-m last".into());
+            config::validate_cage_args(&cage_args)?;
             BTreeMap::from([
                 ("BTS_CORE_WS_URL".into(), core_url),
-                ("BTS_DISPLAY_OUTPUT".into(), "auto".into()),
+                ("BTS_CAGE_ARGS".into(), cage_args),
                 ("BTS_DISPLAY_TTY".into(), "1".into()),
             ])
         }
@@ -623,29 +625,43 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
         .unwrap_or_default();
     let values = match component {
         Component::Display => {
-            let url = if let Some(url) = &cli.core_ws_url {
-                url.clone()
-            } else {
-                prompt(
+            let url = match &cli.core_ws_url {
+                Some(url) => url.clone(),
+                None if interactive(cli) => prompt(
                     "Remote Core WebSocket URL",
                     existing
                         .get("BTS_CORE_WS_URL")
                         .map(String::as_str)
                         .unwrap_or("ws://127.0.0.1:3100/api/v1/events/ws"),
-                )?
+                )?,
+                None => existing
+                    .get("BTS_CORE_WS_URL")
+                    .cloned()
+                    .context("BTS_CORE_WS_URL is not configured")?,
             };
             config::validate_websocket_url(&url)?;
-            BTreeMap::from([
-                ("BTS_CORE_WS_URL".into(), url),
-                (
-                    "BTS_DISPLAY_OUTPUT".into(),
+            let cage_args = match &cli.cage_args {
+                Some(value) => value.clone(),
+                None if interactive(cli) => prompt(
+                    "Cage arguments",
                     existing
-                        .get("BTS_DISPLAY_OUTPUT")
-                        .cloned()
-                        .unwrap_or_else(|| "auto".into()),
-                ),
-                ("BTS_DISPLAY_TTY".into(), "1".into()),
-            ])
+                        .get("BTS_CAGE_ARGS")
+                        .map(String::as_str)
+                        .unwrap_or("-m last"),
+                )?,
+                None => existing
+                    .get("BTS_CAGE_ARGS")
+                    .cloned()
+                    .unwrap_or_else(|| "-m last".into()),
+            };
+            config::validate_cage_args(&cage_args)?;
+            let mut values = existing;
+            values.insert("BTS_CORE_WS_URL".into(), url);
+            values.insert("BTS_CAGE_ARGS".into(), cage_args);
+            values
+                .entry("BTS_DISPLAY_TTY".into())
+                .or_insert_with(|| "1".into());
+            values
         }
         Component::Telephony => {
             let mut values = if let Some(input) = &cli.secret_input {
@@ -1301,5 +1317,6 @@ mod tests {
         ensure_default_configuration(&cli, Component::Display, true).unwrap();
         let contents = fs::read_to_string(root.path().join("etc/bts/display.env")).unwrap();
         assert!(contents.contains("ws://127.0.0.1:3100/api/v1/events/ws"));
+        assert!(contents.contains("BTS_CAGE_ARGS=\"-m last\""));
     }
 }

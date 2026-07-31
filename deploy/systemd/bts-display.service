@@ -11,6 +11,7 @@ After=getty@tty1.service
 Type=simple
 User=bts-display
 Group=bts-display
+Environment="BTS_CAGE_ARGS=-m last"
 EnvironmentFile=-/etc/bts/bts.env
 EnvironmentFile=-/etc/bts/display.env
 Environment=XDG_RUNTIME_DIR=/run/bts-display
@@ -27,7 +28,7 @@ TTYVHangup=yes
 TTYVTDisallocate=yes
 UtmpIdentifier=tty1
 UtmpMode=user
-ExecStart=/usr/bin/cage -m last -- /usr/lib/bts/components/display/current/bin/bts-display
+ExecStart=/usr/bin/cage $BTS_CAGE_ARGS -- /usr/lib/bts/components/display/current/bin/bts-display
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=yes

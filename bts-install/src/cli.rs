@@ -29,6 +29,7 @@ Options:
   --core-url URL         Remote Core WebSocket URL for Display
   --core-http-url URL    Remote Core HTTP URL for Addons or Telephony
   --core-ws-url URL      Remote Core WebSocket URL for Display or Addons
+  --cage-args ARGS       Override Cage arguments for Display (default: -m last)
   --repository OWNER/REPO  Release repository (default: jedrek0429/bts)
   --channel CHANNEL      Release channel or explicit v0.3.x tag (default: stable)
   --root PATH            Alternate installation root (testing/recovery only)
@@ -60,6 +61,7 @@ pub struct Cli {
     pub quiet: bool,
     pub core_http_url: Option<String>,
     pub core_ws_url: Option<String>,
+    pub cage_args: Option<String>,
     pub secret_input: Option<SecretInput>,
     pub purge: bool,
 }
@@ -109,6 +111,7 @@ impl Cli {
         let mut quiet = false;
         let mut core_http_url = None;
         let mut core_ws_url = None;
+        let mut cage_args = None;
         let mut secret_input = None;
         let mut purge = false;
         let mut components = Vec::new();
@@ -137,6 +140,7 @@ impl Cli {
                 "--purge" => purge = true,
                 "--core-url" | "--core-ws-url" => core_ws_url = Some(take_value(arg)?),
                 "--core-http-url" => core_http_url = Some(take_value("--core-http-url")?),
+                "--cage-args" => cage_args = Some(take_value("--cage-args")?),
                 "--secret-file" => {
                     if secret_input.is_some() {
                         bail!("Use only one secure secret input source.");
@@ -197,6 +201,7 @@ impl Cli {
             no_start,
             core_http_url.as_deref(),
             core_ws_url.as_deref(),
+            cage_args.as_deref(),
             secret_input.as_ref(),
             purge,
         )?;
@@ -219,6 +224,7 @@ impl Cli {
             quiet,
             core_http_url,
             core_ws_url,
+            cage_args,
             secret_input,
             purge,
         })
@@ -237,6 +243,7 @@ impl Cli {
             quiet: false,
             core_http_url: None,
             core_ws_url: None,
+            cage_args: None,
             secret_input: None,
             purge: false,
         }
@@ -258,6 +265,7 @@ fn validate_options(
     no_start: bool,
     core_http_url: Option<&str>,
     core_ws_url: Option<&str>,
+    cage_args: Option<&str>,
     secret: Option<&SecretInput>,
     purge: bool,
 ) -> Result<()> {
@@ -283,6 +291,12 @@ fn validate_options(
             "Core endpoint options are only valid while installing, adding or configuring a Core client component."
         );
     }
+    if cage_args.is_some() && !command_uses_display(command) {
+        bail!("--cage-args is only valid while installing, adding or configuring Display.");
+    }
+    if let Some(value) = cage_args {
+        crate::config::validate_cage_args(value)?;
+    }
     if secret.is_some()
         && !matches!(
             command,
@@ -295,6 +309,18 @@ fn validate_options(
         bail!("--purge is only valid for remove and uninstall.");
     }
     Ok(())
+}
+
+fn command_uses_display(command: &Command) -> bool {
+    match command {
+        Command::Install { role, components } => {
+            matches!(role, Some(Role::Full | Role::Display))
+                || components.contains(&Component::Display)
+        }
+        Command::Add(components) => components.contains(&Component::Display),
+        Command::Configure(Some(Component::Display)) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +350,15 @@ mod tests {
             }
         ));
         assert!(cli.yes);
+        let cli = parse(&[
+            "bts-install",
+            "configure",
+            "display",
+            "--cage-args",
+            "-m extend -s",
+        ])
+        .unwrap();
+        assert_eq!(cli.cage_args.as_deref(), Some("-m extend -s"));
         let cli = parse(&[
             "bts-install",
             "install",
@@ -384,6 +419,7 @@ mod tests {
             ])
             .is_err()
         );
+        assert!(parse(&["bts-install", "install", "server", "--cage-args", "-s"]).is_err());
         assert!(
             parse(&[
                 "bts-install",
