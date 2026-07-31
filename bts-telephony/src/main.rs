@@ -22,7 +22,11 @@ impl EventPublisher {
     fn new(core_url: &str) -> Self {
         Self {
             client: Client::new(),
-            endpoint: format!("{}/api/v1/events", core_url.trim_end_matches('/')),
+            endpoint: format!(
+                "{}{}",
+                core_url.trim_end_matches('/'),
+                bts_protocol::core::CORE_EVENTS_PATH
+            ),
         }
     }
 
@@ -242,7 +246,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn load_menu(core_url: &str) -> anyhow::Result<(String, HashMap<String, ActionId>)> {
-    let endpoint = format!("{}/api/v1/addons", core_url.trim_end_matches('/'));
+    let endpoint = format!(
+        "{}{}",
+        core_url.trim_end_matches('/'),
+        bts_protocol::core::CORE_ADDONS_PATH
+    );
     let manifests = Client::new()
         .get(endpoint)
         .send()

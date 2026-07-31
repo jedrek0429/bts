@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bts-compat.workspace = true
 hex.workspace = true
 libc.workspace = true
 reqwest.workspace = true

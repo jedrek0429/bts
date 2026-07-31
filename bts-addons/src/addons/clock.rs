@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bts_protocol::addons::v1::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
-    AddonManifest, AddonVersion, MenuEntry,
+    AddonManifest, MenuEntry,
 };
 use bts_protocol::{DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
 use chrono::Local;
@@ -12,6 +12,8 @@ use tokio::{
     task::JoinHandle,
     time::{MissedTickBehavior, interval},
 };
+
+use super::addon_version;
 
 pub(crate) const ID: &str = "clock";
 pub(crate) const ACTION: &str = "clock.show";
@@ -36,7 +38,7 @@ impl Addon for ClockAddon {
             api_version: API_VERSION,
             id: AddonId::new(ID),
             name: "Clock Service".into(),
-            version: AddonVersion::new(1, 0, 0),
+            version: addon_version(bts_compat::CLOCK_ADDON_VERSION),
             actions: vec![ActionRegistration {
                 id: ActionId::new(ACTION),
                 description: "Show the clock".into(),

@@ -28,7 +28,10 @@ fn help_version_licence_and_machine_output_contracts() {
         .output()
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(
+        value["schema_version"],
+        bts_install::diagnostics::OUTPUT_SCHEMA_VERSION
+    );
     let quiet = Command::new(binary)
         .args(["status", "--quiet", "--root", root.path().to_str().unwrap()])
         .output()

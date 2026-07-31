@@ -1,0 +1,13 @@
+{
+  "core_api": 1,
+  "addon_api": 1,
+  "release_manifest_schema": 1,
+  "component_bundle_format": 1,
+  "installer_state_schema": 2,
+  "installer_output_schema": 1,
+  "addons": {
+    "clock": "1.0.0",
+    "message": "1.0.0",
+    "weather": "1.0.0"
+  }
+}

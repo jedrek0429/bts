@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bts_protocol::addons::v1::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
-    AddonManifest, AddonVersion, MenuEntry,
+    AddonManifest, MenuEntry,
 };
 use bts_protocol::{DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
 use reqwest::Client;
@@ -13,6 +13,8 @@ use tokio::{
     task::JoinHandle,
     time::{MissedTickBehavior, interval},
 };
+
+use super::addon_version;
 
 pub(crate) const ID: &str = "weather";
 pub(crate) const ACTION: &str = "weather.show";
@@ -54,7 +56,7 @@ impl Addon for WeatherAddon {
             api_version: API_VERSION,
             id: AddonId::new(ID),
             name: "Weather Service".into(),
-            version: AddonVersion::new(1, 0, 0),
+            version: addon_version(bts_compat::WEATHER_ADDON_VERSION),
             actions: vec![ActionRegistration {
                 id: ActionId::new(ACTION),
                 description: "Show current weather".into(),

@@ -28,6 +28,9 @@ def main() -> int:
         raise SystemExit("Usage: generate-release-manifest.py VERSION ASSET_DIRECTORY")
     version = sys.argv[1].removeprefix("v")
     root = pathlib.Path(sys.argv[2])
+    compatibility = json.loads(
+        (pathlib.Path(__file__).resolve().parent.parent / "compatibility.json").read_text()
+    )
     validation = subprocess.run(
         [pathlib.Path(__file__).with_name("release-version.py"), "classify", version],
         stdout=subprocess.DEVNULL,
@@ -53,14 +56,14 @@ def main() -> int:
                 "architecture": architecture,
                 "filename": path.name,
                 "sha256": digest(path),
-                "bundle_format_version": 1,
+                "bundle_format_version": compatibility["component_bundle_format"],
             }
         )
     if not components:
         raise SystemExit("No portable component bundles were found")
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": compatibility["release_manifest_schema"],
         "release_version": version,
         "installer": {"filename": "bts-install", "sha256": digest(installer)},
         "components": components,

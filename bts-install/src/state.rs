@@ -15,7 +15,7 @@ use crate::{
     platform::{Architecture, Platform},
 };
 
-pub const STATE_SCHEMA_VERSION: u32 = 2;
+pub use bts_compat::INSTALLER_STATE_SCHEMA_VERSION as STATE_SCHEMA_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallerState {

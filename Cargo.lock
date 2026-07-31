@@ -274,6 +274,7 @@ version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bts-compat",
  "bts-protocol",
  "chrono",
  "futures-util",
@@ -284,6 +285,14 @@ dependencies = [
  "tokio-tungstenite 0.27.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bts-compat"
+version = "0.3.0-dev.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -322,6 +331,7 @@ name = "bts-install"
 version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
+ "bts-compat",
  "hex",
  "libc",
  "reqwest",
@@ -342,6 +352,7 @@ version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bts-compat",
  "chrono",
  "serde",
  "serde_json",

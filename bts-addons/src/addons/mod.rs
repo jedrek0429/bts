@@ -3,9 +3,13 @@ pub(crate) mod message;
 pub(crate) mod weather;
 
 use bts_addons::{AddonFailure, AddonRegistry, HttpAddonContext};
-use bts_protocol::addons::v1::{Addon, AddonId};
+use bts_protocol::addons::v1::{Addon, AddonId, AddonVersion};
 use bts_protocol::{Event, EventKind};
 use std::path::PathBuf;
+
+pub(crate) const fn addon_version([major, minor, patch]: [u16; 3]) -> AddonVersion {
+    AddonVersion::new(major, minor, patch)
+}
 
 pub(crate) struct Addons {
     registry: AddonRegistry,

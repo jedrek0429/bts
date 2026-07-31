@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub const API_VERSION: u16 = 1;
+pub use bts_compat::ADDON_API_VERSION as API_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

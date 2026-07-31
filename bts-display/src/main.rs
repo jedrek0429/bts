@@ -17,8 +17,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WebSocketMessage}
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_CORE_URL: &str = "ws://127.0.0.1:3100/api/v1/events/ws";
-
 const BACKGROUND: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 const PRIMARY_TEXT: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
 const SECONDARY_TEXT: Color32 = Color32::from_rgb(0xa8, 0xa8, 0xa8);
@@ -33,7 +31,7 @@ fn main() -> anyhow::Result<()> {
 
     let core_url = std::env::var("BTS_CORE_WS_URL")
         .or_else(|_| std::env::var("BTS_CORE_URL"))
-        .unwrap_or_else(|_| DEFAULT_CORE_URL.to_owned());
+        .unwrap_or_else(|_| bts_protocol::core::LOCAL_CORE_WEBSOCKET_URL.to_owned());
 
     info!(%core_url, "starting BTS Display");
 
