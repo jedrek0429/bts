@@ -1,9 +1,8 @@
 [Unit]
 Description=Bansleben Telephone Services addons
 Documentation=https://github.com/jedrek0429/bts
-After=network-online.target bts-core.service
+After=network-online.target
 Wants=network-online.target
-Requires=bts-core.service
 
 [Service]
 Type=simple

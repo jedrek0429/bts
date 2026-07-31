@@ -7,7 +7,6 @@ pub mod events;
 pub mod state;
 pub mod telephony;
 
-pub use addons::*;
 pub use assets::*;
 pub use display::*;
 pub use events::*;
@@ -17,11 +16,12 @@ pub use telephony::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::addons::v1::*;
 
     #[test]
     fn addon_manifest_round_trips_through_json() {
         let manifest = AddonManifest {
-            api_version: ADDON_API_VERSION,
+            api_version: API_VERSION,
             id: AddonId::new("example"),
             name: "Example".into(),
             version: AddonVersion::new(1, 2, 3),

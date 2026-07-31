@@ -1,17 +1,16 @@
-//! Addon registration, action and capability contracts.
+//! BTS Addon API version 1.
 
+use crate::{AssetRef, BtsState, DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
+use anyhow::Result;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
-use crate::display::ScreenKind;
-
-pub const ADDON_API_VERSION: u16 = 1;
+pub const API_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AddonId(pub String);
-
 impl AddonId {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
@@ -20,7 +19,6 @@ impl AddonId {
         &self.0
     }
 }
-
 impl fmt::Display for AddonId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -30,7 +28,6 @@ impl fmt::Display for AddonId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ActionId(pub String);
-
 impl ActionId {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
@@ -39,7 +36,6 @@ impl ActionId {
         &self.0
     }
 }
-
 impl fmt::Display for ActionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -52,7 +48,6 @@ pub struct AddonVersion {
     pub minor: u16,
     pub patch: u16,
 }
-
 impl AddonVersion {
     pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
         Self {
@@ -103,4 +98,35 @@ pub struct AddonManifest {
 pub struct ActionRequest {
     pub action: ActionId,
     pub parameters: serde_json::Value,
+}
+
+/// Transport-neutral services supplied to an addon by its host.
+///
+/// Implementations may use HTTP, another network transport, or an in-process
+/// test double. Addons must not assume that Core shares their filesystem or host.
+#[async_trait]
+pub trait AddonContext: Send + Sync {
+    fn clone_box(&self) -> Box<dyn AddonContext>;
+    fn addon_id(&self) -> &AddonId;
+    async fn publish(&self, kind: EventKind) -> Result<()>;
+    async fn state(&self) -> Result<BtsState>;
+    async fn request_action(&self, action: ActionId, parameters: serde_json::Value) -> Result<()>;
+    async fn show(&self, display: DisplayState, priority: u8) -> Result<DisplayLeaseId>;
+    async fn update(&self, lease_id: DisplayLeaseId, display: DisplayState) -> Result<()>;
+    async fn release(&self, lease_id: DisplayLeaseId) -> Result<()>;
+    async fn release_all(&self) -> Result<()>;
+    async fn upload_asset(&self, content_type: String, bytes: Vec<u8>) -> Result<AssetRef>;
+}
+
+/// A BTS addon that can run against any Addon API v1 context implementation.
+#[async_trait]
+pub trait Addon: Send + Sync {
+    fn manifest(&self) -> AddonManifest;
+    async fn start(&self, _context: &dyn AddonContext) -> Result<()> {
+        Ok(())
+    }
+    async fn handle_event(&self, context: &dyn AddonContext, event: &Event) -> Result<()>;
+    async fn stop(&self, _context: &dyn AddonContext) -> Result<()> {
+        Ok(())
+    }
 }

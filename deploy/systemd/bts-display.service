@@ -1,8 +1,9 @@
 [Unit]
 Description=Bansleben Telephone Services display kiosk
 Documentation=https://github.com/jedrek0429/bts
-After=systemd-user-sessions.service seatd.service bts-core.service
-Requires=seatd.service bts-core.service
+After=systemd-user-sessions.service seatd.service network-online.target
+Wants=network-online.target
+Requires=seatd.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
 
