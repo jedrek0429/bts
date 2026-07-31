@@ -28,6 +28,23 @@ impl PresentationId {
     }
 }
 
+/// A Core-assigned, monotonically increasing ordering token for one terminal.
+/// Generations are independent between terminals and survive reconnects for the
+/// lifetime of the Core process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PresentationGeneration(u64);
+
+impl PresentationGeneration {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 impl Default for PresentationId {
     fn default() -> Self {
         Self::new()
@@ -73,6 +90,19 @@ pub struct PresentationRequest {
 pub struct PresentationDispatch {
     pub request: PresentationRequest,
     pub resolved_target: ResolvedTarget,
+    /// Connection-specific ordering and validity context for every recipient.
+    /// A terminal must select its own entry, reject a different connection,
+    /// discard generations older than the greatest one observed and stop
+    /// applying the presentation once `valid_for_millis` has elapsed.
+    #[serde(default)]
+    pub deliveries: BTreeMap<TerminalId, PresentationDeliveryContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresentationDeliveryContext {
+    pub connection_id: TerminalConnectionId,
+    pub generation: PresentationGeneration,
+    pub valid_for_millis: u64,
 }
 
 impl PresentationDispatch {
@@ -84,7 +114,25 @@ impl PresentationDispatch {
             Ok(Self {
                 request,
                 resolved_target,
+                deliveries: BTreeMap::new(),
             })
+        } else {
+            Err(PresentationDispatchError)
+        }
+    }
+
+    pub fn with_deliveries(
+        request: PresentationRequest,
+        resolved_target: ResolvedTarget,
+        deliveries: BTreeMap<TerminalId, PresentationDeliveryContext>,
+    ) -> Result<Self, PresentationDispatchError> {
+        if deliveries
+            .keys()
+            .all(|terminal_id| resolved_target.terminals.contains(terminal_id))
+        {
+            let mut dispatch = Self::new(request, resolved_target)?;
+            dispatch.deliveries = deliveries;
+            Ok(dispatch)
         } else {
             Err(PresentationDispatchError)
         }
@@ -111,10 +159,17 @@ impl<'de> Deserialize<'de> for PresentationDispatch {
         struct WirePresentationDispatch {
             request: PresentationRequest,
             resolved_target: ResolvedTarget,
+            #[serde(default)]
+            deliveries: BTreeMap<TerminalId, PresentationDeliveryContext>,
         }
 
         let dispatch = WirePresentationDispatch::deserialize(deserializer)?;
-        Self::new(dispatch.request, dispatch.resolved_target).map_err(serde::de::Error::custom)
+        Self::with_deliveries(
+            dispatch.request,
+            dispatch.resolved_target,
+            dispatch.deliveries,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -150,6 +205,8 @@ pub enum PresentationDeliveryOutcome {
     },
     TimedOut,
     Disconnected,
+    /// A newer generation for this terminal made the pending delivery invalid.
+    Superseded,
 }
 
 /// A stable snapshot of a presentation's target resolution and delivery state.

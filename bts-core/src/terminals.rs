@@ -12,10 +12,10 @@ use std::{
 
 use anyhow::{Context, Result as AnyResult, bail};
 use bts_protocol::{
-    EventKind, GroupId, GroupIdentity, GroupName, ProtocolVersion, RegistrationRejection,
-    RegistrationRejectionReason, TerminalCapabilities, TerminalConnectionId, TerminalGroupChange,
-    TerminalId, TerminalIdentity, TerminalImplementationId, TerminalMetadataChange, TerminalName,
-    TerminalRegistration, TerminalTag,
+    GroupId, GroupIdentity, GroupName, ProtocolVersion, RegistrationRejection,
+    RegistrationRejectionReason, TerminalCapabilities, TerminalConnectionId, TerminalEvent,
+    TerminalEventKind, TerminalGroupChange, TerminalId, TerminalIdentity, TerminalImplementationId,
+    TerminalMetadataChange, TerminalName, TerminalRegistration, TerminalTag,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -258,7 +258,7 @@ struct RegistryState {
 #[derive(Clone)]
 pub struct TerminalRegistry {
     state: Arc<Mutex<RegistryState>>,
-    changes: broadcast::Sender<EventKind>,
+    changes: broadcast::Sender<TerminalEvent>,
 }
 
 impl TerminalRegistry {
@@ -286,7 +286,7 @@ impl TerminalRegistry {
         })
     }
 
-    pub fn subscribe_changes(&self) -> broadcast::Receiver<EventKind> {
+    pub fn subscribe_changes(&self) -> broadcast::Receiver<TerminalEvent> {
         self.changes.subscribe()
     }
 
@@ -559,7 +559,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             None,
-            EventKind::TerminalMetadataChanged {
+            TerminalEventKind::MetadataChanged {
                 terminal_id: terminal_id.clone(),
                 change: TerminalMetadataChange::Renamed { name },
             },
@@ -588,7 +588,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             None,
-            EventKind::TerminalMetadataChanged {
+            TerminalEventKind::MetadataChanged {
                 terminal_id: terminal_id.clone(),
                 change: TerminalMetadataChange::DescriptionChanged {
                     description: description.map(|value| value.0),
@@ -621,7 +621,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             None,
-            EventKind::TerminalMetadataChanged {
+            TerminalEventKind::MetadataChanged {
                 terminal_id: terminal_id.clone(),
                 change: TerminalMetadataChange::TagAdded { tag },
             },
@@ -652,7 +652,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             None,
-            EventKind::TerminalMetadataChanged {
+            TerminalEventKind::MetadataChanged {
                 terminal_id: terminal_id.clone(),
                 change: TerminalMetadataChange::TagRemoved { tag },
             },
@@ -680,7 +680,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             Some(groups),
-            EventKind::TerminalGroupChanged {
+            TerminalEventKind::GroupChanged {
                 group_id: identity.id,
                 change: TerminalGroupChange::Created {
                     name: identity.name,
@@ -713,7 +713,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             Some(groups),
-            EventKind::TerminalGroupChanged {
+            TerminalEventKind::GroupChanged {
                 group_id: group_id.clone(),
                 change: TerminalGroupChange::Renamed { name },
             },
@@ -735,7 +735,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             Some(groups),
-            EventKind::TerminalGroupChanged {
+            TerminalEventKind::GroupChanged {
                 group_id: group_id.clone(),
                 change: TerminalGroupChange::Deleted,
             },
@@ -774,7 +774,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             Some(groups),
-            EventKind::TerminalGroupChanged {
+            TerminalEventKind::GroupChanged {
                 group_id: group_id.clone(),
                 change: TerminalGroupChange::MemberAdded {
                     terminal_id: terminal_id.clone(),
@@ -815,7 +815,7 @@ impl TerminalRegistry {
             &mut state,
             definitions,
             Some(groups),
-            EventKind::TerminalGroupChanged {
+            TerminalEventKind::GroupChanged {
                 group_id: group_id.clone(),
                 change: TerminalGroupChange::MemberRemoved {
                     terminal_id: terminal_id.clone(),
@@ -881,7 +881,7 @@ impl TerminalRegistry {
         state: &mut RegistryState,
         definitions: HashMap<TerminalId, TerminalDefinition>,
         groups: Option<HashMap<GroupId, TerminalGroup>>,
-        event: EventKind,
+        event: TerminalEventKind,
     ) -> Result<MutationOutcome, TerminalAdminError> {
         let groups = groups.unwrap_or_else(|| state.groups.clone());
         persist_registry(
@@ -892,7 +892,7 @@ impl TerminalRegistry {
         .map_err(TerminalAdminError::Persistence)?;
         state.definitions = definitions;
         state.groups = groups;
-        let _ = self.changes.send(event);
+        let _ = self.changes.send(TerminalEvent::new(event));
         Ok(MutationOutcome::Changed)
     }
 
@@ -1566,8 +1566,8 @@ mod tests {
             BTreeSet::from([TerminalTag::new("private").unwrap()])
         );
         assert!(matches!(
-            changes.try_recv().unwrap(),
-            EventKind::TerminalMetadataChanged {
+            changes.try_recv().unwrap().kind,
+            TerminalEventKind::MetadataChanged {
                 change: TerminalMetadataChange::TagAdded { tag },
                 ..
             } if tag.as_str() == "private"
@@ -1799,15 +1799,15 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            changes.try_recv().unwrap(),
-            EventKind::TerminalMetadataChanged {
+            changes.try_recv().unwrap().kind,
+            TerminalEventKind::MetadataChanged {
                 terminal_id: id,
                 change: TerminalMetadataChange::Renamed { name }
             } if id == terminal_id && name.as_str() == "Hallway"
         ));
         assert!(matches!(
-            changes.try_recv().unwrap(),
-            EventKind::TerminalGroupChanged {
+            changes.try_recv().unwrap().kind,
+            TerminalEventKind::GroupChanged {
                 group_id,
                 change: TerminalGroupChange::Created { name }
             } if group_id.as_str() == "public" && name.as_str() == "Public"

@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bts_protocol::addons::v1::{ActionId, MenuEntry};
+use bts_protocol::addons::v1::{ActionId, AddonId, MenuEntry};
 use bts_protocol::{
-    CoreTerminalMessage, DisplayCommand, DisplayLeaseId, DisplayState, DtmfMenuKey,
-    DtmfMenuKeyError, Event, EventKind, GroupId, GroupIdentity, GroupName,
-    PresentationDeliveryOutcome, PresentationDeliveryResult, PresentationDispatch, PresentationId,
-    PresentationRejection, PresentationRejectionCode, PresentationRequest, ProtocolVersion,
-    RegistrationRejection, RegistrationRejectionReason, ReservedDtmfAction, ResolvedTarget,
-    RoutingError, TagMatch, TagQuery, TargetScope, TerminalCapabilities, TerminalCapability,
-    TerminalClientMessage, TerminalConnectionId, TerminalGroupChange, TerminalId, TerminalIdentity,
-    TerminalImplementationId, TerminalMetadataChange, TerminalName, TerminalRegistration,
-    TerminalTag, TerminalTarget,
+    BtsState, CoreTerminalMessage, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
+    DtmfMenuKey, DtmfMenuKeyError, Event, EventKind, GroupId, GroupIdentity, GroupName,
+    PresentationDeliveryContext, PresentationDeliveryOutcome, PresentationDeliveryResult,
+    PresentationDispatch, PresentationGeneration, PresentationId, PresentationRejection,
+    PresentationRejectionCode, PresentationRequest, ProtocolVersion, RegistrationRejection,
+    RegistrationRejectionReason, ReservedDtmfAction, ResolvedTarget, RoutingError, ServerMessage,
+    TERMINAL_EVENT_STREAM_VERSION, TagMatch, TagQuery, TargetScope, TerminalCapabilities,
+    TerminalCapability, TerminalClientMessage, TerminalConnectionId, TerminalEvent,
+    TerminalEventKind, TerminalGroupChange, TerminalId, TerminalIdentity, TerminalImplementationId,
+    TerminalMetadataChange, TerminalName, TerminalRegistration, TerminalTag, TerminalTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -264,7 +265,20 @@ fn lifecycle_and_presentation_messages_round_trip() {
         assert_eq!(round_trip(&message), message);
     }
 
-    let dispatch = PresentationDispatch::new(request, resolved).unwrap();
+    let dispatch = PresentationDispatch::with_deliveries(
+        request,
+        resolved,
+        BTreeMap::from([(
+            terminal_id.clone(),
+            PresentationDeliveryContext {
+                connection_id,
+                generation: PresentationGeneration::new(7),
+                valid_for_millis: 10_000,
+            },
+        )]),
+    )
+    .unwrap();
+    assert_eq!(dispatch.deliveries[&terminal_id].generation.get(), 7);
     let server_messages = [
         CoreTerminalMessage::RegistrationAcknowledged {
             terminal_id: terminal_id.clone(),
@@ -350,10 +364,10 @@ fn bounded_delivery_results_have_stable_terminal_specific_wire_outcomes() {
     );
     assert_eq!(round_trip(&result), result);
 
-    let event = EventKind::PresentationDeliveryCompleted { result };
+    let event = TerminalEvent::new(TerminalEventKind::PresentationDeliveryCompleted { result });
     assert_eq!(
-        serde_json::to_value(round_trip(&event)).unwrap()["type"],
-        json!("presentation_delivery_completed")
+        serde_json::to_value(round_trip(&event)).unwrap()["stream_version"],
+        json!(TERMINAL_EVENT_STREAM_VERSION)
     );
 }
 
@@ -473,23 +487,24 @@ fn existing_menu_entry_wire_shape_is_preserved() {
 
 #[test]
 fn terminal_administration_events_have_stable_wire_shapes() {
-    let renamed = EventKind::TerminalMetadataChanged {
+    let renamed = TerminalEvent::new(TerminalEventKind::MetadataChanged {
         terminal_id: terminal_id("hall-display"),
         change: TerminalMetadataChange::Renamed {
             name: TerminalName::new("Hallway").unwrap(),
         },
-    };
-    let member_added = EventKind::TerminalGroupChanged {
+    });
+    let member_added = TerminalEvent::new(TerminalEventKind::GroupChanged {
         group_id: GroupId::new("downstairs").unwrap(),
         change: TerminalGroupChange::MemberAdded {
             terminal_id: terminal_id("hall-display"),
         },
-    };
+    });
 
     let renamed_wire = serde_json::to_value(&renamed).unwrap();
     assert_eq!(
         renamed_wire,
         json!({
+            "stream_version": 1,
             "type": "terminal_metadata_changed",
             "terminal_id": "hall-display",
             "change": { "change": "renamed", "name": "Hallway" }
@@ -499,17 +514,83 @@ fn terminal_administration_events_have_stable_wire_shapes() {
     assert_eq!(
         member_wire,
         json!({
+            "stream_version": 1,
             "type": "terminal_group_changed",
             "group_id": "downstairs",
             "change": { "change": "member_added", "terminal_id": "hall-display" }
         })
     );
     assert_eq!(
-        serde_json::to_value(serde_json::from_value::<EventKind>(renamed_wire).unwrap()).unwrap(),
-        json!({
-            "type": "terminal_metadata_changed",
-            "terminal_id": "hall-display",
-            "change": { "change": "renamed", "name": "Hallway" }
-        })
+        serde_json::to_value(serde_json::from_value::<TerminalEvent>(renamed_wire).unwrap())
+            .unwrap()["stream_version"],
+        json!(TERMINAL_EVENT_STREAM_VERSION)
     );
+}
+
+#[test]
+fn preceding_release_event_consumers_never_receive_terminal_delivery_variants() {
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    struct PreviousEvent {
+        id: Uuid,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        source: String,
+        #[serde(flatten)]
+        kind: PreviousEventKind,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum PreviousEventKind {
+        DisplayRequested { command: DisplayCommand },
+    }
+
+    #[allow(dead_code)]
+    #[derive(Deserialize)]
+    #[serde(tag = "message", rename_all = "snake_case")]
+    enum PreviousServerMessage {
+        Snapshot {
+            state: BtsState,
+        },
+        Event {
+            event: Box<PreviousEvent>,
+            state: BtsState,
+        },
+    }
+
+    let lease = DisplayLease {
+        id: DisplayLeaseId::new(),
+        owner: AddonId::new("legacy"),
+        priority: 10,
+    };
+    let message = ServerMessage::Event {
+        event: Box::new(Event::new(
+            "legacy",
+            EventKind::DisplayRequested {
+                command: DisplayCommand::Show {
+                    lease,
+                    display: DisplayState::Blank,
+                },
+            },
+        )),
+        state: BtsState::default(),
+    };
+    let wire = serde_json::to_value(message).unwrap();
+    serde_json::from_value::<PreviousServerMessage>(wire)
+        .expect("the release-line event stream remains adjacent-version compatible");
+
+    let terminal_wire = serde_json::to_value(TerminalEvent::new(
+        TerminalEventKind::PresentationDeliveryCompleted {
+            result: PresentationDeliveryResult {
+                presentation_id: PresentationId::default(),
+                requested_target: TerminalTarget::all(),
+                resolved_target: None,
+                outcomes: BTreeMap::new(),
+            },
+        },
+    ))
+    .unwrap();
+    assert!(terminal_wire.get("message").is_none());
+    assert_eq!(terminal_wire["stream_version"], json!(1));
 }
