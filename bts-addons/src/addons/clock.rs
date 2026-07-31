@@ -4,7 +4,7 @@ use bts_protocol::addons::v1::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
     AddonManifest, MenuEntry,
 };
-use bts_protocol::{DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
+use bts_protocol::{DisplayLeaseId, DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind};
 use chrono::Local;
 use std::time::Duration;
 use tokio::{
@@ -44,7 +44,7 @@ impl Addon for ClockAddon {
                 description: "Show the clock".into(),
             }],
             menu: vec![MenuEntry {
-                digit: '2',
+                digit: DtmfMenuKey::new('2').expect("2 is an addon DTMF key"),
                 prompt: "sound:bts/press-2-time".into(),
                 action: ActionId::new(ACTION),
                 order: 20,
