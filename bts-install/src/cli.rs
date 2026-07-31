@@ -32,6 +32,7 @@ Options:
   --cage-args ARGS       Override Cage arguments for Display (default: -m last)
   --repository OWNER/REPO  Release repository (default: jedrek0429/bts)
   --channel CHANNEL      Release channel or explicit version tag (default: stable)
+  --release-dir PATH     Install verified release assets from a local directory
   --root PATH            Alternate installation root (testing/recovery only)
   --yes                  Confirm planned host changes non-interactively
   --no-start             Install and enable without starting services
@@ -53,6 +54,7 @@ pub struct Cli {
     pub command: Command,
     pub repository: String,
     pub channel: String,
+    pub release_dir: Option<PathBuf>,
     pub root: PathBuf,
     pub yes: bool,
     pub no_start: bool,
@@ -103,6 +105,7 @@ impl Cli {
         }
         let mut repository = DEFAULT_REPOSITORY.to_owned();
         let mut channel = DEFAULT_CHANNEL.to_owned();
+        let mut release_dir = None;
         let mut root = PathBuf::from("/");
         let mut yes = false;
         let mut no_start = false;
@@ -131,6 +134,7 @@ impl Cli {
                 "-V" | "--version" => return Ok(Self::simple(Command::Version)),
                 "--repository" => repository = take_value("--repository")?,
                 "--channel" => channel = take_value("--channel")?,
+                "--release-dir" => release_dir = Some(PathBuf::from(take_value("--release-dir")?)),
                 "--root" => root = PathBuf::from(take_value("--root")?),
                 "--yes" => yes = true,
                 "--no-start" => no_start = true,
@@ -196,6 +200,14 @@ impl Cli {
             _ => bail!("Unknown command or unexpected argument '{name}'."),
         };
 
+        if release_dir.is_some()
+            && !matches!(
+                command,
+                Command::Install { .. } | Command::Add(_) | Command::Upgrade(_)
+            )
+        {
+            bail!("--release-dir is only valid for install, add and upgrade.");
+        }
         validate_options(
             &command,
             no_start,
@@ -218,6 +230,7 @@ impl Cli {
             command,
             repository,
             channel,
+            release_dir,
             root,
             yes,
             no_start,
@@ -237,6 +250,7 @@ impl Cli {
             command,
             repository: DEFAULT_REPOSITORY.into(),
             channel: DEFAULT_CHANNEL.into(),
+            release_dir: None,
             root: "/".into(),
             yes: false,
             no_start: false,
@@ -440,5 +454,19 @@ mod tests {
         assert!(parse(&["bts-install", "status", "--channel", "v0.4.0"]).is_ok());
         assert!(parse(&["bts-install", "status", "--channel", "v0.4.0-rc.1"]).is_ok());
         assert!(parse(&["bts-install", "status", "--channel", "main"]).is_err());
+    }
+
+    #[test]
+    fn local_release_directories_are_lifecycle_inputs_only() {
+        let parsed = parse(&[
+            "bts-install",
+            "install",
+            "display",
+            "--release-dir",
+            "/tmp/bts-release",
+        ])
+        .unwrap();
+        assert_eq!(parsed.release_dir, Some("/tmp/bts-release".into()));
+        assert!(parse(&["bts-install", "status", "--release-dir", "/tmp/bts-release"]).is_err());
     }
 }
