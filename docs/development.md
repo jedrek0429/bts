@@ -14,7 +14,8 @@ sudo apt-get install \
   libegl1-mesa-dev \
   libgl1-mesa-dev \
   libudev-dev \
-  libfontconfig1-dev
+  libfontconfig1-dev \
+  zstd
 ```
 
 ## Build and test
@@ -43,6 +44,38 @@ cargo build --workspace --release
 The binaries are written to `target/debug/` or `target/release/`. Building from source is a development workflow; deployed systems should use [`bts-install`](installer-v2.md) and tagged release bundles.
 
 Product, API and schema versions and the automated release flow are defined in [Versioning and releases](versioning.md).
+
+## Build an installable development release
+
+Build native release binaries and the same bundles, manifest and checksums used by GitHub Releases:
+
+```sh
+scripts/build-release all
+```
+
+Output is written to `target/bts-release/VERSION/`, where `VERSION` comes from `[workspace.package].version`. The command refuses crates with independent versions. It requires `tar`, `zstd` and the normal build dependencies.
+
+Install that verified local release on a development machine:
+
+```sh
+version=$(scripts/release-version.py workspace-version)
+sudo target/release/bts-install \
+  --release-dir "target/bts-release/$version" \
+  install display \
+  --core-url ws://CORE:3100/api/v1/events/ws
+```
+
+Use the actual workspace version in the path. Local assets pass the normal manifest, checksum, archive and activation checks. `--release-dir` is accepted by `install`, `add` and `upgrade`; pass it again when upgrading from another local build. Use a VM or disposable host for service-level testing. `--root` is reserved for isolated tests and recovery and must not be treated as a container.
+
+CI uses the same entry point in stages:
+
+```sh
+scripts/build-release component COMPONENT ARCH BINARY OUTPUT_DIRECTORY
+scripts/build-release installer BINARY OUTPUT_DIRECTORY
+scripts/build-release assemble OUTPUT_DIRECTORY
+```
+
+`component` creates one deterministic portable bundle. `installer` adds the installer and GPL licence. `assemble` creates and verifies the release manifest and checksum files. Do not reproduce this logic in workflow YAML.
 
 ## Run components manually
 
@@ -106,6 +139,7 @@ CI additionally runs ShellCheck, release-asset consistency tests and `systemd-an
 
 ```sh
 shellcheck \
+  scripts/build-release \
   scripts/build-component-bundle \
   scripts/test-release-assets.sh \
   scripts/generate-voice-prompts.sh

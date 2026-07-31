@@ -14,7 +14,7 @@ Components are independently deployable and communicate through the versioned co
 - [Release manifest and bundle format](docs/release-manifest-v1.md)
 - [Project roadmap](docs/roadmap.md)
 
-## Development build
+## Development
 
 Install a current stable Rust toolchain and the native libraries required by the Display crate, then build the workspace:
 
@@ -39,7 +39,7 @@ cp deploy/bts-dev.env.example ~/.config/bts/dev.env
 ./scripts/bts-tmux
 ```
 
-The launcher does not start Display. See the [development guide](docs/development.md) for prerequisites, configuration, individual component commands and Display setup.
+The launcher does not start Display. The [development guide](docs/development.md) covers prerequisites, local release bundles, installer testing and individual processes.
 
 ## Licence
 

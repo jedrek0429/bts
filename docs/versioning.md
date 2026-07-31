@@ -2,18 +2,16 @@
 
 ## Versions
 
-| Category | Source/current | Changes when |
+| Category | Source | Changes when |
 | --- | --- | --- |
 | BTS product and all workspace crates | `[workspace.package].version` | Every BTS release |
-| Core HTTP/WebSocket contract used by every remote component | `v1` | A remote API breaks compatibility |
-| Core–Addon contract | Addon API `v1` | The addon contract breaks compatibility |
-| Built-in addon implementation | Per-addon SemVer | That addon changes |
-| Release manifest | Schema `1` | Manifest structure breaks compatibility |
-| Component bundle | Format `1` | Archive layout breaks compatibility |
-| Installer state | Schema `2` | Persistent state changes; migrations are required |
-| Installer JSON output | Schema `1` | Machine-readable output breaks compatibility |
+| Core API, Addon API and built-in addons | `compatibility.json` | Their corresponding contract or implementation breaks compatibility |
+| Release manifest and component bundle | `compatibility.json` | Their structure or layout breaks compatibility |
+| Installer state and JSON output | `compatibility.json` | Persisted or machine-readable data breaks compatibility |
 
-`[workspace.package].version` in `Cargo.toml` is the BTS product version. Every BTS crate inherits it. API and schema versions are independent and do not change with each product release. Additive contract changes stay within the current API version; breaking network contracts use a new route/module version alongside the old one during migration.
+`Cargo.toml` and `compatibility.json` are the only version sources. Every BTS crate inherits the product version. `bts-compat` generates Rust constants and versioned Core paths from the compatibility file; release tooling reads the same file. Documentation must not define a competing value.
+
+Compatibility versions are independent of product releases. Additive contract changes retain the current API/schema version. Breaking network contracts add a new route/module version alongside the old one during migration. Persisted state changes require a migration before its schema number changes. Built-in addon versions use SemVer.
 
 ## Release flow
 
@@ -38,3 +36,5 @@ sudo bts-install install full --channel v0.4.0-rc.1
 ```
 
 Branches and Actions artefacts are not installation sources. `stable` excludes drafts, prereleases and legacy releases without an Installer v2 manifest.
+
+For an unpublished `dev.N` build, run `scripts/build-release all` and install its directory with `--release-dir`; see the [development guide](development.md).

@@ -2,6 +2,8 @@
 
 Every tagged BTS release contains `bts-install`, `bts-install.sha256`, `release-manifest.json`, `SHA256SUMS`, `LICENSE` and component bundles. Checksums are generated after final asset naming. CI rebuilds representative assets and verifies that every manifest entry names an existing file with the matching SHA-256 digest.
 
+The current manifest and bundle compatibility numbers are defined only in [`compatibility.json`](../compatibility.json). This document describes their current layouts.
+
 ## Manifest
 
 ```json
