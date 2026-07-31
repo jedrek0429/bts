@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command=$1
+{
+    printf '%q' "$command"
+    shift
+    printf ' %q' "$@"
+    printf '\n'
+} >> "$BTS_TMUX_TEST_LOG"
+
+if [[ $command == "has-session" ]]; then
+    exit "${BTS_TMUX_TEST_SESSION_EXISTS:-1}"
+fi
