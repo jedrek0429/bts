@@ -378,6 +378,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bts-terminal"
+version = "0.3.0-dev.0"
+dependencies = [
+ "async-trait",
+ "bts-protocol",
+ "futures-util",
+ "semver",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.27.0",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
