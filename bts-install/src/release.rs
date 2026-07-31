@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, io::Cursor};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, ensure};
 use semver::Version;
@@ -12,6 +17,7 @@ pub struct ReleaseClient {
     client: reqwest::Client,
     repository: String,
     channel: String,
+    local_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +35,11 @@ struct GithubAsset {
 }
 
 impl ReleaseClient {
-    pub fn new(repository: String, channel: String) -> Result<Self> {
+    pub fn new(
+        repository: String,
+        channel: String,
+        local_directory: Option<PathBuf>,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent(format!("bts-install/{}", crate::INSTALLER_VERSION))
             .build()?;
@@ -37,10 +47,14 @@ impl ReleaseClient {
             client,
             repository,
             channel,
+            local_directory,
         })
     }
 
     pub async fn fetch_manifest(&self) -> Result<(ReleaseManifest, BTreeMap<String, String>)> {
+        if let Some(directory) = &self.local_directory {
+            return load_local_manifest(directory);
+        }
         let release: GithubRelease = if self.channel == "stable" {
             let endpoint = format!(
                 "https://api.github.com/repos/{}/releases?per_page=100",
@@ -107,7 +121,12 @@ impl ReleaseClient {
         let url = urls
             .get(filename)
             .with_context(|| format!("Release asset '{filename}' is missing."))?;
-        let bytes = self.download_url(url).await?;
+        let bytes = if self.local_directory.is_some() {
+            fs::read(url)
+                .with_context(|| format!("Could not read local release asset '{filename}'."))?
+        } else {
+            self.download_url(url).await?
+        };
         crate::archive::verify_sha256(Cursor::new(&bytes), expected)?;
         Ok(bytes)
     }
@@ -123,6 +142,37 @@ impl ReleaseClient {
             .await?
             .to_vec())
     }
+}
+
+fn load_local_manifest(directory: &Path) -> Result<(ReleaseManifest, BTreeMap<String, String>)> {
+    ensure!(
+        directory.is_dir(),
+        "Local release directory does not exist: {}",
+        directory.display()
+    );
+    let manifest_path = directory.join("release-manifest.json");
+    let manifest = ReleaseManifest::parse(
+        &fs::read(&manifest_path)
+            .with_context(|| format!("Could not read {}", manifest_path.display()))?,
+    )?;
+    let mut locations = BTreeMap::new();
+    let mut checksums = BTreeMap::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Local release contains a non-UTF-8 filename."))?;
+        let path = entry.path();
+        let bytes = fs::read(&path)?;
+        checksums.insert(name.clone(), hex::encode(Sha256::digest(&bytes)));
+        locations.insert(name, path.to_string_lossy().into_owned());
+    }
+    validate_release_assets(&manifest, &checksums)?;
+    Ok((manifest, locations))
 }
 
 fn is_stable_release(release: &GithubRelease) -> bool {
@@ -155,6 +205,11 @@ pub fn validate_local_assets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        manifest::{ComponentAsset, ReleaseAsset},
+        model::Component,
+    };
+    use tempfile::tempdir;
 
     #[test]
     fn stable_release_excludes_drafts_and_prereleases() {
@@ -193,5 +248,64 @@ mod tests {
             assets: Vec::new(),
         };
         assert!(!is_stable_release(&release));
+    }
+
+    #[tokio::test]
+    async fn loads_and_verifies_a_local_release() {
+        let directory = tempdir().unwrap();
+        let component = b"bundle";
+        let installer = b"installer";
+        let licence = b"licence";
+        let digest = |bytes: &[u8]| hex::encode(Sha256::digest(bytes));
+        fs::write(directory.path().join("component.tar.zst"), component).unwrap();
+        fs::write(directory.path().join("bts-install"), installer).unwrap();
+        fs::write(directory.path().join("LICENSE"), licence).unwrap();
+        fs::write(directory.path().join("SHA256SUMS"), "checksums").unwrap();
+        let manifest = ReleaseManifest {
+            schema_version: crate::manifest::MANIFEST_SCHEMA_VERSION,
+            release_version: "0.4.0-dev.1".into(),
+            installer: ReleaseAsset {
+                filename: "bts-install".into(),
+                sha256: digest(installer),
+            },
+            components: BTreeMap::from([(
+                Component::Core,
+                vec![ComponentAsset {
+                    platform: "linux".into(),
+                    architecture: "x86_64".into(),
+                    filename: "component.tar.zst".into(),
+                    sha256: digest(component),
+                    bundle_format_version: crate::manifest::BUNDLE_FORMAT_VERSION,
+                }],
+            )]),
+            licence_asset: Some(ReleaseAsset {
+                filename: "LICENSE".into(),
+                sha256: digest(licence),
+            }),
+        };
+        fs::write(
+            directory.path().join("release-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let client = ReleaseClient::new(
+            "unused/repository".into(),
+            "stable".into(),
+            Some(directory.path().into()),
+        )
+        .unwrap();
+        let (loaded, locations) = client.fetch_manifest().await.unwrap();
+        assert_eq!(loaded.release_version, "0.4.0-dev.1");
+        assert_eq!(
+            client
+                .download_asset(&locations, "component.tar.zst", &digest(component))
+                .await
+                .unwrap(),
+            component
+        );
+
+        fs::write(directory.path().join("component.tar.zst"), "changed").unwrap();
+        assert!(client.fetch_manifest().await.is_err());
     }
 }

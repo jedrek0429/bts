@@ -242,9 +242,7 @@ async fn execute_plan(
         systemctl(&mut system, &cli.root, "daemon-reload", &[])?;
     }
     if !added.is_empty() {
-        let (manifest, urls) = ReleaseClient::new(cli.repository.clone(), cli.channel.clone())?
-            .fetch_manifest()
-            .await?;
+        let (manifest, urls) = release_client(cli)?.fetch_manifest().await?;
         for component in added {
             let asset = manifest.select(component, platform, architecture)?;
             install_component(
@@ -286,6 +284,14 @@ async fn execute_plan(
     Ok(())
 }
 
+fn release_client(cli: &Cli) -> Result<ReleaseClient> {
+    ReleaseClient::new(
+        cli.repository.clone(),
+        cli.channel.clone(),
+        cli.release_dir.clone(),
+    )
+}
+
 async fn install_component(
     cli: &Cli,
     system: &mut RealSystem,
@@ -297,7 +303,7 @@ async fn install_component(
     if !cli.quiet {
         println!("Downloading and verifying {component}...");
     }
-    let client = ReleaseClient::new(cli.repository.clone(), cli.channel.clone())?;
+    let client = release_client(cli)?;
     let bytes = client
         .download_asset(urls, &asset.filename, &asset.sha256)
         .await?;
@@ -339,9 +345,7 @@ async fn upgrade(
     platform: Platform,
     architecture: bts_install::platform::Architecture,
 ) -> Result<()> {
-    let (manifest, urls) = ReleaseClient::new(cli.repository.clone(), cli.channel.clone())?
-        .fetch_manifest()
-        .await?;
+    let (manifest, urls) = release_client(cli)?.fetch_manifest().await?;
     let actions: Vec<_> = selected
         .iter()
         .flat_map(|component| {
@@ -374,7 +378,7 @@ async fn upgrade(
     if cli.dry_run {
         return Ok(());
     }
-    let client = ReleaseClient::new(cli.repository.clone(), cli.channel.clone())?;
+    let client = release_client(cli)?;
     let mut staged = Vec::new();
     for component in selected {
         let asset = manifest.select(*component, platform, architecture)?;
@@ -842,7 +846,11 @@ async fn extend_remote_diagnostics(
     report: &mut diagnostics::DoctorReport,
 ) {
     let Some(state) = state else { return };
-    match ReleaseClient::new(state.repository.clone(), state.release_channel.clone()) {
+    match ReleaseClient::new(
+        state.repository.clone(),
+        state.release_channel.clone(),
+        None,
+    ) {
         Ok(client) => match client.fetch_manifest().await {
             Ok((manifest, _)) => report.diagnostics.push(diagnostics::Diagnostic {
                 component: None,
