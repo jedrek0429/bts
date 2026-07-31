@@ -55,7 +55,11 @@ impl HttpAddonContext {
     }
 
     pub async fn publish(&self, kind: EventKind) -> Result<()> {
-        let endpoint = format!("{}/api/v1/events", self.core_http_url.trim_end_matches('/'));
+        let endpoint = format!(
+            "{}{}",
+            self.core_http_url.trim_end_matches('/'),
+            bts_protocol::core::CORE_EVENTS_PATH
+        );
         self.http
             .post(endpoint)
             .json(&NewEvent {
@@ -71,7 +75,11 @@ impl HttpAddonContext {
     }
 
     pub async fn state(&self) -> Result<BtsState> {
-        let endpoint = format!("{}/api/v1/state", self.core_http_url.trim_end_matches('/'));
+        let endpoint = format!(
+            "{}{}",
+            self.core_http_url.trim_end_matches('/'),
+            bts_protocol::core::CORE_STATE_PATH
+        );
         self.http
             .get(endpoint)
             .send()
@@ -144,7 +152,11 @@ impl HttpAddonContext {
         content_type: impl Into<String>,
         bytes: Vec<u8>,
     ) -> Result<AssetRef> {
-        let endpoint = format!("{}/api/v1/assets", self.core_http_url.trim_end_matches('/'));
+        let endpoint = format!(
+            "{}{}",
+            self.core_http_url.trim_end_matches('/'),
+            bts_protocol::core::CORE_ASSETS_PATH
+        );
         self.http
             .post(endpoint)
             .json(&AssetUpload {

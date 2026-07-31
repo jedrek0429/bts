@@ -9,8 +9,10 @@ use crate::{
     platform::{Architecture, Platform},
 };
 
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
-pub const BUNDLE_FORMAT_VERSION: u32 = 1;
+pub use bts_compat::{
+    COMPONENT_BUNDLE_FORMAT_VERSION as BUNDLE_FORMAT_VERSION,
+    RELEASE_MANIFEST_SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseManifest {
@@ -186,7 +188,7 @@ mod tests {
 
     fn manifest() -> ReleaseManifest {
         ReleaseManifest {
-            schema_version: 1,
+            schema_version: MANIFEST_SCHEMA_VERSION,
             release_version: "0.3.2".into(),
             installer: ReleaseAsset {
                 filename: "bts-install".into(),
@@ -199,7 +201,7 @@ mod tests {
                     architecture: "aarch64".into(),
                     filename: "display.tar.zst".into(),
                     sha256: "b".repeat(64),
-                    bundle_format_version: 1,
+                    bundle_format_version: BUNDLE_FORMAT_VERSION,
                 }],
             )]),
             licence_asset: Some(ReleaseAsset {

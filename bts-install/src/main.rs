@@ -553,7 +553,7 @@ fn ensure_default_configuration(
         Component::Display => {
             let core_url = match &cli.core_ws_url {
                 Some(value) => value.clone(),
-                None if local_core_selected => "ws://127.0.0.1:3100/api/v1/events/ws".into(),
+                None if local_core_selected => bts_compat::LOCAL_CORE_WEBSOCKET_URL.into(),
                 None if interactive(cli) => prompt("Remote Core WebSocket URL", "")?,
                 None => {
                     bail!("Display-only installation requires --core-url in non-interactive mode.")
@@ -596,7 +596,7 @@ fn ensure_default_configuration(
 fn resolve_core_http(cli: &Cli, local_core_selected: bool) -> Result<String> {
     let value = match &cli.core_http_url {
         Some(value) => value.clone(),
-        None if local_core_selected => "http://127.0.0.1:3100".into(),
+        None if local_core_selected => bts_compat::LOCAL_CORE_HTTP_URL.into(),
         None if interactive(cli) => prompt("Remote Core HTTP URL", "")?,
         None => bail!("This component requires --core-http-url in non-interactive mode."),
     };
@@ -607,7 +607,7 @@ fn resolve_core_http(cli: &Cli, local_core_selected: bool) -> Result<String> {
 fn resolve_core_websocket(cli: &Cli, local_core_selected: bool) -> Result<String> {
     let value = match &cli.core_ws_url {
         Some(value) => value.clone(),
-        None if local_core_selected => "ws://127.0.0.1:3100/api/v1/events/ws".into(),
+        None if local_core_selected => bts_compat::LOCAL_CORE_WEBSOCKET_URL.into(),
         None if interactive(cli) => prompt("Remote Core WebSocket URL", "")?,
         None => bail!("This component requires --core-ws-url in non-interactive mode."),
     };
@@ -630,7 +630,7 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
                     existing
                         .get("BTS_CORE_WS_URL")
                         .map(String::as_str)
-                        .unwrap_or("ws://127.0.0.1:3100/api/v1/events/ws"),
+                        .unwrap_or(bts_compat::LOCAL_CORE_WEBSOCKET_URL),
                 )?,
                 None => existing
                     .get("BTS_CORE_WS_URL")
@@ -747,7 +747,7 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
                     existing
                         .get("BTS_CORE_HTTP_URL")
                         .map(String::as_str)
-                        .unwrap_or("http://127.0.0.1:3100"),
+                        .unwrap_or(bts_compat::LOCAL_CORE_HTTP_URL),
                 )?,
                 None => existing
                     .get("BTS_CORE_HTTP_URL")
@@ -761,7 +761,7 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
                     existing
                         .get("BTS_CORE_WS_URL")
                         .map(String::as_str)
-                        .unwrap_or("ws://127.0.0.1:3100/api/v1/events/ws"),
+                        .unwrap_or(bts_compat::LOCAL_CORE_WEBSOCKET_URL),
                 )?,
                 None => existing
                     .get("BTS_CORE_WS_URL")
@@ -890,7 +890,7 @@ async fn extend_remote_diagnostics(
                 Ok(url
                     .replace("ws://", "http://")
                     .replace("wss://", "https://")
-                    .replace("/api/v1/events/ws", "/health"))
+                    .replace(bts_compat::CORE_EVENTS_WEBSOCKET_PATH, "/health"))
             });
         match result {
             Ok(url) => {

@@ -15,15 +15,16 @@ done
 "$repository_root/scripts/build-release" installer /usr/bin/true "$assets"
 "$repository_root/scripts/build-release" assemble "$assets" >/dev/null
 
-python3 - "$assets" "$version" <<'PY'
+python3 - "$assets" "$version" "$repository_root/compatibility.json" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+compatibility = json.loads(pathlib.Path(sys.argv[3]).read_text())
 manifest = json.loads((root / "release-manifest.json").read_text())
-assert manifest["schema_version"] == 1
+assert manifest["schema_version"] == compatibility["release_manifest_schema"]
 assert manifest["release_version"] == sys.argv[2]
 assert {"core", "display", "telephony", "addons"} == set(manifest["components"])
 assert {item["architecture"] for item in manifest["components"]["display"]} == {"x86_64", "aarch64"}
@@ -31,6 +32,8 @@ for item in [manifest["installer"], manifest["licence_asset"], *[asset for asset
     path = root / item["filename"]
     assert path.is_file(), item["filename"]
     assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
+for assets in manifest["components"].values():
+    assert all(item["bundle_format_version"] == compatibility["component_bundle_format"] for item in assets)
 checksums = dict(line.split(maxsplit=1)[::-1] for line in (root / "SHA256SUMS").read_text().splitlines())
 for filename, checksum in checksums.items():
     assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == checksum

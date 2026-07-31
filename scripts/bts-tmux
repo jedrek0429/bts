@@ -4,6 +4,8 @@ set -euo pipefail
 SESSION="${BTS_TMUX_SESSION:-bts}"
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${BTS_TMUX_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/bts/dev.env}"
+CORE_API_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["core_api"])' "$ROOT/compatibility.json")
+export BTS_CORE_API_PREFIX="/api/v$CORE_API_VERSION"
 
 if ! command -v tmux >/dev/null 2>&1; then
     printf 'tmux is required but was not found in PATH.\n' >&2
@@ -18,7 +20,7 @@ if [[ -r "$ENV_FILE" ]]; then
 fi
 
 export BTS_CORE_HTTP_URL="${BTS_CORE_HTTP_URL:-http://127.0.0.1:3100}"
-export BTS_CORE_WS_URL="${BTS_CORE_WS_URL:-ws://127.0.0.1:3100/api/v1/events/ws}"
+export BTS_CORE_WS_URL="${BTS_CORE_WS_URL:-ws://127.0.0.1:3100$BTS_CORE_API_PREFIX/events/ws}"
 export BTS_CORE_URL="${BTS_CORE_URL:-$BTS_CORE_HTTP_URL}"
 export BTS_ARI_USERNAME="${BTS_ARI_USERNAME:-bts}"
 
@@ -33,7 +35,7 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     tmux new-session -d -s "$SESSION" -n core -c "$ROOT" \
         'RUST_LOG=${RUST_LOG:-info} cargo run -p bts-core; exec "${SHELL:-/bin/sh}"'
 
-    for variable in BTS_CORE_HTTP_URL BTS_CORE_WS_URL BTS_CORE_URL BTS_ARI_URL BTS_ARI_USERNAME; do
+    for variable in BTS_CORE_API_PREFIX BTS_CORE_HTTP_URL BTS_CORE_WS_URL BTS_CORE_URL BTS_ARI_URL BTS_ARI_USERNAME; do
         tmux set-environment -t "$SESSION" "$variable" "${!variable}"
     done
     if [[ -n "${BTS_ARI_SSH_HOST:-}" ]]; then
@@ -50,7 +52,7 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     fi
 
     tmux new-window -d -t "$SESSION:" -n telephony -c "$ROOT" \
-        'until curl -fsS "$BTS_CORE_HTTP_URL/api/v1/addons" | grep -q '"'"'"menu"'"'"'; do sleep 1; done; if [[ -z "${BTS_ARI_PASSWORD:-}" ]]; then read -rsp "ARI password: " BTS_ARI_PASSWORD; printf "\n"; export BTS_ARI_PASSWORD; fi; RUST_LOG=${RUST_LOG:-info} cargo run -p bts-telephony; exec "${SHELL:-/bin/sh}"'
+        'until curl -fsS "$BTS_CORE_HTTP_URL$BTS_CORE_API_PREFIX/addons" | grep -q '"'"'"menu"'"'"'; do sleep 1; done; if [[ -z "${BTS_ARI_PASSWORD:-}" ]]; then read -rsp "ARI password: " BTS_ARI_PASSWORD; printf "\n"; export BTS_ARI_PASSWORD; fi; RUST_LOG=${RUST_LOG:-info} cargo run -p bts-telephony; exec "${SHELL:-/bin/sh}"'
 
     tmux select-window -t "$SESSION:core"
 fi

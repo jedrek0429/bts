@@ -17,6 +17,10 @@ use axum::{
     routing::{any, get, post},
 };
 use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
+use bts_protocol::core::{
+    CORE_ADDONS_PATH, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
+    CORE_EVENTS_WEBSOCKET_PATH, CORE_STATE_PATH,
+};
 use bts_protocol::{
     AssetId, AssetRef, AssetUpload, BtsState, DisplayCommand, Event, EventKind, NewEvent,
     ServerMessage,
@@ -70,12 +74,12 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/api/v1/state", get(get_state))
-        .route("/api/v1/addons", get(get_addons))
-        .route("/api/v1/assets", post(upload_asset))
-        .route("/api/v1/assets/{asset_id}", get(get_asset))
-        .route("/api/v1/events", post(submit_event))
-        .route("/api/v1/events/ws", any(websocket_handler))
+        .route(CORE_STATE_PATH, get(get_state))
+        .route(CORE_ADDONS_PATH, get(get_addons))
+        .route(CORE_ASSETS_PATH, post(upload_asset))
+        .route(CORE_ASSET_PATH, get(get_asset))
+        .route(CORE_EVENTS_PATH, post(submit_event))
+        .route(CORE_EVENTS_WEBSOCKET_PATH, any(websocket_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_address)

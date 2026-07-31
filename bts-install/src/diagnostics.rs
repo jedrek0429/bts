@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{model::Component, state::InstallerState, system::SystemAdapter};
 
+pub use bts_compat::INSTALLER_OUTPUT_SCHEMA_VERSION as OUTPUT_SCHEMA_VERSION;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
     pub schema_version: u32,
@@ -85,7 +87,7 @@ pub fn status<S: SystemAdapter>(
         })
         .collect();
     StatusReport {
-        schema_version: 1,
+        schema_version: OUTPUT_SCHEMA_VERSION,
         installer_version: crate::INSTALLER_VERSION.into(),
         installed_version: state.map(|value| value.installed_version.clone()),
         available_version: None,
@@ -108,7 +110,7 @@ pub fn doctor<S: SystemAdapter>(
             suggested_action: Some("Run: sudo bts-install install ROLE".into()),
         });
         return DoctorReport {
-            schema_version: 1,
+            schema_version: OUTPUT_SCHEMA_VERSION,
             healthy: false,
             diagnostics,
         };
@@ -258,7 +260,7 @@ pub fn doctor<S: SystemAdapter>(
         .iter()
         .any(|value| value.severity == Severity::Error);
     DoctorReport {
-        schema_version: 1,
+        schema_version: OUTPUT_SCHEMA_VERSION,
         healthy,
         diagnostics,
     }

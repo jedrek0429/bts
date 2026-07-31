@@ -2,6 +2,7 @@
 
 pub mod addons;
 pub mod assets;
+pub mod core;
 pub mod display;
 pub mod events;
 pub mod state;

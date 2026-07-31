@@ -16,8 +16,9 @@ pub fn validate_websocket_url(value: &str) -> Result<()> {
         "Core URL must use ws:// or wss://."
     );
     ensure!(
-        value.contains("/api/v1/events/ws"),
-        "Core URL must identify the published /api/v1/events/ws endpoint."
+        value.contains(bts_compat::CORE_EVENTS_WEBSOCKET_PATH),
+        "Core URL must identify the published {} endpoint.",
+        bts_compat::CORE_EVENTS_WEBSOCKET_PATH
     );
     ensure!(
         !value.chars().any(char::is_whitespace),

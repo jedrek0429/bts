@@ -11,7 +11,6 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CORE_HTTP_URL: &str = "http://127.0.0.1:3100";
-const DEFAULT_CORE_WS_URL: &str = "ws://127.0.0.1:3100/api/v1/events/ws";
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 #[tokio::main]
@@ -20,8 +19,8 @@ async fn main() -> Result<()> {
 
     let core_http_url =
         std::env::var("BTS_CORE_HTTP_URL").unwrap_or_else(|_| DEFAULT_CORE_HTTP_URL.to_owned());
-    let core_ws_url =
-        std::env::var("BTS_CORE_WS_URL").unwrap_or_else(|_| DEFAULT_CORE_WS_URL.to_owned());
+    let core_ws_url = std::env::var("BTS_CORE_WS_URL")
+        .unwrap_or_else(|_| bts_protocol::core::LOCAL_CORE_WEBSOCKET_URL.to_owned());
 
     let data_root =
         std::env::var("BTS_ADDON_DATA_ROOT").unwrap_or_else(|_| "/var/lib/bts/addons".to_owned());
