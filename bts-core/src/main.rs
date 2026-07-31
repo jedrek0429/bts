@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -14,7 +15,10 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, post},
 };
-use bts_protocol::{BtsState, Event, EventKind, NewEvent, ServerMessage};
+use bts_protocol::{
+    ADDON_API_VERSION, ActionId, AddonId, AddonManifest, BtsState, DisplayCommand, Event,
+    EventKind, NewEvent, ServerMessage,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, broadcast};
 use tracing::{error, info, warn};
@@ -25,7 +29,15 @@ const EVENT_CHANNEL_CAPACITY: usize = 128;
 #[derive(Clone)]
 struct AppState {
     current: Arc<RwLock<BtsState>>,
+    registry: Arc<RwLock<AddonRegistry>>,
     events: broadcast::Sender<ServerMessage>,
+}
+
+#[derive(Default)]
+struct AddonRegistry {
+    manifests: HashMap<AddonId, AddonManifest>,
+    actions: HashMap<ActionId, AddonId>,
+    digits: HashMap<char, AddonId>,
 }
 
 #[tokio::main]
@@ -37,12 +49,14 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         current: Arc::new(RwLock::new(BtsState::default())),
+        registry: Arc::new(RwLock::new(AddonRegistry::default())),
         events,
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/state", get(get_state))
+        .route("/api/v1/addons", get(get_addons))
         .route("/api/v1/events", post(submit_event))
         .route("/api/v1/events/ws", any(websocket_handler))
         .with_state(state);
@@ -82,15 +96,30 @@ async fn get_state(State(state): State<AppState>) -> Json<BtsState> {
     Json(current)
 }
 
+async fn get_addons(State(state): State<AppState>) -> Json<Vec<AddonManifest>> {
+    let mut manifests: Vec<_> = state
+        .registry
+        .read()
+        .await
+        .manifests
+        .values()
+        .cloned()
+        .collect();
+    manifests.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+    Json(manifests)
+}
+
 async fn submit_event(
     State(state): State<AppState>,
     Json(new_event): Json<NewEvent>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, (StatusCode, String)> {
     let event = Event::new(new_event.source, new_event.kind);
+
+    validate_and_register(&state, &event).await?;
 
     let updated_state = {
         let mut current = state.current.write().await;
-        apply_event(&mut current, &event);
+        apply_event(&mut current, &event)?;
         current.clone()
     };
 
@@ -102,20 +131,244 @@ async fn submit_event(
     );
 
     let message = ServerMessage::Event {
-        event: event.clone(),
+        event: Box::new(event.clone()),
         state: updated_state,
     };
 
     // No active WebSocket receivers is normal and must not reject the event.
     let _ = state.events.send(message);
 
-    (StatusCode::ACCEPTED, Json(event))
+    Ok((StatusCode::ACCEPTED, Json(event)))
 }
 
-fn apply_event(state: &mut BtsState, event: &Event) {
-    if let EventKind::DisplaySet { display } = &event.kind {
-        state.display = display.clone();
+async fn validate_and_register(
+    state: &AppState,
+    event: &Event,
+) -> Result<(), (StatusCode, String)> {
+    let mut registry = state.registry.write().await;
+    match &event.kind {
+        EventKind::AddonRegistered { manifest } => registry.register(manifest.clone()),
+        EventKind::AddonStopped { addon_id } => {
+            registry.unregister(addon_id);
+            Ok(())
+        }
+        EventKind::ActionRequested { request } => {
+            if registry.actions.contains_key(&request.action) {
+                Ok(())
+            } else {
+                Err((
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("action {} is not registered", request.action),
+                ))
+            }
+        }
+        EventKind::DisplayRequested { command } => registry.validate_display(command),
+        _ => Ok(()),
     }
+}
+
+fn apply_event(state: &mut BtsState, event: &Event) -> Result<(), (StatusCode, String)> {
+    match &event.kind {
+        EventKind::DisplayRequested { command } => apply_display_command(state, command),
+        EventKind::AddonStopped { addon_id } => {
+            if state
+                .display_lease
+                .as_ref()
+                .is_some_and(|lease| &lease.owner == addon_id)
+            {
+                state.display = bts_protocol::DisplayState::Blank;
+                state.display_lease = None;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn apply_display_command(
+    state: &mut BtsState,
+    command: &DisplayCommand,
+) -> Result<(), (StatusCode, String)> {
+    match command {
+        DisplayCommand::Show { lease, display } => {
+            if state
+                .display_lease
+                .as_ref()
+                .is_some_and(|active| active.priority > lease.priority)
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "a higher-priority display owns the screen".to_owned(),
+                ));
+            }
+            state.display = display.clone();
+            state.display_lease = Some(lease.clone());
+        }
+        DisplayCommand::Update {
+            addon_id,
+            lease_id,
+            display,
+        } => {
+            let active = state.display_lease.as_ref().ok_or((
+                StatusCode::CONFLICT,
+                "the display has no active lease".to_owned(),
+            ))?;
+            if &active.owner != addon_id || active.id != *lease_id {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "the display lease is stale or belongs to another addon".to_owned(),
+                ));
+            }
+            state.display = display.clone();
+        }
+        DisplayCommand::Release { addon_id, lease_id } => {
+            let active = state.display_lease.as_ref().ok_or((
+                StatusCode::CONFLICT,
+                "the display has no active lease".to_owned(),
+            ))?;
+            if &active.owner != addon_id || active.id != *lease_id {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "the display lease is stale or belongs to another addon".to_owned(),
+                ));
+            }
+            state.display = bts_protocol::DisplayState::Blank;
+            state.display_lease = None;
+        }
+        DisplayCommand::ReleaseAll { addon_id } => {
+            if state
+                .display_lease
+                .as_ref()
+                .is_some_and(|lease| &lease.owner == addon_id)
+            {
+                state.display = bts_protocol::DisplayState::Blank;
+                state.display_lease = None;
+            }
+        }
+    }
+    Ok(())
+}
+
+impl AddonRegistry {
+    fn register(&mut self, manifest: AddonManifest) -> Result<(), (StatusCode, String)> {
+        validate_manifest(&manifest)?;
+        if self.manifests.contains_key(&manifest.id) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("addon {} is already registered", manifest.id),
+            ));
+        }
+        for action in &manifest.actions {
+            if let Some(owner) = self.actions.get(&action.id) {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("action {} is already registered by {}", action.id, owner),
+                ));
+            }
+        }
+        for entry in &manifest.menu {
+            if let Some(owner) = self.digits.get(&entry.digit) {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "menu digit {} is already registered by {}",
+                        entry.digit, owner
+                    ),
+                ));
+            }
+        }
+        for action in &manifest.actions {
+            self.actions.insert(action.id.clone(), manifest.id.clone());
+        }
+        for entry in &manifest.menu {
+            self.digits.insert(entry.digit, manifest.id.clone());
+        }
+        self.manifests.insert(manifest.id.clone(), manifest);
+        Ok(())
+    }
+
+    fn unregister(&mut self, addon_id: &AddonId) {
+        if let Some(manifest) = self.manifests.remove(addon_id) {
+            for action in manifest.actions {
+                self.actions.remove(&action.id);
+            }
+            for entry in manifest.menu {
+                self.digits.remove(&entry.digit);
+            }
+        }
+    }
+
+    fn validate_display(&self, command: &DisplayCommand) -> Result<(), (StatusCode, String)> {
+        let (addon_id, display) = match command {
+            DisplayCommand::Show { lease, display } => (&lease.owner, Some(display)),
+            DisplayCommand::Update {
+                addon_id, display, ..
+            } => (addon_id, Some(display)),
+            DisplayCommand::Release { addon_id, .. } | DisplayCommand::ReleaseAll { addon_id } => {
+                (addon_id, None)
+            }
+        };
+        let manifest = self.manifests.get(addon_id).ok_or((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("addon {addon_id} is not registered"),
+        ))?;
+        if let Some(display) = display
+            && (!manifest
+                .capabilities
+                .contains(&bts_protocol::AddonCapability::Display)
+                || !manifest.screens.contains(&display.kind()))
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "addon {addon_id} did not declare the {:?} screen",
+                    display.kind()
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_manifest(manifest: &AddonManifest) -> Result<(), (StatusCode, String)> {
+    if manifest.api_version != ADDON_API_VERSION {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported addon API version".to_owned(),
+        ));
+    }
+    if manifest.id.as_str().is_empty() || manifest.name.trim().is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "addon identity and name must not be empty".to_owned(),
+        ));
+    }
+    let actions: HashSet<_> = manifest.actions.iter().map(|action| &action.id).collect();
+    if actions.len() != manifest.actions.len() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "manifest contains duplicate actions".to_owned(),
+        ));
+    }
+    let digits: HashSet<_> = manifest.menu.iter().map(|entry| entry.digit).collect();
+    if digits.len() != manifest.menu.len() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "manifest contains duplicate menu digits".to_owned(),
+        ));
+    }
+    for entry in &manifest.menu {
+        if !entry.digit.is_ascii_digit()
+            || !actions.contains(&entry.action)
+            || entry.prompt.trim().is_empty()
+        {
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("invalid menu entry for digit {}", entry.digit),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn websocket_handler(
@@ -228,5 +481,183 @@ async fn shutdown_signal() {
         Err(error) => {
             error!(%error, "failed to listen for shutdown signal");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bts_protocol::{
+        ActionRegistration, AddonCapability, AddonVersion, DisplayLease, DisplayLeaseId,
+        DisplayState, MenuEntry, ScreenKind,
+    };
+
+    fn manifest(id: &str, action: &str, digit: char) -> AddonManifest {
+        AddonManifest {
+            api_version: ADDON_API_VERSION,
+            id: AddonId::new(id),
+            name: id.to_owned(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: vec![ActionRegistration {
+                id: ActionId::new(action),
+                description: "Test".to_owned(),
+            }],
+            menu: vec![MenuEntry {
+                digit,
+                prompt: "sound:test".to_owned(),
+                action: ActionId::new(action),
+                order: 1,
+            }],
+            capabilities: vec![AddonCapability::Display],
+            screens: vec![ScreenKind::Message],
+        }
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_ids_actions_and_digits() {
+        let mut registry = AddonRegistry::default();
+        registry.register(manifest("one", "one.run", '1')).unwrap();
+
+        assert!(
+            registry
+                .register(manifest("one", "two.run", '2'))
+                .unwrap_err()
+                .1
+                .contains("already registered")
+        );
+        assert!(
+            registry
+                .register(manifest("two", "one.run", '2'))
+                .unwrap_err()
+                .1
+                .contains("action")
+        );
+        assert!(
+            registry
+                .register(manifest("two", "two.run", '1'))
+                .unwrap_err()
+                .1
+                .contains("digit")
+        );
+    }
+
+    #[test]
+    fn manifest_validation_rejects_invalid_menu_entries() {
+        let mut invalid = manifest("one", "one.run", 'x');
+        assert!(validate_manifest(&invalid).is_err());
+        invalid.menu[0].digit = '1';
+        invalid.menu[0].action = ActionId::new("missing");
+        assert!(validate_manifest(&invalid).is_err());
+    }
+
+    #[test]
+    fn registry_enforces_declared_display_screens() {
+        let mut registry = AddonRegistry::default();
+        registry.register(manifest("one", "one.run", '1')).unwrap();
+        let command = DisplayCommand::Show {
+            lease: DisplayLease {
+                id: DisplayLeaseId::new(),
+                owner: AddonId::new("one"),
+                priority: 1,
+            },
+            display: DisplayState::Clock {
+                time: "12:00".into(),
+                seconds: "00".into(),
+                date: "Today".into(),
+            },
+        };
+        assert_eq!(
+            registry.validate_display(&command).unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn stale_or_foreign_lease_cannot_update_display() {
+        let owner = AddonId::new("one");
+        let lease_id = DisplayLeaseId::new();
+        let mut state = BtsState::default();
+        apply_display_command(
+            &mut state,
+            &DisplayCommand::Show {
+                lease: DisplayLease {
+                    id: lease_id,
+                    owner: owner.clone(),
+                    priority: 10,
+                },
+                display: DisplayState::Message {
+                    title: "One".into(),
+                    body: "First".into(),
+                },
+            },
+        )
+        .unwrap();
+        let result = apply_display_command(
+            &mut state,
+            &DisplayCommand::Update {
+                addon_id: AddonId::new("two"),
+                lease_id,
+                display: DisplayState::Blank,
+            },
+        );
+        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
+        let result = apply_display_command(
+            &mut state,
+            &DisplayCommand::Update {
+                addon_id: owner,
+                lease_id: DisplayLeaseId::new(),
+                display: DisplayState::Blank,
+            },
+        );
+        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn higher_priority_display_cannot_be_replaced_by_lower_priority() {
+        let mut state = BtsState::default();
+        apply_display_command(
+            &mut state,
+            &DisplayCommand::Show {
+                lease: DisplayLease {
+                    id: DisplayLeaseId::new(),
+                    owner: AddonId::new("high"),
+                    priority: 20,
+                },
+                display: DisplayState::Blank,
+            },
+        )
+        .unwrap();
+        let result = apply_display_command(
+            &mut state,
+            &DisplayCommand::Show {
+                lease: DisplayLease {
+                    id: DisplayLeaseId::new(),
+                    owner: AddonId::new("low"),
+                    priority: 10,
+                },
+                display: DisplayState::Blank,
+            },
+        );
+        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn stopping_owner_releases_display() {
+        let owner = AddonId::new("one");
+        let mut state = BtsState {
+            display: DisplayState::Message {
+                title: "One".into(),
+                body: "Owned".into(),
+            },
+            display_lease: Some(DisplayLease {
+                id: DisplayLeaseId::new(),
+                owner: owner.clone(),
+                priority: 1,
+            }),
+        };
+        let event = Event::new("host", EventKind::AddonStopped { addon_id: owner });
+        apply_event(&mut state, &event).unwrap();
+        assert!(state.display_lease.is_none());
+        assert_eq!(state.display, DisplayState::Blank);
     }
 }

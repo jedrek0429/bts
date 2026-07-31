@@ -1,130 +1,59 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+//! Shared, implementation-independent BTS wire contracts.
 
-/// A complete BTS event as distributed by bts-core.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Event {
-    pub id: Uuid,
-    pub timestamp: DateTime<Utc>,
-    pub source: String,
+pub mod addons;
+pub mod display;
+pub mod events;
+pub mod state;
+pub mod telephony;
 
-    #[serde(flatten)]
-    pub kind: EventKind,
-}
+pub use addons::*;
+pub use display::*;
+pub use events::*;
+pub use state::*;
+pub use telephony::*;
 
-impl Event {
-    pub fn new(source: impl Into<String>, kind: EventKind) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
-            source: source.into(),
-            kind,
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addon_manifest_round_trips_through_json() {
+        let manifest = AddonManifest {
+            api_version: ADDON_API_VERSION,
+            id: AddonId::new("example"),
+            name: "Example".into(),
+            version: AddonVersion::new(1, 2, 3),
+            actions: vec![ActionRegistration {
+                id: ActionId::new("example.run"),
+                description: "Run".into(),
+            }],
+            menu: vec![MenuEntry {
+                digit: '4',
+                prompt: "sound:example".into(),
+                action: ActionId::new("example.run"),
+                order: 40,
+            }],
+            capabilities: vec![AddonCapability::Display],
+            screens: vec![ScreenKind::Message],
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AddonManifest>(&json).unwrap(),
+            manifest
+        );
     }
-}
 
-/// The useful part submitted by a BTS client.
-///
-/// bts-core adds the unique ID and timestamp.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewEvent {
-    pub source: String,
-
-    #[serde(flatten)]
-    pub kind: EventKind,
-}
-
-/// Every event type understood by BTS.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum EventKind {
-    SystemStarted {
-        component: String,
-    },
-
-    ActionRequested {
-        action: Action,
-    },
-
-    DisplaySet {
-        display: DisplayState,
-    },
-
-    PhoneCallStarted {
-        channel_id: String,
-        caller: Option<String>,
-    },
-
-    PhoneDtmfReceived {
-        channel_id: String,
-        digit: String,
-    },
-
-    PhoneCallEnded {
-        channel_id: String,
-    },
-}
-
-/// A user-facing action which may be requested by any BTS input client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum Action {
-    Clock,
-    Weather,
-    Message { title: String, body: String },
-    Blank,
-}
-
-/// State retained by bts-core.
-///
-/// Events describe what happened. State describes what is true now.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BtsState {
-    pub display: DisplayState,
-}
-
-impl Default for BtsState {
-    fn default() -> Self {
-        Self {
-            display: DisplayState::Message {
-                title: "Bansleben Telephone Services".to_owned(),
-                body: "BTS Core is online".to_owned(),
-            },
-        }
+    #[test]
+    fn display_command_round_trips_with_opaque_lease() {
+        let command = DisplayCommand::Update {
+            addon_id: AddonId::new("example"),
+            lease_id: DisplayLeaseId::new(),
+            display: DisplayState::Blank,
+        };
+        let json = serde_json::to_string(&command).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<DisplayCommand>(&json).unwrap(),
+            DisplayCommand::Update { .. }
+        ));
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "screen", rename_all = "snake_case")]
-pub enum DisplayState {
-    Clock {
-        time: String,
-        seconds: String,
-        date: String,
-    },
-
-    Weather {
-        location: String,
-        temperature: String,
-        condition: String,
-        details: Vec<String>,
-        updated_at: String,
-    },
-
-    Message {
-        title: String,
-        body: String,
-    },
-
-    Blank,
-}
-
-/// Messages sent from bts-core to WebSocket clients.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "message", rename_all = "snake_case")]
-pub enum ServerMessage {
-    Snapshot { state: BtsState },
-
-    Event { event: Event, state: BtsState },
 }

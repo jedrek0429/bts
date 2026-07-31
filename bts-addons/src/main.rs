@@ -3,7 +3,7 @@ mod addons;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use bts_addons::{AddonContext, AddonFailure};
+use bts_addons::AddonFailure;
 use bts_protocol::{Event, ServerMessage};
 use futures_util::StreamExt;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WebSocketMessage};
@@ -23,16 +23,17 @@ async fn main() -> Result<()> {
     let core_ws_url =
         std::env::var("BTS_CORE_WS_URL").unwrap_or_else(|_| DEFAULT_CORE_WS_URL.to_owned());
 
-    let context = AddonContext::new(core_http_url);
-    let addons = addons::Addons::new();
+    let data_root =
+        std::env::var("BTS_ADDON_DATA_ROOT").unwrap_or_else(|_| "/var/lib/bts/addons".to_owned());
+    let addons = addons::Addons::new(core_http_url, data_root.into())?;
 
-    log_failures(addons.start(&context).await);
+    log_failures(addons.start().await);
 
     info!(%core_ws_url, "BTS Addons started");
 
     loop {
         tokio::select! {
-            result = run_connection(&core_ws_url, &context, &addons) => {
+            result = run_connection(&core_ws_url, &addons) => {
                 if let Err(error) = result {
                     warn!(%error, "BTS Core event connection ended");
                 }
@@ -46,15 +47,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    log_failures(addons.stop(&context).await);
+    log_failures(addons.stop().await);
     Ok(())
 }
 
-async fn run_connection(
-    core_ws_url: &str,
-    context: &AddonContext,
-    addons: &addons::Addons,
-) -> Result<()> {
+async fn run_connection(core_ws_url: &str, addons: &addons::Addons) -> Result<()> {
     let (socket, _) = connect_async(core_ws_url)
         .await
         .with_context(|| format!("failed to connect to {core_ws_url}"))?;
@@ -72,7 +69,7 @@ async fn run_connection(
                     serde_json::from_str(&text).context("invalid BTS Core message")?;
 
                 if let ServerMessage::Event { event, .. } = server_message {
-                    dispatch_event(context, addons, &event).await;
+                    dispatch_event(addons, &event).await;
                 }
             }
 
@@ -88,22 +85,9 @@ async fn run_connection(
     Ok(())
 }
 
-async fn dispatch_event(context: &AddonContext, addons: &addons::Addons, event: &Event) {
-    for failure in addons.handle(context, event).await {
+async fn dispatch_event(addons: &addons::Addons, event: &Event) {
+    for failure in addons.handle(event).await {
         error!(%failure, "addon failed");
-        publish_addon_error(context, &failure).await;
-    }
-}
-
-async fn publish_addon_error(context: &AddonContext, error: &AddonFailure) {
-    if let Err(publish_error) = addons::message::show(
-        context,
-        "BTS service",
-        &format!("The service is currently unavailable.\n\n{error}"),
-    )
-    .await
-    {
-        error!(%publish_error, "failed to publish addon error message");
     }
 }
 

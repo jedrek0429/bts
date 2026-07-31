@@ -1,142 +1,62 @@
-//! Stable contracts for BTS Addon API v1.
-//!
-//! Addons receive BTS events and can communicate with BTS Core through
-//! [`AddonContext`]. Component-specific implementation details are deliberately
-//! not exposed through this API.
+//! Runtime contracts and controlled Core client for statically linked BTS addons.
 
-use std::fmt;
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use bts_protocol::{Action, BtsState, Event, EventKind, NewEvent};
+use bts_protocol::{
+    ActionId, ActionRequest, AddonId, AddonManifest, BtsState, DisplayCommand, DisplayLease,
+    DisplayLeaseId, DisplayState, Event, EventKind, NewEvent,
+};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 
-/// The version of the addon contract defined by this crate.
-pub const ADDON_API_VERSION: u16 = 1;
-
-/// A stable, machine-readable addon identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AddonId(String);
-
-impl AddonId {
-    /// Creates an addon identifier.
-    ///
-    /// Identifiers should use lower-case ASCII words separated by hyphens.
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// Returns the identifier as text.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for AddonId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-/// Semantic version metadata for an addon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AddonVersion {
-    pub major: u16,
-    pub minor: u16,
-    pub patch: u16,
-}
-
-impl AddonVersion {
-    /// Creates version metadata from semantic-version components.
-    pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
-}
-
-impl fmt::Display for AddonVersion {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
-
-/// An action handled by an addon.
-///
-/// Unlike [`Action`], this contains no request-specific data and is therefore
-/// suitable for capability discovery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionKind {
-    Clock,
-    Weather,
-    Message,
-    Blank,
-}
-
-impl From<&Action> for ActionKind {
-    fn from(action: &Action) -> Self {
-        match action {
-            Action::Clock => Self::Clock,
-            Action::Weather => Self::Weather,
-            Action::Message { .. } => Self::Message,
-            Action::Blank => Self::Blank,
-        }
-    }
-}
-
-/// A facility an addon needs in order to operate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AddonCapability {
-    /// Publish events to BTS Core.
-    PublishEvents,
-    /// Read the current state from BTS Core.
-    ReadState,
-    /// Contact an HTTP service outside BTS.
-    ExternalHttp,
-}
-
-/// Identity and capability declaration for one addon.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AddonManifest {
-    /// Addon API version expected by the implementation.
-    pub api_version: u16,
-    pub id: AddonId,
-    pub name: String,
-    pub version: AddonVersion,
-    pub actions: Vec<ActionKind>,
-    pub capabilities: Vec<AddonCapability>,
-}
-
-/// Restricted access to services supplied by BTS Core.
 #[derive(Clone)]
 pub struct AddonContext {
     http: Client,
     core_http_url: String,
+    addon_id: AddonId,
+    configuration: HashMap<String, String>,
+    data_directory: PathBuf,
 }
 
 impl AddonContext {
-    /// Creates a Core context using the supplied HTTP base URL.
-    pub fn new(core_http_url: impl Into<String>) -> Self {
+    pub fn new(core_http_url: impl Into<String>, addon_id: AddonId, data_root: &Path) -> Self {
+        let prefix = format!(
+            "BTS_ADDON_{}_",
+            addon_id.as_str().replace('-', "_").to_uppercase()
+        );
+        let configuration = std::env::vars()
+            .filter_map(|(key, value)| key.strip_prefix(&prefix).map(|key| (key.to_owned(), value)))
+            .collect();
         Self {
             http: Client::new(),
             core_http_url: core_http_url.into(),
+            data_directory: data_root.join(addon_id.as_str()),
+            addon_id,
+            configuration,
         }
     }
 
-    /// Publishes an event attributed to the calling addon.
-    pub async fn publish(&self, source: &AddonId, kind: EventKind) -> Result<()> {
-        let endpoint = format!("{}/api/v1/events", self.core_http_url.trim_end_matches('/'));
+    pub fn addon_id(&self) -> &AddonId {
+        &self.addon_id
+    }
+    pub fn configuration(&self, key: &str) -> Option<&str> {
+        self.configuration.get(key).map(String::as_str)
+    }
+    pub fn data_directory(&self) -> &Path {
+        &self.data_directory
+    }
 
+    pub async fn publish(&self, kind: EventKind) -> Result<()> {
+        let endpoint = format!("{}/api/v1/events", self.core_http_url.trim_end_matches('/'));
         self.http
             .post(endpoint)
             .json(&NewEvent {
-                source: source.to_string(),
+                source: self.addon_id.to_string(),
                 kind,
             })
             .send()
@@ -144,14 +64,11 @@ impl AddonContext {
             .context("failed to submit addon event to BTS Core")?
             .error_for_status()
             .context("BTS Core rejected addon event")?;
-
         Ok(())
     }
 
-    /// Retrieves the current state retained by BTS Core.
     pub async fn state(&self) -> Result<BtsState> {
         let endpoint = format!("{}/api/v1/state", self.core_http_url.trim_end_matches('/'));
-
         self.http
             .get(endpoint)
             .send()
@@ -159,33 +76,79 @@ impl AddonContext {
             .context("failed to request BTS state")?
             .error_for_status()
             .context("BTS Core rejected state request")?
-            .json::<BtsState>()
+            .json()
             .await
             .context("failed to decode BTS state")
     }
+
+    pub async fn request_action(
+        &self,
+        action: ActionId,
+        parameters: serde_json::Value,
+    ) -> Result<()> {
+        self.publish(EventKind::ActionRequested {
+            request: ActionRequest { action, parameters },
+        })
+        .await
+    }
+
+    pub async fn show(&self, display: DisplayState, priority: u8) -> Result<DisplayLeaseId> {
+        let lease = DisplayLease {
+            id: DisplayLeaseId::new(),
+            owner: self.addon_id.clone(),
+            priority,
+        };
+        let id = lease.id;
+        self.publish(EventKind::DisplayRequested {
+            command: DisplayCommand::Show { lease, display },
+        })
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn update(&self, lease_id: DisplayLeaseId, display: DisplayState) -> Result<()> {
+        self.publish(EventKind::DisplayRequested {
+            command: DisplayCommand::Update {
+                addon_id: self.addon_id.clone(),
+                lease_id,
+                display,
+            },
+        })
+        .await
+    }
+
+    pub async fn release(&self, lease_id: DisplayLeaseId) -> Result<()> {
+        self.publish(EventKind::DisplayRequested {
+            command: DisplayCommand::Release {
+                addon_id: self.addon_id.clone(),
+                lease_id,
+            },
+        })
+        .await
+    }
+
+    pub async fn release_all(&self) -> Result<()> {
+        self.publish(EventKind::DisplayRequested {
+            command: DisplayCommand::ReleaseAll {
+                addon_id: self.addon_id.clone(),
+            },
+        })
+        .await
+    }
 }
 
-/// Common lifecycle and event contract implemented by every BTS addon.
 #[async_trait]
 pub trait Addon: Send + Sync {
-    /// Describes the addon and the facilities it uses.
     fn manifest(&self) -> AddonManifest;
-
-    /// Starts addon-owned resources. The default implementation has no work.
     async fn start(&self, _context: &AddonContext) -> Result<()> {
         Ok(())
     }
-
-    /// Handles one event received from BTS Core.
     async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()>;
-
-    /// Stops addon-owned resources. The default implementation has no work.
     async fn stop(&self, _context: &AddonContext) -> Result<()> {
         Ok(())
     }
 }
 
-/// A failure attributed to one addon without terminating the addon host.
 #[derive(Debug)]
 pub struct AddonFailure {
     pub addon_id: AddonId,
@@ -194,49 +157,173 @@ pub struct AddonFailure {
 }
 
 impl fmt::Display for AddonFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
-            formatter,
+            f,
             "{} {} failed: {}",
             self.addon_id, self.operation, self.error
         )
     }
 }
-
 impl std::error::Error for AddonFailure {}
+
+pub struct AddonRegistry {
+    addons: HashMap<AddonId, Box<dyn Addon>>,
+    actions: HashMap<ActionId, AddonId>,
+    digits: HashMap<char, AddonId>,
+}
+
+impl AddonRegistry {
+    pub fn new(addons: Vec<Box<dyn Addon>>) -> Result<Self> {
+        let mut registry = Self {
+            addons: HashMap::new(),
+            actions: HashMap::new(),
+            digits: HashMap::new(),
+        };
+        for addon in addons {
+            registry.register(addon)?;
+        }
+        Ok(registry)
+    }
+
+    fn register(&mut self, addon: Box<dyn Addon>) -> Result<()> {
+        let manifest = addon.manifest();
+        anyhow::ensure!(
+            manifest.api_version == bts_protocol::ADDON_API_VERSION,
+            "unsupported addon API version for {}",
+            manifest.id
+        );
+        anyhow::ensure!(
+            !manifest.id.as_str().is_empty() && !manifest.name.trim().is_empty(),
+            "addon identity and name must not be empty"
+        );
+        anyhow::ensure!(
+            !self.addons.contains_key(&manifest.id),
+            "duplicate addon ID {}",
+            manifest.id
+        );
+        for action in &manifest.actions {
+            anyhow::ensure!(
+                !self.actions.contains_key(&action.id),
+                "duplicate action {}",
+                action.id
+            );
+        }
+        for entry in &manifest.menu {
+            anyhow::ensure!(
+                entry.digit.is_ascii_digit(),
+                "invalid menu digit {}",
+                entry.digit
+            );
+            anyhow::ensure!(
+                manifest
+                    .actions
+                    .iter()
+                    .any(|action| action.id == entry.action),
+                "menu digit {} refers to unregistered action {}",
+                entry.digit,
+                entry.action
+            );
+            anyhow::ensure!(
+                !self.digits.contains_key(&entry.digit),
+                "duplicate menu digit {}",
+                entry.digit
+            );
+        }
+        for action in &manifest.actions {
+            self.actions.insert(action.id.clone(), manifest.id.clone());
+        }
+        for entry in &manifest.menu {
+            self.digits.insert(entry.digit, manifest.id.clone());
+        }
+        self.addons.insert(manifest.id, addon);
+        Ok(())
+    }
+
+    pub fn manifests(&self) -> Vec<AddonManifest> {
+        let mut values: Vec<_> = self.addons.values().map(|addon| addon.manifest()).collect();
+        values.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        values
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = (&AddonId, &dyn Addon)> {
+        self.addons.iter().map(|(id, addon)| (id, addon.as_ref()))
+    }
+    pub fn action_owner(&self, action: &ActionId) -> Option<&AddonId> {
+        self.actions.get(action)
+    }
+    pub fn addon(&self, id: &AddonId) -> Option<&dyn Addon> {
+        self.addons.get(id).map(Box::as_ref)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bts_protocol::{ADDON_API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
 
-    #[test]
-    fn manifest_round_trips_through_json() {
-        let manifest = AddonManifest {
+    struct Stub(AddonManifest);
+    #[async_trait]
+    impl Addon for Stub {
+        fn manifest(&self) -> AddonManifest {
+            self.0.clone()
+        }
+        async fn handle_event(&self, _: &AddonContext, _: &Event) -> Result<()> {
+            Ok(())
+        }
+    }
+    fn stub(id: &str, action: &str, digit: char) -> Box<dyn Addon> {
+        Box::new(Stub(AddonManifest {
             api_version: ADDON_API_VERSION,
-            id: AddonId::new("weather"),
-            name: "Weather Service".to_owned(),
-            version: AddonVersion::new(1, 2, 3),
-            actions: vec![ActionKind::Weather],
-            capabilities: vec![
-                AddonCapability::PublishEvents,
-                AddonCapability::ExternalHttp,
-            ],
-        };
-
-        let json = serde_json::to_string(&manifest).expect("manifest should serialise");
-        let decoded = serde_json::from_str(&json).expect("manifest should deserialise");
-
-        assert_eq!(manifest, decoded);
-        assert!(json.contains("\"external_http\""));
+            id: AddonId::new(id),
+            name: id.into(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: vec![ActionRegistration {
+                id: ActionId::new(action),
+                description: "test".into(),
+            }],
+            menu: vec![MenuEntry {
+                digit,
+                prompt: "sound:test".into(),
+                action: ActionId::new(action),
+                order: 1,
+            }],
+            capabilities: vec![],
+            screens: vec![],
+        }))
     }
 
     #[test]
-    fn action_kind_discards_request_data() {
-        let action = Action::Message {
-            title: "Notice".to_owned(),
-            body: "Hello".to_owned(),
-        };
-
-        assert_eq!(ActionKind::from(&action), ActionKind::Message);
+    fn registry_rejects_duplicate_identity_action_and_digit() {
+        assert!(
+            AddonRegistry::new(vec![
+                stub("one", "one.run", '1'),
+                stub("one", "two.run", '2')
+            ])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate addon ID")
+        );
+        assert!(
+            AddonRegistry::new(vec![
+                stub("one", "same.run", '1'),
+                stub("two", "same.run", '2')
+            ])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate action")
+        );
+        assert!(
+            AddonRegistry::new(vec![
+                stub("one", "one.run", '1'),
+                stub("two", "two.run", '1')
+            ])
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("duplicate menu digit")
+        );
     }
 }

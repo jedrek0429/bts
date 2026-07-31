@@ -15,6 +15,7 @@ Restart=always
 RestartSec=2s
 NoNewPrivileges=yes
 PrivateTmp=yes
+StateDirectory=bts
 ProtectSystem=strict
 ProtectHome=yes
 ProtectKernelTunables=yes

@@ -1,9 +1,9 @@
 [Unit]
 Description=Bansleben Telephone Services telephony bridge
 Documentation=https://github.com/jedrek0429/bts
-After=network-online.target asterisk.service bts-core.service
+After=network-online.target asterisk.service bts-core.service bts-addons.service
 Wants=network-online.target asterisk.service
-Requires=bts-core.service asterisk.service
+Requires=bts-core.service bts-addons.service asterisk.service
 
 [Service]
 Type=simple

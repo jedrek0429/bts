@@ -10,6 +10,8 @@ The processes communicate over HTTP and WebSockets:
 * `bts-display` renders the current state full-screen.
 * `bts-protocol` contains shared event and state types.
 
+Addon authors should start with the [Addon API v1 author guide](docs/addon-api-v1.md).
+
 ## Deployment on Arch Linux
 
 The package installs the release binaries, systemd units, Cage kiosk session and a persistent configuration file. On boot, `bts-display` takes ownership of `tty1` through Cage and renders directly to the connected DRM display, while Core, Addons and Telephony run as isolated system services.
@@ -125,7 +127,7 @@ BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
 BTS_ARI_URL=http://127.0.0.1:8088
 BTS_ARI_USERNAME=bts
 BTS_ARI_PASSWORD=CHANGE_ME
-BTS_MENU_MEDIA_URIS=sound:bts/welcome,sound:bts/press-2-time,sound:bts/press-3-weather,sound:bts/press-0-clear
+BTS_ADDON_DATA_ROOT=/var/lib/bts/addons
 ```
 
 Core listens on port 3100:
@@ -133,6 +135,7 @@ Core listens on port 3100:
 * `POST /api/v1/events`
 * `GET /api/v1/events/ws`
 * `GET /api/v1/state`
+* `GET /api/v1/addons`
 * `GET /health`
 
 ## Licence

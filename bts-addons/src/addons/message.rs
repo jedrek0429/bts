@@ -1,13 +1,14 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use bts_addons::{
-    ADDON_API_VERSION, ActionKind, Addon, AddonCapability, AddonContext, AddonId, AddonManifest,
-    AddonVersion,
+use bts_addons::{Addon, AddonContext};
+use bts_protocol::{
+    ADDON_API_VERSION, ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest,
+    AddonVersion, DisplayState, Event, EventKind, MenuEntry, ScreenKind,
 };
-use bts_protocol::{Action, DisplayState, Event, EventKind};
 
-const ADDON_ID: &str = "message";
-
+pub(crate) const ID: &str = "message";
+pub(crate) const SHOW: &str = "message.show";
+pub(crate) const BLANK: &str = "display.blank";
 pub(crate) struct MessageAddon;
 
 #[async_trait]
@@ -15,50 +16,60 @@ impl Addon for MessageAddon {
     fn manifest(&self) -> AddonManifest {
         AddonManifest {
             api_version: ADDON_API_VERSION,
-            id: AddonId::new(ADDON_ID),
-            name: "Message Service".to_owned(),
+            id: AddonId::new(ID),
+            name: "Message Service".into(),
             version: AddonVersion::new(1, 0, 0),
-            actions: vec![ActionKind::Message, ActionKind::Blank],
-            capabilities: vec![AddonCapability::PublishEvents],
+            actions: vec![
+                ActionRegistration {
+                    id: ActionId::new(SHOW),
+                    description: "Show a message".into(),
+                },
+                ActionRegistration {
+                    id: ActionId::new(BLANK),
+                    description: "Blank the display".into(),
+                },
+            ],
+            menu: vec![MenuEntry {
+                digit: '0',
+                prompt: "sound:bts/press-0-clear".into(),
+                action: ActionId::new(BLANK),
+                order: 90,
+            }],
+            capabilities: vec![AddonCapability::Display],
+            screens: vec![ScreenKind::Message, ScreenKind::Blank],
         }
     }
-
     async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
-        let EventKind::ActionRequested { action } = &event.kind else {
+        let EventKind::ActionRequested { request } = &event.kind else {
             return Ok(());
         };
-
-        match action {
-            Action::Message { title, body } => show(context, title, body).await,
-            Action::Blank => {
+        match request.action.as_str() {
+            SHOW => {
+                let title = request
+                    .parameters
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("BTS service");
+                let body = request
+                    .parameters
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 context
-                    .publish(
-                        &AddonId::new(ADDON_ID),
-                        EventKind::DisplaySet {
-                            display: DisplayState::Blank,
+                    .show(
+                        DisplayState::Message {
+                            title: title.into(),
+                            body: body.into(),
                         },
+                        10,
                     )
-                    .await
+                    .await?;
             }
-            Action::Clock | Action::Weather => Ok(()),
+            BLANK => {
+                context.show(DisplayState::Blank, 10).await?;
+            }
+            _ => {}
         }
+        Ok(())
     }
-}
-
-pub(crate) async fn show(
-    context: &AddonContext,
-    title: impl Into<String>,
-    body: impl Into<String>,
-) -> Result<()> {
-    context
-        .publish(
-            &AddonId::new(ADDON_ID),
-            EventKind::DisplaySet {
-                display: DisplayState::Message {
-                    title: title.into(),
-                    body: body.into(),
-                },
-            },
-        )
-        .await
 }
