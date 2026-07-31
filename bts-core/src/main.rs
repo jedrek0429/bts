@@ -16,6 +16,9 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, post},
 };
+use bts_core::presentations::{
+    DEFAULT_ACKNOWLEDGEMENT_EXPIRY_INTERVAL, DEFAULT_ACKNOWLEDGEMENT_TIMEOUT, PresentationManager,
+};
 use bts_core::terminals::{
     DEFAULT_EXPIRY_INTERVAL, DEFAULT_PRESENCE_TIMEOUT, TerminalRegistry, configured_state_path,
 };
@@ -40,6 +43,7 @@ struct AppState {
     current: Arc<RwLock<BtsState>>,
     registry: Arc<RwLock<AddonRegistry>>,
     terminals: TerminalRegistry,
+    presentations: PresentationManager,
     assets: Arc<RwLock<HashMap<AssetId, StoredAsset>>>,
     events: broadcast::Sender<ServerMessage>,
 }
@@ -70,17 +74,26 @@ async fn main() -> anyhow::Result<()> {
     let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
     let terminals = TerminalRegistry::load(configured_state_path(), DEFAULT_PRESENCE_TIMEOUT)
         .context("failed to load the terminal registry")?;
+    let presentations =
+        PresentationManager::new(terminals.clone(), DEFAULT_ACKNOWLEDGEMENT_TIMEOUT);
 
     let state = AppState {
         current: Arc::new(RwLock::new(BtsState::default())),
         registry: Arc::new(RwLock::new(AddonRegistry::default())),
         terminals,
+        presentations,
         assets: Arc::new(RwLock::new(HashMap::new())),
         events,
     };
     let terminal_expiry_task = spawn_terminal_expiry(state.terminals.clone());
-    let terminal_change_task = spawn_terminal_changes(
+    let terminal_change_task = spawn_core_changes(
         state.terminals.subscribe_changes(),
+        state.current.clone(),
+        state.events.clone(),
+    );
+    let presentation_expiry_task = spawn_presentation_expiry(state.presentations.clone());
+    let presentation_change_task = spawn_core_changes(
+        state.presentations.subscribe_changes(),
         state.current.clone(),
         state.events.clone(),
     );
@@ -107,13 +120,15 @@ async fn main() -> anyhow::Result<()> {
         .context("BTS Core HTTP server failed")?;
     terminal_expiry_task.abort();
     terminal_change_task.abort();
+    presentation_expiry_task.abort();
+    presentation_change_task.abort();
 
     info!("BTS Core stopped");
 
     Ok(())
 }
 
-fn spawn_terminal_changes(
+fn spawn_core_changes(
     mut changes: broadcast::Receiver<EventKind>,
     current: Arc<RwLock<BtsState>>,
     events: broadcast::Sender<ServerMessage>,
@@ -124,17 +139,29 @@ fn spawn_terminal_changes(
                 Ok(kind) => {
                     let event = Event::new("bts-core", kind);
                     let state = current.read().await.clone();
-                    info!(event_id = %event.id, kind = ?event.kind, "terminal registry changed");
+                    info!(event_id = %event.id, kind = ?event.kind, "Core state changed");
                     let _ = events.send(ServerMessage::Event {
                         event: Box::new(event),
                         state,
                     });
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "terminal registry change listener lagged");
+                    warn!(skipped, "Core change listener lagged");
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
+        }
+    })
+}
+
+fn spawn_presentation_expiry(manager: PresentationManager) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(DEFAULT_ACKNOWLEDGEMENT_EXPIRY_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            manager.expire_acknowledgements(std::time::Instant::now());
         }
     })
 }
@@ -295,11 +322,14 @@ async fn validate_and_register(
 fn validate_client_event_kind(kind: &EventKind) -> Result<(), (StatusCode, String)> {
     if matches!(
         kind,
-        EventKind::TerminalMetadataChanged { .. } | EventKind::TerminalGroupChanged { .. }
+        EventKind::TerminalMetadataChanged { .. }
+            | EventKind::TerminalGroupChanged { .. }
+            | EventKind::PresentationDeliveryCompleted { .. }
     ) {
         Err((
             StatusCode::FORBIDDEN,
-            "terminal administration events can only be emitted by BTS Core".to_owned(),
+            "terminal administration and delivery events can only be emitted by BTS Core"
+                .to_owned(),
         ))
     } else {
         Ok(())
@@ -794,14 +824,26 @@ mod tests {
     }
 
     #[test]
-    fn client_cannot_publish_core_owned_terminal_administration_events() {
-        let kind = EventKind::TerminalGroupChanged {
-            group_id: bts_protocol::GroupId::new("downstairs").unwrap(),
-            change: bts_protocol::TerminalGroupChange::Deleted,
-        };
-        assert_eq!(
-            validate_client_event_kind(&kind).unwrap_err().0,
-            StatusCode::FORBIDDEN
-        );
+    fn client_cannot_publish_core_owned_terminal_events() {
+        let events = [
+            EventKind::TerminalGroupChanged {
+                group_id: bts_protocol::GroupId::new("downstairs").unwrap(),
+                change: bts_protocol::TerminalGroupChange::Deleted,
+            },
+            EventKind::PresentationDeliveryCompleted {
+                result: bts_protocol::PresentationDeliveryResult {
+                    presentation_id: bts_protocol::PresentationId::default(),
+                    requested_target: bts_protocol::TerminalTarget::all(),
+                    resolved_target: None,
+                    outcomes: std::collections::BTreeMap::new(),
+                },
+            },
+        ];
+        for kind in events {
+            assert_eq!(
+                validate_client_event_kind(&kind).unwrap_err().0,
+                StatusCode::FORBIDDEN
+            );
+        }
     }
 }

@@ -1,15 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bts_protocol::addons::v1::{ActionId, MenuEntry};
 use bts_protocol::{
     CoreTerminalMessage, DisplayCommand, DisplayLeaseId, DisplayState, DtmfMenuKey,
-    DtmfMenuKeyError, Event, EventKind, GroupId, GroupIdentity, GroupName, PresentationDispatch,
-    PresentationId, PresentationRejection, PresentationRejectionCode, PresentationRequest,
-    ProtocolVersion, RegistrationRejection, RegistrationRejectionReason, ReservedDtmfAction,
-    ResolvedTarget, RoutingError, TagMatch, TagQuery, TargetScope, TerminalCapabilities,
-    TerminalCapability, TerminalClientMessage, TerminalConnectionId, TerminalGroupChange,
-    TerminalId, TerminalIdentity, TerminalImplementationId, TerminalMetadataChange, TerminalName,
-    TerminalRegistration, TerminalTag, TerminalTarget,
+    DtmfMenuKeyError, Event, EventKind, GroupId, GroupIdentity, GroupName,
+    PresentationDeliveryOutcome, PresentationDeliveryResult, PresentationDispatch, PresentationId,
+    PresentationRejection, PresentationRejectionCode, PresentationRequest, ProtocolVersion,
+    RegistrationRejection, RegistrationRejectionReason, ReservedDtmfAction, ResolvedTarget,
+    RoutingError, TagMatch, TagQuery, TargetScope, TerminalCapabilities, TerminalCapability,
+    TerminalClientMessage, TerminalConnectionId, TerminalGroupChange, TerminalId, TerminalIdentity,
+    TerminalImplementationId, TerminalMetadataChange, TerminalName, TerminalRegistration,
+    TerminalTag, TerminalTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -304,6 +305,70 @@ fn presentation_dispatch_must_resolve_its_own_request_target() {
     )
     .unwrap();
     assert!(PresentationDispatch::new(request, resolved).is_err());
+}
+
+#[test]
+fn bounded_delivery_results_have_stable_terminal_specific_wire_outcomes() {
+    let requested = TerminalTarget::all();
+    let accepted = terminal_id("alpha");
+    let incompatible = terminal_id("bravo");
+    let offline = terminal_id("charlie");
+    let result = PresentationDeliveryResult {
+        presentation_id: PresentationId::from_uuid(Uuid::nil()),
+        requested_target: requested.clone(),
+        resolved_target: Some(
+            ResolvedTarget::new(requested, [accepted.clone(), incompatible.clone()]).unwrap(),
+        ),
+        outcomes: BTreeMap::from([
+            (accepted.clone(), PresentationDeliveryOutcome::Accepted),
+            (
+                incompatible.clone(),
+                PresentationDeliveryOutcome::Incompatible {
+                    missing_capabilities: TerminalCapabilities::new([capability(
+                        TerminalCapability::RENDER_IMAGES,
+                    )]),
+                },
+            ),
+            (offline.clone(), PresentationDeliveryOutcome::Offline),
+        ]),
+    };
+
+    assert!(result.is_complete());
+    assert_eq!(result.accepted_terminals(), BTreeSet::from([accepted]));
+    let wire = serde_json::to_value(&result).unwrap();
+    assert_eq!(wire["presentation_id"], json!(Uuid::nil()));
+    assert_eq!(
+        wire["outcomes"][incompatible.as_str()],
+        json!({
+            "outcome": "incompatible",
+            "missing_capabilities": ["render_images"]
+        })
+    );
+    assert_eq!(
+        wire["outcomes"][offline.as_str()],
+        json!({ "outcome": "offline" })
+    );
+    assert_eq!(round_trip(&result), result);
+
+    let event = EventKind::PresentationDeliveryCompleted { result };
+    assert_eq!(
+        serde_json::to_value(round_trip(&event)).unwrap()["type"],
+        json!("presentation_delivery_completed")
+    );
+}
+
+#[test]
+fn empty_delivery_outcomes_encode_an_explicit_no_registered_match() {
+    let result = PresentationDeliveryResult {
+        presentation_id: PresentationId::from_uuid(Uuid::nil()),
+        requested_target: TerminalTarget::all(),
+        resolved_target: None,
+        outcomes: BTreeMap::new(),
+    };
+
+    assert!(result.is_complete());
+    assert!(result.accepted_terminals().is_empty());
+    assert_eq!(round_trip(&result), result);
 }
 
 #[test]

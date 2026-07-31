@@ -1,5 +1,7 @@
 //! Terminal lifecycle and presentation delivery messages.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -8,7 +10,7 @@ use crate::{
     TerminalRegistration, TerminalTarget,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PresentationId(Uuid);
 
@@ -32,7 +34,7 @@ impl Default for PresentationId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TerminalConnectionId(Uuid);
 
@@ -129,6 +131,56 @@ impl PresentationRejectionCode {
 pub struct PresentationRejection {
     pub code: PresentationRejectionCode,
     pub detail: Option<String>,
+}
+
+/// The current bounded-delivery outcome for one matched terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum PresentationDeliveryOutcome {
+    /// Core has dispatched the presentation and is awaiting an acknowledgement.
+    Pending,
+    Accepted,
+    Rejected {
+        rejection: PresentationRejection,
+    },
+    /// The terminal is registered but had no live presence at dispatch time.
+    Offline,
+    Incompatible {
+        missing_capabilities: TerminalCapabilities,
+    },
+    TimedOut,
+    Disconnected,
+}
+
+/// A stable snapshot of a presentation's target resolution and delivery state.
+///
+/// An empty `outcomes` map means that no registered terminals matched. Offline
+/// terminals remain in `outcomes`, even when the requested scope is `online`,
+/// so callers can distinguish no match from an offline match. The optional
+/// resolved target follows the requested scope and is absent when that scope
+/// selected no terminals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresentationDeliveryResult {
+    pub presentation_id: PresentationId,
+    pub requested_target: TerminalTarget,
+    pub resolved_target: Option<ResolvedTarget>,
+    pub outcomes: BTreeMap<TerminalId, PresentationDeliveryOutcome>,
+}
+
+impl PresentationDeliveryResult {
+    pub fn is_complete(&self) -> bool {
+        self.outcomes
+            .values()
+            .all(|outcome| !matches!(outcome, PresentationDeliveryOutcome::Pending))
+    }
+
+    pub fn accepted_terminals(&self) -> BTreeSet<TerminalId> {
+        self.outcomes
+            .iter()
+            .filter(|(_, outcome)| matches!(outcome, PresentationDeliveryOutcome::Accepted))
+            .map(|(terminal_id, _)| terminal_id.clone())
+            .collect()
+    }
 }
 
 /// Messages sent by a terminal to Core.

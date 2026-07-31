@@ -1,7 +1,7 @@
 //! Authoritative terminal definitions and ephemeral connection presence.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File},
     io::Write,
     net::SocketAddr,
@@ -120,6 +120,18 @@ pub struct TerminalPresence {
     pub last_seen_at: DateTime<Utc>,
     pub protocol_version: ProtocolVersion,
     pub declared_capabilities: TerminalCapabilities,
+}
+
+/// One atomic view of definitions, groups and live presence for routing.
+///
+/// Routing must not assemble these collections through separate registry calls:
+/// a registration, disconnect or administrative update between calls could
+/// otherwise produce a target which never existed at a single point in time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalRoutingSnapshot {
+    pub definitions: BTreeMap<TerminalId, TerminalDefinition>,
+    pub groups: BTreeMap<GroupId, TerminalGroup>,
+    pub presences: BTreeMap<TerminalId, TerminalPresence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -840,6 +852,28 @@ impl TerminalRegistry {
 
     pub fn presence(&self, terminal_id: &TerminalId) -> Option<TerminalPresence> {
         self.lock().presences.get(terminal_id).cloned()
+    }
+
+    pub fn routing_snapshot(&self, now: Instant) -> TerminalRoutingSnapshot {
+        let state = self.lock();
+        TerminalRoutingSnapshot {
+            definitions: state
+                .definitions
+                .iter()
+                .map(|(terminal_id, definition)| (terminal_id.clone(), definition.clone()))
+                .collect(),
+            groups: state
+                .groups
+                .iter()
+                .map(|(group_id, group)| (group_id.clone(), group.clone()))
+                .collect(),
+            presences: state
+                .presences
+                .iter()
+                .filter(|(_, presence)| !is_stale(presence, now, state.stale_after))
+                .map(|(terminal_id, presence)| (terminal_id.clone(), presence.clone()))
+                .collect(),
+        }
     }
 
     fn commit_admin_change(

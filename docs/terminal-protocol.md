@@ -23,9 +23,21 @@ scope explicitly for persistent operations which may include offline registered
 terminals.
 
 Core reports zero matches, offline terminals and unsupported required
-capabilities with typed routing errors. A presentation dispatch carries both
-the original selector and the concrete recipients, and the two selectors must
-agree when the message is decoded.
+capabilities with typed delivery outcomes. `PresentationDeliveryResult` retains
+the original selector, its optional scope-resolved target and a deterministic
+map of outcomes for every registered match. An empty outcome map means no
+registered definition matched; registered-but-offline matches remain visible
+as `offline`. Capability checks do not narrow the resolved target. A
+presentation dispatch carries both the original selector and the concrete
+scope-resolved terminals, and the two selectors must agree when the message is
+decoded.
+
+Online, compatible recipients acknowledge either acceptance or an explicit
+rejection. Core also settles a pending outcome as `timed_out` or `disconnected`.
+Acknowledgements carry terminal, connection and presentation identity; a stale
+connection cannot acknowledge work selected for a previous owner. Core emits a
+`presentation_delivery_completed` event when every eligible recipient has a
+bounded outcome.
 
 ## Legacy display migration
 
