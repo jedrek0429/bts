@@ -8,6 +8,7 @@ Components are independently deployable and communicate through the versioned co
 
 - [Install and operate BTS](docs/installer-v2.md)
 - [Build and run a development environment](docs/development.md)
+- [Versioning and releases](docs/versioning.md)
 - [Write addons with Addon API v1](docs/addon-api-v1.md)
 - [Generate voice prompts](docs/voice-prompts.md)
 - [Release manifest and bundle format](docs/release-manifest-v1.md)

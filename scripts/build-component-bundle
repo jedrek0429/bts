@@ -11,7 +11,9 @@ version=${2#v}
 architecture=$3
 binary=$4
 output_directory=$5
+
 repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+"$repository_root/scripts/release-version.py" classify "$version" >/dev/null
 
 case "$component" in
     core|display|telephony|addons) ;;

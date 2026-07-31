@@ -1321,7 +1321,7 @@ mod tests {
     fn version_warranty_and_quiet_contracts_are_offline() {
         assert!(bts_install::warranty_notice().contains("NO WARRANTY"));
         assert!(bts_install::COPYRIGHT.contains("BTS contributors"));
-        assert_eq!(INSTALLER_VERSION, "0.3.0");
+        assert_eq!(INSTALLER_VERSION, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, io::Cursor};
 
 use anyhow::{Context, Result, ensure};
+use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -56,7 +57,8 @@ impl ReleaseClient {
                 .context("GitHub release metadata is invalid")?;
             releases
                 .into_iter()
-                .find(is_stable_release)
+                .filter(is_stable_release)
+                .max_by_key(|release| release_version(&release.tag_name))
                 .context("Repository has no published compatible BTS release")?
         } else {
             let endpoint = format!(
@@ -124,10 +126,19 @@ impl ReleaseClient {
 }
 
 fn is_stable_release(release: &GithubRelease) -> bool {
-    release.tag_name.starts_with('v')
-        && crate::manifest::is_release_version(&release.tag_name)
+    release_version(&release.tag_name).is_some()
         && !release.draft
         && !release.prerelease
+        && release
+            .assets
+            .iter()
+            .any(|asset| asset.name == "release-manifest.json")
+}
+
+fn release_version(tag: &str) -> Option<Version> {
+    let version = tag.strip_prefix('v')?;
+    let version = Version::parse(version).ok()?;
+    (version.pre.is_empty() && version.build.is_empty()).then_some(version)
 }
 
 pub fn validate_local_assets(
@@ -154,12 +165,33 @@ mod tests {
             assets: Vec::new(),
         };
         let releases = [
-            release("v0.3.2", true, false),
-            release("v0.4.0", false, true),
-            release("v0.5.0", false, false),
+            release("v0.9.0", true, false),
+            release("v0.10.0-rc.1", false, true),
+            release("v0.10.0", false, false),
         ];
 
-        let selected = releases.into_iter().find(is_stable_release);
-        assert_eq!(selected.unwrap().tag_name, "v0.5.0");
+        let mut releases = releases;
+        for release in &mut releases {
+            release.assets.push(GithubAsset {
+                name: "release-manifest.json".into(),
+                browser_download_url: "https://example.invalid/manifest".into(),
+            });
+        }
+        let selected = releases
+            .into_iter()
+            .filter(is_stable_release)
+            .max_by_key(|release| release_version(&release.tag_name));
+        assert_eq!(selected.unwrap().tag_name, "v0.10.0");
+    }
+
+    #[test]
+    fn stable_release_ignores_legacy_releases_without_manifests() {
+        let release = GithubRelease {
+            tag_name: "v0.2.1".into(),
+            draft: false,
+            prerelease: false,
+            assets: Vec::new(),
+        };
+        assert!(!is_stable_release(&release));
     }
 }

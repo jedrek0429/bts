@@ -12,7 +12,7 @@ fn help_version_licence_and_machine_output_contracts() {
     let version = Command::new(binary).arg("--version").output().unwrap();
     assert_eq!(
         String::from_utf8(version.stdout).unwrap().trim(),
-        "bts-install 0.3.0"
+        concat!("bts-install ", env!("CARGO_PKG_VERSION"))
     );
 
     let licence = Command::new(binary).arg("licence").output().unwrap();

@@ -1,16 +1,65 @@
 name: Portable release
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      prerelease:
+        required: true
+        type: boolean
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to package, with or without a leading v
+        required: true
+        type: string
+      prerelease:
+        description: Publish as a GitHub prerelease
+        required: true
+        type: boolean
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
+
+concurrency:
+  group: release-${{ inputs.version || github.ref_name }}
 
 permissions:
   contents: write
 
+env:
+  RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+  RELEASE_PRERELEASE: ${{ inputs.prerelease || contains(github.ref_name, '-') }}
+
 jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release identity
+        run: |
+          version=${RELEASE_VERSION#v}
+          scripts/release-version.py check-workspace
+          workspace_version=$(scripts/release-version.py workspace-version)
+          [[ "$version" == "$workspace_version" ]] || {
+            echo "Release $version does not match workspace version $workspace_version." >&2
+            exit 1
+          }
+          kind=$(scripts/release-version.py classify "$version")
+          [[ "$kind" != development ]] || {
+            echo "Development versions cannot be published." >&2
+            exit 1
+          }
+          if [[ "$kind" == stable ]]; then
+            [[ "$RELEASE_PRERELEASE" == false ]]
+          else
+            [[ "$RELEASE_PRERELEASE" == true ]]
+          fi
+
   linux-x86_64:
+    needs: validate-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +76,8 @@ jobs:
         run: cargo build --locked --release --workspace
       - name: Build portable assets
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${RELEASE_VERSION#v}
+          scripts/release-version.py classify "$version" >/dev/null
           assets="$RUNNER_TEMP/release-assets"
           install -d "$assets"
           for component in core display telephony addons; do
@@ -44,6 +94,7 @@ jobs:
           if-no-files-found: error
 
   linux-aarch64-display:
+    needs: validate-version
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +109,8 @@ jobs:
         run: cargo build --locked --release -p bts-display
       - name: Build ARM64 Display bundle
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=${RELEASE_VERSION#v}
+          scripts/release-version.py classify "$version" >/dev/null
           assets="$RUNNER_TEMP/release-assets"
           scripts/build-component-bundle \
             display "$version" aarch64 target/release/bts-display "$assets"
@@ -70,7 +122,6 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux-x86_64, linux-aarch64-display]
     runs-on: ubuntu-latest
     steps:
@@ -83,15 +134,20 @@ jobs:
           merge-multiple: true
       - name: Generate and validate final manifest and checksums
         run: |
-          scripts/generate-release-manifest.py "${GITHUB_REF_NAME#v}" release-assets
+          scripts/generate-release-manifest.py "${RELEASE_VERSION#v}" release-assets
           (cd release-assets && sha256sum --check SHA256SUMS)
       - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --draft=false
+          tag="v${RELEASE_VERSION#v}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --draft=false
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+            arguments=("$tag" --verify-tag --generate-notes)
+            if [[ "$RELEASE_PRERELEASE" == true ]]; then
+              arguments+=(--prerelease)
+            fi
+            gh release create "${arguments[@]}"
           fi
-          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          gh release upload "$tag" release-assets/* --clobber

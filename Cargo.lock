@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "bts-addons"
-version = "0.3.0"
+version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "bts-core"
-version = "0.3.0"
+version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "bts-display"
-version = "0.3.0"
+version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "bts-protocol",
@@ -319,13 +319,14 @@ dependencies = [
 
 [[package]]
 name = "bts-install"
-version = "0.3.0"
+version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "hex",
  "libc",
  "reqwest",
  "rpassword",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -337,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "bts-protocol"
-version = "0.3.0"
+version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -349,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "bts-telephony"
-version = "0.3.0"
+version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "asterisk-ari",

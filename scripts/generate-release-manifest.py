@@ -7,10 +7,11 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 BUNDLE = re.compile(
-    r"^bts-(core|display|telephony|addons)-v(\d+\.\d+\.\d+)-linux-(x86_64|aarch64)\.tar\.zst$"
+    r"^bts-(core|display|telephony|addons)-v([0-9A-Za-z.-]+)-linux-(x86_64|aarch64)\.tar\.zst$"
 )
 
 
@@ -27,8 +28,12 @@ def main() -> int:
         raise SystemExit("Usage: generate-release-manifest.py VERSION ASSET_DIRECTORY")
     version = sys.argv[1].removeprefix("v")
     root = pathlib.Path(sys.argv[2])
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        raise SystemExit("Release version must use MAJOR.MINOR.PATCH form")
+    validation = subprocess.run(
+        [pathlib.Path(__file__).with_name("release-version.py"), "classify", version],
+        stdout=subprocess.DEVNULL,
+    )
+    if validation.returncode != 0:
+        raise SystemExit("Release version is invalid")
     installer = root / "bts-install"
     licence = root / "LICENSE"
     if not installer.is_file() or not licence.is_file():

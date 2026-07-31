@@ -211,7 +211,7 @@ impl Cli {
         if channel != "stable"
             && (!channel.starts_with('v') || !crate::manifest::is_release_version(&channel))
         {
-            bail!("The installer accepts channel 'stable' or an explicit vMAJOR.MINOR.PATCH tag.");
+            bail!("The installer accepts channel 'stable' or an explicit semantic version tag.");
         }
 
         Ok(Self {
@@ -438,6 +438,7 @@ mod tests {
     fn only_accepts_stable_or_version_channels() {
         assert!(parse(&["bts-install", "status", "--channel", "v0.3.7"]).is_ok());
         assert!(parse(&["bts-install", "status", "--channel", "v0.4.0"]).is_ok());
+        assert!(parse(&["bts-install", "status", "--channel", "v0.4.0-rc.1"]).is_ok());
         assert!(parse(&["bts-install", "status", "--channel", "main"]).is_err());
     }
 }

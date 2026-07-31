@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  workflow_call:
   push:
-    branches: [main, release/0.3.x]
+    branches: [main, 'release/**']
   pull_request:
 
 permissions:
@@ -37,9 +38,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cage seatd shellcheck
       - name: Validate shell scripts
-        run: shellcheck scripts/build-component-bundle scripts/test-release-assets.sh scripts/generate-voice-prompts.sh
+        run: shellcheck scripts/build-component-bundle scripts/test-release-assets.sh scripts/test-release-version.sh scripts/generate-voice-prompts.sh
       - name: Validate Python release tooling
-        run: python3 -m py_compile scripts/generate-release-manifest.py
+        run: python3 -m py_compile scripts/generate-release-manifest.py scripts/release-version.py
+      - name: Validate release versions
+        run: scripts/test-release-version.sh
       - name: Validate portable release assets
         run: scripts/test-release-assets.sh
       - name: Build release binaries
@@ -47,6 +50,7 @@ jobs:
       - name: Stage packaged filesystem
         run: |
           stage="$RUNNER_TEMP/bts-root"
+          version=$(scripts/release-version.py workspace-version)
 
           install -d \
             "$stage/etc/bts" \
@@ -55,8 +59,8 @@ jobs:
 
           for component in core addons telephony display; do
             install -Dm755 "target/release/bts-$component" \
-              "$stage/usr/lib/bts/components/$component/releases/0.3.0/bin/bts-$component"
-            ln -s releases/0.3.0 "$stage/usr/lib/bts/components/$component/current"
+              "$stage/usr/lib/bts/components/$component/releases/$version/bin/bts-$component"
+            ln -s "releases/$version" "$stage/usr/lib/bts/components/$component/current"
           done
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
           install -m755 "$(command -v rm)" "$stage/usr/bin/rm"

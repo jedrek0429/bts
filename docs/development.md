@@ -42,6 +42,8 @@ cargo build --workspace --release
 
 The binaries are written to `target/debug/` or `target/release/`. Building from source is a development workflow; deployed systems should use [`bts-install`](installer-v2.md) and tagged release bundles.
 
+Product, API and schema versions and the automated release flow are defined in [Versioning and releases](versioning.md).
+
 ## Run components manually
 
 Run each process in a separate terminal:
