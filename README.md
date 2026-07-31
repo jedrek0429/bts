@@ -120,6 +120,17 @@ cargo run -p bts-addons
 cage -- cargo run -p bts-display
 ```
 
+For a reusable development session with Core, Addons, Telephony and an optional
+remote-ARI SSH tunnel, copy `deploy/bts-dev.env.example` to
+`~/.config/bts/dev.env` and run:
+
+```sh
+./scripts/bts-tmux
+```
+
+The launcher deliberately does not start Display. If the ARI password is not in
+the environment, the Telephony window requests it without echoing or saving it.
+
 ## Configuration
 
 ```env
