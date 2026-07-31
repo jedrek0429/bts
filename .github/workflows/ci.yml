@@ -38,11 +38,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cage seatd shellcheck
       - name: Validate shell scripts
-        run: shellcheck scripts/build-release scripts/build-component-bundle scripts/test-release-assets.sh scripts/test-release-version.sh scripts/generate-voice-prompts.sh
+        run: shellcheck scripts/build-release scripts/build-component-bundle scripts/bts-tmux scripts/test-bts-tmux.sh scripts/test-support/fake-tmux scripts/test-release-assets.sh scripts/test-release-version.sh scripts/generate-voice-prompts.sh
       - name: Validate Python release tooling
         run: python3 -m py_compile scripts/generate-release-manifest.py scripts/release-version.py
       - name: Validate release versions
         run: scripts/test-release-version.sh
+      - name: Validate development launcher
+        run: scripts/test-bts-tmux.sh
       - name: Validate portable release assets
         run: scripts/test-release-assets.sh
       - name: Build release binaries

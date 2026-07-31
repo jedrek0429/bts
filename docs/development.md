@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Install a current stable Rust toolchain. Building `bts-display` also requires Wayland, EGL, OpenGL, udev, fontconfig and keyboard development libraries.
+Install a current stable Rust toolchain. The development launcher also needs tmux, curl and Python 3; SSH is required only for its optional ARI tunnel. Building `bts-display` requires Wayland, EGL, OpenGL, udev, fontconfig and keyboard development libraries.
 
 On Debian-family systems:
 
@@ -111,13 +111,13 @@ mkdir -p ~/.config/bts
 cp deploy/bts-dev.env.example ~/.config/bts/dev.env
 ```
 
-Edit the copy, then start the session:
+Edit any ARI settings, then start the session:
 
 ```sh
 ./scripts/bts-tmux
 ```
 
-The launcher starts Core, Addons and Telephony. It can maintain an optional SSH tunnel to a remote ARI endpoint. It deliberately does not start Display. If `BTS_ARI_PASSWORD` is absent, the Telephony pane requests it without echoing or saving it.
+The launcher starts Core, Addons and Telephony. It can maintain an optional SSH tunnel to a remote ARI endpoint. It deliberately does not start Display. If `BTS_ARI_PASSWORD` is absent, the Telephony pane requests it without echoing or saving it. An existing session is reused; recreate it after changing configuration.
 
 ## Core development endpoints
 
@@ -141,6 +141,8 @@ CI additionally runs ShellCheck, release-asset consistency tests and `systemd-an
 shellcheck \
   scripts/build-release \
   scripts/build-component-bundle \
+  scripts/bts-tmux \
+  scripts/test-bts-tmux.sh \
   scripts/test-release-assets.sh \
   scripts/generate-voice-prompts.sh
 scripts/test-release-assets.sh
