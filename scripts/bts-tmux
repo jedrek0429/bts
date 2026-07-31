@@ -39,7 +39,8 @@ else
 fi
 
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-    # shellcheck disable=SC2016 -- expanded by the shell inside the tmux pane.
+    # Expanded by the shell inside the tmux pane.
+    # shellcheck disable=SC2016
     tmux new-session -d -s "$SESSION" -n core -c "$ROOT" \
         'RUST_LOG=${RUST_LOG:-info} cargo run -p bts-core; exec "${SHELL:-/bin/sh}"'
 
@@ -51,17 +52,20 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
         tmux set-environment -t "$SESSION" BTS_ARI_TUNNEL_PORT "$BTS_ARI_TUNNEL_PORT"
     fi
 
-    # shellcheck disable=SC2016 -- expanded by the shell inside the tmux pane.
+    # Expanded by the shell inside the tmux pane.
+    # shellcheck disable=SC2016
     tmux new-window -d -t "$SESSION:" -n addons -c "$ROOT" \
         'until curl -fsS "$BTS_CORE_HTTP_URL/health" >/dev/null 2>&1; do sleep 1; done; RUST_LOG=${RUST_LOG:-info} cargo run -p bts-addons; exec "${SHELL:-/bin/sh}"'
 
     if [[ -n "${BTS_ARI_SSH_HOST:-}" ]]; then
-        # shellcheck disable=SC2016 -- expanded by the shell inside the tmux pane.
+        # Expanded by the shell inside the tmux pane.
+        # shellcheck disable=SC2016
         tmux new-window -d -t "$SESSION:" -n ari-tunnel -c "$ROOT" \
             'while true; do ssh -o BatchMode=yes -o ServerAliveInterval=15 -o ExitOnForwardFailure=yes -N -L "127.0.0.1:${BTS_ARI_TUNNEL_PORT}:127.0.0.1:8088" "$BTS_ARI_SSH_HOST"; sleep 2; done'
     fi
 
-    # shellcheck disable=SC2016 -- expanded by the shell inside the tmux pane.
+    # Expanded by the shell inside the tmux pane.
+    # shellcheck disable=SC2016
     tmux new-window -d -t "$SESSION:" -n telephony -c "$ROOT" \
         'until curl -fsS "$BTS_CORE_HTTP_URL$BTS_CORE_API_PREFIX/addons" | grep -q '"'"'"menu"'"'"'; do sleep 1; done; if [[ -z "${BTS_ARI_PASSWORD:-}" ]]; then read -rsp "ARI password: " BTS_ARI_PASSWORD; printf "\n"; export BTS_ARI_PASSWORD; fi; RUST_LOG=${RUST_LOG:-info} cargo run -p bts-telephony; exec "${SHELL:-/bin/sh}"'
 
