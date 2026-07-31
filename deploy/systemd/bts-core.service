@@ -8,7 +8,8 @@ Type=simple
 User=bts
 Group=bts
 EnvironmentFile=-/etc/bts/bts.env
-ExecStart=/usr/bin/bts-core
+EnvironmentFile=-/etc/bts/core.env
+ExecStart=/usr/lib/bts/components/core/current/bin/bts-core
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=yes
@@ -24,4 +25,4 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target bts.target bts-server.target

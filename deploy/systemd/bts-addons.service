@@ -9,7 +9,8 @@ Type=simple
 User=bts
 Group=bts
 EnvironmentFile=-/etc/bts/bts.env
-ExecStart=/usr/bin/bts-addons
+EnvironmentFile=-/etc/bts/addons.env
+ExecStart=/usr/lib/bts/components/addons/current/bin/bts-addons
 Restart=always
 RestartSec=2s
 NoNewPrivileges=yes
@@ -26,4 +27,4 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 
 [Install]
-WantedBy=bts.target
+WantedBy=multi-user.target bts.target bts-server.target

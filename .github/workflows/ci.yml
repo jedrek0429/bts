@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release/0.3.x]
   pull_request:
 
 permissions:
@@ -37,7 +37,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cage seatd shellcheck
       - name: Validate shell scripts
-        run: shellcheck scripts/bts-install scripts/generate-voice-prompts.sh
+        run: shellcheck scripts/build-component-bundle scripts/test-release-assets.sh scripts/generate-voice-prompts.sh
+      - name: Validate Python release tooling
+        run: python3 -m py_compile scripts/generate-release-manifest.py
+      - name: Validate portable release assets
+        run: scripts/test-release-assets.sh
       - name: Build release binaries
         run: cargo build --workspace --release --locked
       - name: Stage packaged filesystem
@@ -49,10 +53,11 @@ jobs:
             "$stage/usr/bin" \
             "$stage/usr/lib/systemd/system"
 
-          install -m755 target/release/bts-core "$stage/usr/bin/bts-core"
-          install -m755 target/release/bts-addons "$stage/usr/bin/bts-addons"
-          install -m755 target/release/bts-telephony "$stage/usr/bin/bts-telephony"
-          install -m755 target/release/bts-display "$stage/usr/bin/bts-display"
+          for component in core addons telephony display; do
+            install -Dm755 "target/release/bts-$component" \
+              "$stage/usr/lib/bts/components/$component/releases/0.3.0/bin/bts-$component"
+            ln -s releases/0.3.0 "$stage/usr/lib/bts/components/$component/current"
+          done
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
           install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
           install -m755 "$(command -v install)" "$stage/usr/bin/install"
@@ -60,9 +65,9 @@ jobs:
           install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
           install -m755 /usr/bin/true "$stage/usr/bin/true"
 
-          install -m640 deploy/bts.env.example "$stage/etc/bts/bts.env"
+          install -m640 deploy/*.env.example "$stage/etc/bts/"
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
-          install -m644 deploy/systemd/bts.target "$stage/usr/lib/systemd/system/bts.target"
+          install -m644 deploy/systemd/*.target "$stage/usr/lib/systemd/system/"
 
           cat <<'EOF' > "$stage/etc/passwd"
           root:x:0:0:root:/root:/usr/bin/nologin
@@ -102,4 +107,6 @@ jobs:
             bts-addons.service \
             bts-telephony.service \
             bts-display.service \
-            bts.target
+            bts.target \
+            bts-server.target \
+            bts-display.target

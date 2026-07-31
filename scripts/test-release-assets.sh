@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+trap 'rm -rf "$test_root"' EXIT
+assets="$test_root/assets"
+install -d "$assets" "$test_root/bin"
+for component in core display telephony addons; do
+    install -m755 /usr/bin/true "$test_root/bin/bts-$component"
+    "$repository_root/scripts/build-component-bundle" "$component" 0.3.0 x86_64 "$test_root/bin/bts-$component" "$assets" >/dev/null
+done
+"$repository_root/scripts/build-component-bundle" display 0.3.0 aarch64 "$test_root/bin/bts-display" "$assets" >/dev/null
+install -m755 /usr/bin/true "$assets/bts-install"
+install -m644 "$repository_root/LICENSE" "$assets/LICENSE"
+"$repository_root/scripts/generate-release-manifest.py" 0.3.0 "$assets"
+
+python3 - "$assets" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "release-manifest.json").read_text())
+assert manifest["schema_version"] == 1
+assert manifest["release_version"] == "0.3.0"
+assert {"core", "display", "telephony", "addons"} == set(manifest["components"])
+assert {item["architecture"] for item in manifest["components"]["display"]} == {"x86_64", "aarch64"}
+for item in [manifest["installer"], manifest["licence_asset"], *[asset for assets in manifest["components"].values() for asset in assets]]:
+    path = root / item["filename"]
+    assert path.is_file(), item["filename"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
+checksums = dict(line.split(maxsplit=1)[::-1] for line in (root / "SHA256SUMS").read_text().splitlines())
+for filename, checksum in checksums.items():
+    assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == checksum
+PY

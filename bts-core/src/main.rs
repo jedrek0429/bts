@@ -52,7 +52,13 @@ struct AddonRegistry {
 async fn main() -> anyhow::Result<()> {
     initialise_logging();
 
-    let bind_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3100);
+    let bind_address = std::env::var("BTS_CORE_BIND")
+        .map(|value| {
+            value
+                .parse()
+                .context("BTS_CORE_BIND is not a valid socket address")
+        })
+        .unwrap_or_else(|_| Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3100)))?;
     let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
     let state = AppState {

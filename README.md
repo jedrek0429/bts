@@ -14,47 +14,52 @@ The processes communicate over HTTP and WebSockets:
 
 Addon authors should start with the [Addon API v1 author guide](docs/addon-api-v1.md).
 
-## Deployment on Arch Linux
+## Installation
 
-The package installs the release binaries, systemd units, Cage kiosk session and a persistent configuration file. On an all-in-one installation, `bts-display` takes ownership of `tty1` through Cage and renders directly to the connected DRM display, while Core, Addons and Telephony run as isolated system services. Individual units have no local BTS service dependency and may instead point at Core on another host.
-
-Install or update to the latest tagged release:
+`bts-install` is the canonical v0.3 installation and upgrade path. Normal installation uses checksummed portable release bundles and needs neither a repository checkout, Rust toolchain nor native BTS package. Download the installer and its checksum from the same tagged release, verify it, then install it:
 
 ```sh
-sudo bts-install
+release=v0.3.0
+curl --fail --location --remote-name \
+  "https://github.com/jedrek0429/bts/releases/download/$release/bts-install"
+curl --fail --location --remote-name \
+  "https://github.com/jedrek0429/bts/releases/download/$release/bts-install.sha256"
+sha256sum --check bts-install.sha256
+chmod +x bts-install
+sudo install -m 0755 bts-install /usr/local/bin/bts-install
+sudo bts-install install full
 ```
 
-For a first installation, download the installer from the repository or copy it from a checkout. The installer retrieves the latest GitHub Release package, verifies its SHA-256 checksum, installs it through pacman, preserves `/etc/bts/bts.env`, reloads systemd and restarts BTS.
-
-Build and install from a source checkout instead:
+Choose what the machine does with a role or explicit components:
 
 ```sh
-sudo ./scripts/bts-install --build
+sudo bts-install install server
+sudo bts-install install display \
+  --core-url ws://192.168.1.50:3100/api/v1/events/ws
+sudo bts-install install --component core --component addons
+sudo bts-install install --component addons \
+  --core-http-url http://192.168.1.50:3100 \
+  --core-ws-url ws://192.168.1.50:3100/api/v1/events/ws
+sudo bts-install add telephony
+sudo bts-install remove display
 ```
 
-An explicit checkout may also be supplied:
+`full` selects Core, Telephony, Addons and Display; `server` omits Display; `display` installs only the remote-core display appliance. Components remain the source of truth and communicate only through published `bts-protocol` endpoints. The installer never adds a component because credentials are missing and never assumes separately deployed components share filesystems.
+
+Configure secrets without command arguments:
 
 ```sh
-sudo bts-install --build /path/to/bts
+sudo bts-install configure telephony
+sudo bts-install configure display
+sudo bts-install status
+sudo bts-install status --json
+sudo bts-install doctor
+sudo bts-install upgrade
 ```
 
-Set at least `BTS_ARI_PASSWORD` in `/etc/bts/bts.env`. The installer creates dedicated service accounts, grants the display account access to DRM/input devices, reserves `tty1`, enables `bts.target`, and starts every configured component.
+Configuration is preserved during upgrades and removal. `remove COMPONENT` stops and disables only that component; add `--purge` to remove its installer-owned configuration. `uninstall` removes all managed components while preserving configuration unless explicitly purged. Removing Display restores `getty@tty1` if the installer took control of it.
 
-Useful commands:
-
-```sh
-systemctl status bts.target
-systemctl status bts-core bts-addons bts-telephony bts-display
-journalctl -u 'bts-*' -f
-sudo systemctl restart bts.target
-```
-
-The display service deliberately conflicts with `getty@tty1.service`. Other virtual terminals remain available. To restore a login prompt on tty1:
-
-```sh
-sudo systemctl disable --now bts.target
-sudo systemctl unmask --now getty@tty1.service
-```
+The complete CLI, state/configuration layout, rollback model and supported deployment flows are documented in [Installer v2](docs/installer-v2.md). Release publishers and alternative download clients should read the [release manifest and bundle specification](docs/release-manifest-v1.md).
 
 ### Sony TV and DRM output
 
@@ -62,15 +67,9 @@ Cage normally selects the connected DRM output automatically. Where a host has s
 
 ### Continuous integration and delivery
 
-Every pull request runs formatting, compilation, Clippy, tests, ShellCheck and systemd unit validation. Tags matching `v*` build an Arch package, create or update the corresponding GitHub Release, and publish both the package and its `SHA256SUMS` file. `bts-install` consumes those release assets, making tagged releases directly deployable. Installing a newer package preserves `/etc/bts/bts.env` and reloads systemd unit definitions through a pacman hook.
+Every pull request runs formatting, compilation, Clippy, tests, release-asset consistency checks, ShellCheck and systemd unit validation. Tags matching `v0.3.*` build the installer and independent portable component bundles, then publish `bts-install`, `bts-install.sha256`, `release-manifest.json`, `SHA256SUMS`, `LICENSE` and every supported checksummed bundle. The installer selects assets only from that manifest.
 
-Private repositories require a GitHub token with permission to read repository contents:
-
-```sh
-sudo GITHUB_TOKEN="$(gh auth token)" bts-install
-```
-
-Public repositories require no token.
+The v0.3 installer supports public GitHub Releases. Private-release authentication is not part of this milestone.
 
 ## Voice prompts
 
@@ -131,7 +130,7 @@ remote-ARI SSH tunnel, copy `deploy/bts-dev.env.example` to
 The launcher deliberately does not start Display. If the ARI password is not in
 the environment, the Telephony window requests it without echoing or saving it.
 
-## Configuration
+## Development configuration
 
 ```env
 BTS_CORE_URL=http://127.0.0.1:3100
@@ -157,7 +156,7 @@ Core listens on port 3100:
 
 BTS is free software licensed under the GNU General Public License version 3 or, at your option, any later version. See [`LICENSE`](LICENSE).
 
-Copyright © 2026 Andrzej Bansleben.
+Copyright © 2026 BTS contributors. Individual authorship remains recorded in Git history.
 
 ## Roadmap
 
@@ -169,7 +168,7 @@ Copyright © 2026 Andrzej Bansleben.
 - [x] systemd services (bts-install)
 - [x] Partial CI/CD
 - [x] Full CI/CD
-- [ ] Full Addon API
+- [x] Full Addon API
 - [ ] `btscli` administration interface
 - [ ] Full voice integration
 - [ ] Display polish and additional screens
