@@ -12,6 +12,7 @@ EnvironmentFile=-/etc/bts/core.env
 ExecStart=/usr/lib/bts/components/core/current/bin/bts-core
 Restart=on-failure
 RestartSec=2s
+StateDirectory=bts
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
