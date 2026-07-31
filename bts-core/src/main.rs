@@ -86,17 +86,7 @@ async fn main() -> anyhow::Result<()> {
         events,
     };
     let terminal_expiry_task = spawn_terminal_expiry(state.terminals.clone());
-    let terminal_change_task = spawn_core_changes(
-        state.terminals.subscribe_changes(),
-        state.current.clone(),
-        state.events.clone(),
-    );
     let presentation_expiry_task = spawn_presentation_expiry(state.presentations.clone());
-    let presentation_change_task = spawn_core_changes(
-        state.presentations.subscribe_changes(),
-        state.current.clone(),
-        state.events.clone(),
-    );
 
     let app = Router::new()
         .route("/health", get(health))
@@ -119,39 +109,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("BTS Core HTTP server failed")?;
     terminal_expiry_task.abort();
-    terminal_change_task.abort();
     presentation_expiry_task.abort();
-    presentation_change_task.abort();
 
     info!("BTS Core stopped");
 
     Ok(())
-}
-
-fn spawn_core_changes(
-    mut changes: broadcast::Receiver<EventKind>,
-    current: Arc<RwLock<BtsState>>,
-    events: broadcast::Sender<ServerMessage>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match changes.recv().await {
-                Ok(kind) => {
-                    let event = Event::new("bts-core", kind);
-                    let state = current.read().await.clone();
-                    info!(event_id = %event.id, kind = ?event.kind, "Core state changed");
-                    let _ = events.send(ServerMessage::Event {
-                        event: Box::new(event),
-                        state,
-                    });
-                }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "Core change listener lagged");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
 }
 
 fn spawn_presentation_expiry(manager: PresentationManager) -> tokio::task::JoinHandle<()> {
@@ -268,6 +230,12 @@ async fn submit_event(
 
     validate_and_register(&state, &event).await?;
 
+    #[allow(deprecated)]
+    state
+        .presentations
+        .begin_legacy_event(&event, std::time::Instant::now())
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+
     let updated_state = {
         let mut current = state.current.write().await;
         apply_event(&mut current, &event)?;
@@ -296,7 +264,6 @@ async fn validate_and_register(
     state: &AppState,
     event: &Event,
 ) -> Result<(), (StatusCode, String)> {
-    validate_client_event_kind(&event.kind)?;
     let mut registry = state.registry.write().await;
     match &event.kind {
         EventKind::AddonRegistered { manifest } => registry.register(manifest.clone()),
@@ -316,23 +283,6 @@ async fn validate_and_register(
         }
         EventKind::DisplayRequested { command } => registry.validate_display(command),
         _ => Ok(()),
-    }
-}
-
-fn validate_client_event_kind(kind: &EventKind) -> Result<(), (StatusCode, String)> {
-    if matches!(
-        kind,
-        EventKind::TerminalMetadataChanged { .. }
-            | EventKind::TerminalGroupChanged { .. }
-            | EventKind::PresentationDeliveryCompleted { .. }
-    ) {
-        Err((
-            StatusCode::FORBIDDEN,
-            "terminal administration and delivery events can only be emitted by BTS Core"
-                .to_owned(),
-        ))
-    } else {
-        Ok(())
     }
 }
 
@@ -365,10 +315,7 @@ fn apply_display_command(
                 .as_ref()
                 .is_some_and(|active| active.priority > lease.priority)
             {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "a higher-priority display owns the screen".to_owned(),
-                ));
+                return Ok(());
             }
             state.display = display.clone();
             state.display_lease = Some(lease.clone());
@@ -378,31 +325,23 @@ fn apply_display_command(
             lease_id,
             display,
         } => {
-            let active = state.display_lease.as_ref().ok_or((
-                StatusCode::CONFLICT,
-                "the display has no active lease".to_owned(),
-            ))?;
-            if &active.owner != addon_id || active.id != *lease_id {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "the display lease is stale or belongs to another addon".to_owned(),
-                ));
+            if state
+                .display_lease
+                .as_ref()
+                .is_some_and(|active| &active.owner == addon_id && active.id == *lease_id)
+            {
+                state.display = display.clone();
             }
-            state.display = display.clone();
         }
         DisplayCommand::Release { addon_id, lease_id } => {
-            let active = state.display_lease.as_ref().ok_or((
-                StatusCode::CONFLICT,
-                "the display has no active lease".to_owned(),
-            ))?;
-            if &active.owner != addon_id || active.id != *lease_id {
-                return Err((
-                    StatusCode::CONFLICT,
-                    "the display lease is stale or belongs to another addon".to_owned(),
-                ));
+            if state
+                .display_lease
+                .as_ref()
+                .is_some_and(|active| &active.owner == addon_id && active.id == *lease_id)
+            {
+                state.display = bts_protocol::DisplayState::Blank;
+                state.display_lease = None;
             }
-            state.display = bts_protocol::DisplayState::Blank;
-            state.display_lease = None;
         }
         DisplayCommand::ReleaseAll { addon_id } => {
             if state
@@ -735,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_or_foreign_lease_cannot_update_display() {
+    fn legacy_state_projection_ignores_stale_or_foreign_updates() {
         let owner = AddonId::new("one");
         let lease_id = DisplayLeaseId::new();
         let mut state = BtsState::default();
@@ -754,28 +693,33 @@ mod tests {
             },
         )
         .unwrap();
-        let result = apply_display_command(
+        apply_display_command(
             &mut state,
             &DisplayCommand::Update {
                 addon_id: AddonId::new("two"),
                 lease_id,
                 display: DisplayState::Blank,
             },
-        );
-        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
-        let result = apply_display_command(
+        )
+        .unwrap();
+        apply_display_command(
             &mut state,
             &DisplayCommand::Update {
                 addon_id: owner,
                 lease_id: DisplayLeaseId::new(),
                 display: DisplayState::Blank,
             },
-        );
-        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
+        )
+        .unwrap();
+        assert_eq!(state.display_lease.unwrap().id, lease_id);
+        assert!(matches!(
+            state.display,
+            DisplayState::Message { ref body, .. } if body == "First"
+        ));
     }
 
     #[test]
-    fn higher_priority_display_cannot_be_replaced_by_lower_priority() {
+    fn legacy_state_projection_keeps_the_higher_priority_display() {
         let mut state = BtsState::default();
         apply_display_command(
             &mut state,
@@ -789,7 +733,7 @@ mod tests {
             },
         )
         .unwrap();
-        let result = apply_display_command(
+        apply_display_command(
             &mut state,
             &DisplayCommand::Show {
                 lease: DisplayLease {
@@ -799,8 +743,9 @@ mod tests {
                 },
                 display: DisplayState::Blank,
             },
-        );
-        assert_eq!(result.unwrap_err().0, StatusCode::CONFLICT);
+        )
+        .unwrap();
+        assert_eq!(state.display_lease.unwrap().priority, 20);
     }
 
     #[test]
@@ -821,29 +766,5 @@ mod tests {
         apply_event(&mut state, &event).unwrap();
         assert!(state.display_lease.is_none());
         assert_eq!(state.display, DisplayState::Blank);
-    }
-
-    #[test]
-    fn client_cannot_publish_core_owned_terminal_events() {
-        let events = [
-            EventKind::TerminalGroupChanged {
-                group_id: bts_protocol::GroupId::new("downstairs").unwrap(),
-                change: bts_protocol::TerminalGroupChange::Deleted,
-            },
-            EventKind::PresentationDeliveryCompleted {
-                result: bts_protocol::PresentationDeliveryResult {
-                    presentation_id: bts_protocol::PresentationId::default(),
-                    requested_target: bts_protocol::TerminalTarget::all(),
-                    resolved_target: None,
-                    outcomes: std::collections::BTreeMap::new(),
-                },
-            },
-        ];
-        for kind in events {
-            assert_eq!(
-                validate_client_event_kind(&kind).unwrap_err().0,
-                StatusCode::FORBIDDEN
-            );
-        }
     }
 }

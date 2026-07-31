@@ -33,20 +33,23 @@ scope-resolved terminals, and the two selectors must agree when the message is
 decoded.
 
 Online, compatible recipients acknowledge either acceptance or an explicit
-rejection. Core also settles a pending outcome as `timed_out` or `disconnected`.
-Acknowledgements carry terminal, connection and presentation identity; a stale
-connection cannot acknowledge work selected for a previous owner. Core emits a
-`presentation_delivery_completed` event when every eligible recipient has a
-bounded outcome.
+rejection. Core also settles a pending outcome as `timed_out`, `superseded` or
+`disconnected`. A dispatch contains a connection-specific, terminal-local
+generation and validity period. A terminal must discard older generations and
+expired work. Acknowledgements carry terminal, connection and presentation
+identity; Core validates both the planned and current connection before
+classifying them. Completion is published on versioned terminal event stream 1,
+not the adjacent-compatible general event stream.
 
 ## Legacy display migration
 
 The existing `display_requested` event remains wire-compatible and untargeted.
-During migration, `Event::legacy_presentation_request` converts legacy `show`
-and `update` events into immediate presentations for `All` online terminals.
-The adapter is deprecated so new protocol clients choose an explicit
-`TerminalTarget`. Legacy `release` and `release_all` commands contain no
-presentation content and are therefore not converted.
+During migration, Core expands its show, update, release and release-all
+operations into terminal-specific lease changes and dispatches. Addon shutdown
+uses the same release-all path. `Event::legacy_presentation_request` remains a
+deprecated content-only convenience, while the Core lifecycle adapter owns the
+complete priority and restoration semantics. New protocol clients choose an
+explicit `TerminalTarget`.
 
 ## Reserved DTMF controls
 

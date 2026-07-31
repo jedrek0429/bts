@@ -102,17 +102,6 @@ pub enum EventKind {
     DisplayRequested {
         command: DisplayCommand,
     },
-    TerminalMetadataChanged {
-        terminal_id: TerminalId,
-        change: TerminalMetadataChange,
-    },
-    TerminalGroupChanged {
-        group_id: GroupId,
-        change: TerminalGroupChange,
-    },
-    PresentationDeliveryCompleted {
-        result: PresentationDeliveryResult,
-    },
     PhoneCallStarted {
         channel_id: String,
         caller: Option<String>,
@@ -137,4 +126,43 @@ pub enum EventKind {
 pub enum ServerMessage {
     Snapshot { state: BtsState },
     Event { event: Box<Event>, state: BtsState },
+}
+
+/// Terminal administration and delivery changes are deliberately separate from
+/// the release-line event stream so a closed adjacent-version `EventKind`
+/// consumer never encounters an unknown variant.
+pub const TERMINAL_EVENT_STREAM_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalEvent {
+    pub stream_version: u16,
+    #[serde(flatten)]
+    pub kind: TerminalEventKind,
+}
+
+impl TerminalEvent {
+    pub fn new(kind: TerminalEventKind) -> Self {
+        Self {
+            stream_version: TERMINAL_EVENT_STREAM_VERSION,
+            kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TerminalEventKind {
+    #[serde(rename = "terminal_metadata_changed")]
+    MetadataChanged {
+        terminal_id: TerminalId,
+        change: TerminalMetadataChange,
+    },
+    #[serde(rename = "terminal_group_changed")]
+    GroupChanged {
+        group_id: GroupId,
+        change: TerminalGroupChange,
+    },
+    PresentationDeliveryCompleted {
+        result: PresentationDeliveryResult,
+    },
 }
