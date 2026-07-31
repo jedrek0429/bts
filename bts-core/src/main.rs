@@ -79,6 +79,11 @@ async fn main() -> anyhow::Result<()> {
         events,
     };
     let terminal_expiry_task = spawn_terminal_expiry(state.terminals.clone());
+    let terminal_change_task = spawn_terminal_changes(
+        state.terminals.subscribe_changes(),
+        state.current.clone(),
+        state.events.clone(),
+    );
 
     let app = Router::new()
         .route("/health", get(health))
@@ -101,10 +106,37 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("BTS Core HTTP server failed")?;
     terminal_expiry_task.abort();
+    terminal_change_task.abort();
 
     info!("BTS Core stopped");
 
     Ok(())
+}
+
+fn spawn_terminal_changes(
+    mut changes: broadcast::Receiver<EventKind>,
+    current: Arc<RwLock<BtsState>>,
+    events: broadcast::Sender<ServerMessage>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match changes.recv().await {
+                Ok(kind) => {
+                    let event = Event::new("bts-core", kind);
+                    let state = current.read().await.clone();
+                    info!(event_id = %event.id, kind = ?event.kind, "terminal registry changed");
+                    let _ = events.send(ServerMessage::Event {
+                        event: Box::new(event),
+                        state,
+                    });
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "terminal registry change listener lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 fn spawn_terminal_expiry(registry: TerminalRegistry) -> tokio::task::JoinHandle<()> {
@@ -237,6 +269,7 @@ async fn validate_and_register(
     state: &AppState,
     event: &Event,
 ) -> Result<(), (StatusCode, String)> {
+    validate_client_event_kind(&event.kind)?;
     let mut registry = state.registry.write().await;
     match &event.kind {
         EventKind::AddonRegistered { manifest } => registry.register(manifest.clone()),
@@ -256,6 +289,20 @@ async fn validate_and_register(
         }
         EventKind::DisplayRequested { command } => registry.validate_display(command),
         _ => Ok(()),
+    }
+}
+
+fn validate_client_event_kind(kind: &EventKind) -> Result<(), (StatusCode, String)> {
+    if matches!(
+        kind,
+        EventKind::TerminalMetadataChanged { .. } | EventKind::TerminalGroupChanged { .. }
+    ) {
+        Err((
+            StatusCode::FORBIDDEN,
+            "terminal administration events can only be emitted by BTS Core".to_owned(),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -744,5 +791,17 @@ mod tests {
         apply_event(&mut state, &event).unwrap();
         assert!(state.display_lease.is_none());
         assert_eq!(state.display, DisplayState::Blank);
+    }
+
+    #[test]
+    fn client_cannot_publish_core_owned_terminal_administration_events() {
+        let kind = EventKind::TerminalGroupChanged {
+            group_id: bts_protocol::GroupId::new("downstairs").unwrap(),
+            change: bts_protocol::TerminalGroupChange::Deleted,
+        };
+        assert_eq!(
+            validate_client_event_kind(&kind).unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
     }
 }
