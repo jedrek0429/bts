@@ -1,7 +1,13 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use bts_protocol::{DisplayState, EventKind};
+use async_trait::async_trait;
+use bts_addons::{
+    ADDON_API_VERSION, ActionKind, Addon, AddonCapability, AddonContext, AddonId, AddonManifest,
+    AddonVersion,
+};
+use bts_protocol::{Action, DisplayState, Event, EventKind};
+use reqwest::Client;
 use serde::Deserialize;
 use tokio::{
     sync::Mutex,
@@ -10,12 +16,11 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::AddonContext;
-
 const LOCATION: &str = "Gdynia";
 const LATITUDE: f64 = 54.5189;
 const LONGITUDE: f64 = 18.5305;
 const UPDATE_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const ADDON_ID: &str = "weather";
 
 #[derive(Debug, Deserialize)]
 struct ForecastResponse {
@@ -34,20 +39,23 @@ struct CurrentWeather {
 
 pub(crate) struct WeatherAddon {
     update_task: Mutex<Option<JoinHandle<()>>>,
+    http: Client,
 }
 
 impl WeatherAddon {
     pub(crate) fn new() -> Self {
         Self {
             update_task: Mutex::new(None),
+            http: Client::new(),
         }
     }
 
-    pub(crate) async fn show(&self, context: &AddonContext) -> Result<()> {
+    async fn show(&self, context: &AddonContext) -> Result<()> {
         self.stop_update_task().await;
-        publish_weather(context).await?;
+        publish_weather(context, &self.http).await?;
 
         let context = context.clone();
+        let http = self.http.clone();
         let task = tokio::spawn(async move {
             let mut ticker = interval(UPDATE_INTERVAL);
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -66,7 +74,7 @@ impl WeatherAddon {
                     }
                 }
 
-                if let Err(error) = publish_weather(&context).await {
+                if let Err(error) = publish_weather(&context, &http).await {
                     warn!(%error, "failed to refresh weather");
                 }
             }
@@ -83,23 +91,62 @@ impl WeatherAddon {
     }
 }
 
-async fn publish_weather(context: &AddonContext) -> Result<()> {
-    let weather = fetch_current_weather(context).await?;
+#[async_trait]
+impl Addon for WeatherAddon {
+    fn manifest(&self) -> AddonManifest {
+        AddonManifest {
+            api_version: ADDON_API_VERSION,
+            id: AddonId::new(ADDON_ID),
+            name: "Weather Service".to_owned(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: vec![ActionKind::Weather],
+            capabilities: vec![
+                AddonCapability::PublishEvents,
+                AddonCapability::ReadState,
+                AddonCapability::ExternalHttp,
+            ],
+        }
+    }
+
+    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
+        if matches!(
+            &event.kind,
+            EventKind::ActionRequested {
+                action: Action::Weather
+            }
+        ) {
+            self.show(context).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn stop(&self, _context: &AddonContext) -> Result<()> {
+        self.stop_update_task().await;
+        Ok(())
+    }
+}
+
+async fn publish_weather(context: &AddonContext, http: &Client) -> Result<()> {
+    let weather = fetch_current_weather(http).await?;
 
     context
-        .publish(EventKind::DisplaySet {
-            display: DisplayState::Weather {
-                location: LOCATION.to_owned(),
-                temperature: format!("{:.0}°C", weather.temperature_2m),
-                condition: describe_weather_code(weather.weather_code).to_owned(),
-                details: vec![
-                    format!("Feels like {:.0}°C", weather.apparent_temperature),
-                    format!("Humidity {}%", weather.relative_humidity_2m),
-                    format!("Wind {:.0} km/h", weather.wind_speed_10m),
-                ],
-                updated_at: weather.time,
+        .publish(
+            &AddonId::new(ADDON_ID),
+            EventKind::DisplaySet {
+                display: DisplayState::Weather {
+                    location: LOCATION.to_owned(),
+                    temperature: format!("{:.0}°C", weather.temperature_2m),
+                    condition: describe_weather_code(weather.weather_code).to_owned(),
+                    details: vec![
+                        format!("Feels like {:.0}°C", weather.apparent_temperature),
+                        format!("Humidity {}%", weather.relative_humidity_2m),
+                        format!("Wind {:.0} km/h", weather.wind_speed_10m),
+                    ],
+                    updated_at: weather.time,
+                },
             },
-        })
+        )
         .await
 }
 
@@ -110,9 +157,8 @@ async fn weather_is_active(context: &AddonContext) -> Result<bool> {
     ))
 }
 
-async fn fetch_current_weather(context: &AddonContext) -> Result<CurrentWeather> {
-    context
-        .http
+async fn fetch_current_weather(http: &Client) -> Result<CurrentWeather> {
+    http
         .get("https://api.open-meteo.com/v1/forecast")
         .query(&[
             ("latitude", LATITUDE.to_string()),
