@@ -10,7 +10,7 @@ use anyhow::Context;
 use bts_protocol::{BtsState, DisplayState, ServerMessage};
 use eframe::egui::{
     self, Align, Align2, CentralPanel, Color32, FontData, FontDefinitions, FontFamily, FontId,
-    Frame, Layout, Margin, RichText, Stroke, Vec2, ViewportBuilder,
+    Frame, Layout, Margin, RichText, Stroke, Vec2, ViewportBuilder, ViewportCommand,
 };
 use futures_util::StreamExt;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WebSocketMessage};
@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
         "Bansleben Telephone Services",
         native_options,
         Box::new(move |creation_context| {
+            hide_cursor(&creation_context.egui_ctx);
             configure_fonts_and_style(&creation_context.egui_ctx);
 
             Ok(Box::new(BtsDisplayApp::new(
@@ -122,7 +123,7 @@ impl eframe::App for BtsDisplayApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_messages();
 
-        context.set_cursor_icon(egui::CursorIcon::None);
+        hide_cursor(context);
         context.request_repaint_after(Duration::from_millis(250));
 
         CentralPanel::default()
@@ -163,6 +164,13 @@ impl eframe::App for BtsDisplayApp {
                 draw_connection_indicator(ui, &self.connection_status);
             });
     }
+}
+
+fn hide_cursor(context: &egui::Context) {
+    // `set_cursor_icon(CursorIcon::None)` is ignored by egui-winit until it has
+    // observed a pointer position. The viewport command reaches winit's window
+    // visibility API directly, including on the first frame and without input.
+    context.send_viewport_cmd(ViewportCommand::CursorVisible(false));
 }
 
 fn draw_message(ui: &mut egui::Ui, title: &str, body: &str) {
@@ -557,5 +565,38 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         path
+    }
+
+    #[test]
+    fn cursor_is_hidden_before_first_frame_without_pointer_input() {
+        let context = egui::Context::default();
+
+        hide_cursor(&context);
+        let first_frame = context.run(egui::RawInput::default(), |_| {});
+        assert_cursor_hidden(&first_frame);
+    }
+
+    #[test]
+    fn cursor_remains_hidden_during_frames_without_pointer_input() {
+        let context = egui::Context::default();
+
+        for _ in 0..2 {
+            let frame = context.run(egui::RawInput::default(), hide_cursor);
+            assert_cursor_hidden(&frame);
+        }
+    }
+
+    fn assert_cursor_hidden(output: &egui::FullOutput) {
+        let root_viewport = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("root viewport output should exist");
+
+        assert!(
+            root_viewport
+                .commands
+                .contains(&ViewportCommand::CursorVisible(false)),
+            "each frame must explicitly hide the native cursor"
+        );
     }
 }
