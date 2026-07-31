@@ -16,6 +16,9 @@ use axum::{
     response::IntoResponse,
     routing::{any, get, post},
 };
+use bts_core::terminals::{
+    DEFAULT_EXPIRY_INTERVAL, DEFAULT_PRESENCE_TIMEOUT, TerminalRegistry, configured_state_path,
+};
 use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::core::{
     CORE_ADDONS_PATH, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
@@ -36,6 +39,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 128;
 struct AppState {
     current: Arc<RwLock<BtsState>>,
     registry: Arc<RwLock<AddonRegistry>>,
+    terminals: TerminalRegistry,
     assets: Arc<RwLock<HashMap<AssetId, StoredAsset>>>,
     events: broadcast::Sender<ServerMessage>,
 }
@@ -64,13 +68,17 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or_else(|_| Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3100)))?;
     let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+    let terminals = TerminalRegistry::load(configured_state_path(), DEFAULT_PRESENCE_TIMEOUT)
+        .context("failed to load the terminal registry")?;
 
     let state = AppState {
         current: Arc::new(RwLock::new(BtsState::default())),
         registry: Arc::new(RwLock::new(AddonRegistry::default())),
+        terminals,
         assets: Arc::new(RwLock::new(HashMap::new())),
         events,
     };
+    let terminal_expiry_task = spawn_terminal_expiry(state.terminals.clone());
 
     let app = Router::new()
         .route("/health", get(health))
@@ -92,10 +100,23 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("BTS Core HTTP server failed")?;
+    terminal_expiry_task.abort();
 
     info!("BTS Core stopped");
 
     Ok(())
+}
+
+fn spawn_terminal_expiry(registry: TerminalRegistry) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(DEFAULT_EXPIRY_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            registry.expire_stale(std::time::Instant::now());
+        }
+    })
 }
 
 fn initialise_logging() {

@@ -328,6 +328,8 @@ pub enum RegistrationRejectionReason {
         received: ProtocolVersion,
         supported: ProtocolVersion,
     },
+    DuplicateTerminalId,
+    /// Retained for compatibility with the issue #27 foundation contract.
     IdentityAlreadyConnected,
     InvalidRegistration {
         detail: String,
