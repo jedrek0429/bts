@@ -33,6 +33,13 @@ impl Addons {
         for (id, addon) in self.registry.entries() {
             let context = self.context(id);
             let manifest = addon.manifest();
+            // Clear a registration and display lease left by an ungraceful host
+            // restart before registering the fresh addon instance.
+            let _ = context
+                .publish(EventKind::AddonStopped {
+                    addon_id: id.clone(),
+                })
+                .await;
             if let Err(error) = context
                 .publish(EventKind::AddonRegistered { manifest })
                 .await
