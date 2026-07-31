@@ -136,6 +136,8 @@ Core listens on port 3100:
 * `GET /api/v1/events/ws`
 * `GET /api/v1/state`
 * `GET /api/v1/addons`
+* `POST /api/v1/assets`
+* `GET /api/v1/assets/{asset_id}`
 * `GET /health`
 
 ## Licence

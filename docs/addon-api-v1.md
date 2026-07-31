@@ -87,7 +87,7 @@ Actions carry an opaque `ActionId` and JSON parameters. Core resolves and valida
 
 `AddonContext::show` requests a new lease and returns its opaque `DisplayLeaseId`. Store that handle for a long-running screen. Use `update` with the same handle and `release` when finished. Core rejects updates from another addon or a stale lease. A higher numeric priority may replace a lower-priority screen; a lower priority cannot replace a higher one. Addon shutdown releases all its leases and unregisters it.
 
-Display data is declarative. If an existing `DisplayState` variant is sufficient, reuse it. If a genuinely new visual contract is required, add a provider-independent variant and `ScreenKind` to `bts-protocol::display`, document its wire representation, add renderer support in `bts-display`, and test both serialization and rendering selection. Never pass arbitrary filesystem paths to a renderer. Binary asset upload and asset references are reserved for a later API revision.
+Display data is declarative. If an existing `DisplayState` variant is sufficient, reuse it. If a genuinely new visual contract is required, add a provider-independent variant and `ScreenKind` to `bts-protocol::display`, document its wire representation, add renderer support in `bts-display`, and test both serialization and rendering selection. Never pass arbitrary filesystem paths to a renderer. Declare `AddonCapability::Assets`, upload bytes with `AddonContext::upload_asset`, and place the returned opaque `AssetRef` in a protocol screen model that supports assets.
 
 ## Configuration, data and lifecycle
 

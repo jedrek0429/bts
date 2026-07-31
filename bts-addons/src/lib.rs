@@ -9,8 +9,8 @@ use std::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bts_protocol::{
-    ActionId, ActionRequest, AddonId, AddonManifest, BtsState, DisplayCommand, DisplayLease,
-    DisplayLeaseId, DisplayState, Event, EventKind, NewEvent,
+    ActionId, ActionRequest, AddonId, AddonManifest, AssetRef, AssetUpload, BtsState,
+    DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState, Event, EventKind, NewEvent,
 };
 use reqwest::Client;
 
@@ -134,6 +134,29 @@ impl AddonContext {
             },
         })
         .await
+    }
+
+    pub async fn upload_asset(
+        &self,
+        content_type: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Result<AssetRef> {
+        let endpoint = format!("{}/api/v1/assets", self.core_http_url.trim_end_matches('/'));
+        self.http
+            .post(endpoint)
+            .json(&AssetUpload {
+                addon_id: self.addon_id.clone(),
+                content_type: content_type.into(),
+                bytes,
+            })
+            .send()
+            .await
+            .context("failed to upload addon asset to BTS Core")?
+            .error_for_status()
+            .context("BTS Core rejected addon asset")?
+            .json()
+            .await
+            .context("failed to decode BTS Core asset reference")
     }
 }
 

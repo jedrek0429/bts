@@ -7,17 +7,18 @@ use std::{
 use anyhow::Context;
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
-        State,
+        Path as AxumPath, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::StatusCode,
+    http::{StatusCode, header},
     response::IntoResponse,
     routing::{any, get, post},
 };
 use bts_protocol::{
-    ADDON_API_VERSION, ActionId, AddonId, AddonManifest, BtsState, DisplayCommand, Event,
-    EventKind, NewEvent, ServerMessage,
+    ADDON_API_VERSION, ActionId, AddonId, AddonManifest, AssetId, AssetRef, AssetUpload, BtsState,
+    DisplayCommand, Event, EventKind, NewEvent, ServerMessage,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, broadcast};
@@ -30,7 +31,13 @@ const EVENT_CHANNEL_CAPACITY: usize = 128;
 struct AppState {
     current: Arc<RwLock<BtsState>>,
     registry: Arc<RwLock<AddonRegistry>>,
+    assets: Arc<RwLock<HashMap<AssetId, StoredAsset>>>,
     events: broadcast::Sender<ServerMessage>,
+}
+
+struct StoredAsset {
+    content_type: String,
+    bytes: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -50,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         current: Arc::new(RwLock::new(BtsState::default())),
         registry: Arc::new(RwLock::new(AddonRegistry::default())),
+        assets: Arc::new(RwLock::new(HashMap::new())),
         events,
     };
 
@@ -57,6 +65,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/api/v1/state", get(get_state))
         .route("/api/v1/addons", get(get_addons))
+        .route("/api/v1/assets", post(upload_asset))
+        .route("/api/v1/assets/{asset_id}", get(get_asset))
         .route("/api/v1/events", post(submit_event))
         .route("/api/v1/events/ws", any(websocket_handler))
         .with_state(state);
@@ -107,6 +117,59 @@ async fn get_addons(State(state): State<AppState>) -> Json<Vec<AddonManifest>> {
         .collect();
     manifests.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
     Json(manifests)
+}
+
+async fn upload_asset(
+    State(state): State<AppState>,
+    Json(upload): Json<AssetUpload>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let registry = state.registry.read().await;
+    let manifest = registry.manifests.get(&upload.addon_id).ok_or((
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!("addon {} is not registered", upload.addon_id),
+    ))?;
+    if !manifest
+        .capabilities
+        .contains(&bts_protocol::AddonCapability::Assets)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("addon {} did not declare asset access", upload.addon_id),
+        ));
+    }
+    if upload.content_type.trim().is_empty() || upload.bytes.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "asset content type and bytes must not be empty".to_owned(),
+        ));
+    }
+    drop(registry);
+    let reference = AssetRef {
+        id: AssetId::new(),
+        content_type: upload.content_type.clone(),
+    };
+    state.assets.write().await.insert(
+        reference.id,
+        StoredAsset {
+            content_type: upload.content_type,
+            bytes: upload.bytes,
+        },
+    );
+    Ok((StatusCode::CREATED, Json(reference)))
+}
+
+async fn get_asset(
+    AxumPath(asset_id): AxumPath<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let assets = state.assets.read().await;
+    let asset = assets
+        .get(&AssetId(asset_id))
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok((
+        [(header::CONTENT_TYPE, asset.content_type.clone())],
+        Body::from(asset.bytes.clone()),
+    ))
 }
 
 async fn submit_event(
