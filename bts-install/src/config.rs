@@ -38,6 +38,39 @@ pub fn validate_http_url(value: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_cage_args(value: &str) -> Result<()> {
+    ensure!(
+        !value.chars().any(char::is_control),
+        "Cage arguments must not contain control characters."
+    );
+    ensure!(
+        !value
+            .split_whitespace()
+            .any(|word| word.trim_matches(['\'', '"']) == "--"),
+        "Cage arguments must not contain the '--' command delimiter."
+    );
+    let mut quote = None;
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+        }
+    }
+    ensure!(
+        !escaped && quote.is_none(),
+        "Cage arguments contain an incomplete escape or quote."
+    );
+    Ok(())
+}
+
 pub fn parse_environment(contents: &str) -> Result<BTreeMap<String, String>> {
     let mut values = BTreeMap::new();
     for (index, line) in contents.lines().enumerate() {
@@ -209,6 +242,9 @@ mod tests {
             ("BTS_ARI_PASSWORD".into(), "secret".into()),
         ]);
         validate_telephony(&values).unwrap();
+        assert!(validate_cage_args("-m extend -- bts-display").is_err());
+        validate_cage_args("-m extend -s").unwrap();
+        assert!(validate_cage_args("-m 'unterminated").is_err());
     }
 
     #[test]

@@ -94,6 +94,7 @@ Common options:
 | `--core-url URL` | Set Display's remote Core WebSocket URL |
 | `--core-http-url URL` | Set the remote Core HTTP URL for Addons or Telephony |
 | `--core-ws-url URL` | Set the remote Core WebSocket URL for Display or Addons |
+| `--cage-args ARGS` | Override Cage arguments for Display |
 | `--repository OWNER/REPO` | Select the public release repository |
 | `--channel stable` | Use the newest published v0.3.x release |
 | `--channel v0.3.x` | Use a specific v0.3.x release |
@@ -140,6 +141,19 @@ The file must not be accessible to group or other users. It may also contain `BT
 
 Display configuration accepts `--core-url` or a prompt and requires the published WebSocket path. Connectivity may be temporarily unavailable: Display stays active, shows a calm disconnected state and reconnects automatically.
 
+Cage defaults to `-m last`. Supply an alternative during installation or configuration:
+
+```sh
+sudo bts-install install display \
+  --core-url ws://192.168.1.50:3100/api/v1/events/ws \
+  --cage-args "-m extend"
+
+sudo bts-install configure display \
+  --cage-args "-m extend"
+```
+
+The value is stored as `BTS_CAGE_ARGS` in `/etc/bts/display.env`. systemd expands it into arguments before the fixed `-- bts-display` command delimiter; it is not evaluated by a shell. Do not include the `--` delimiter in the custom value. Run `cage --help` for arguments supported by the installed Cage version.
+
 Remote Addons and Telephony hosts use `--core-http-url`; Addons additionally accepts `--core-ws-url`. Non-interactive installation of a Core client without a local Core requires its applicable endpoint flags, so the installer never silently assumes a local service.
 
 ## Installation and reconciliation
@@ -156,6 +170,7 @@ Cage normally selects the connected DRM output. If a host has several graphics d
 
 ```env
 WLR_DRM_DEVICES=/dev/dri/card0
+BTS_CAGE_ARGS=-m extend
 ```
 
 Display owns tty1 while installed. Removing Display through `bts-install` restores the login service when tty1 was installer-managed.
