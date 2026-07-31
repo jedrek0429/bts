@@ -1,6 +1,60 @@
-# BTS Installer v2
+# `bts-install`
 
 `bts-install` is the sole supported BTS v0.3 deployment manager. It installs portable release bundles rather than building source or installing native BTS packages.
+
+## Install the installer
+
+Download `bts-install` and its checksum from the same tagged v0.3 release. Verify the checksum before running or installing the binary:
+
+```sh
+release=v0.3.0
+curl --fail --location --remote-name \
+  "https://github.com/jedrek0429/bts/releases/download/$release/bts-install"
+curl --fail --location --remote-name \
+  "https://github.com/jedrek0429/bts/releases/download/$release/bts-install.sha256"
+sha256sum --check bts-install.sha256
+chmod +x bts-install
+sudo install -m 0755 bts-install /usr/local/bin/bts-install
+```
+
+The v0.3 installer reads public GitHub Releases. Private-release authentication is not supported.
+
+## Quick start
+
+Install a complete single-host system:
+
+```sh
+sudo bts-install install full
+```
+
+Install Core, Telephony and Addons without a local Display:
+
+```sh
+sudo bts-install install server
+```
+
+Install an ARM64 Display that connects to Core on another host:
+
+```sh
+sudo bts-install install display \
+  --core-url ws://192.168.1.50:3100/api/v1/events/ws
+```
+
+Install explicit components:
+
+```sh
+sudo bts-install install \
+  --component core \
+  --component addons
+```
+
+For a non-interactive Display installation, supply both the endpoint and confirmation:
+
+```sh
+sudo bts-install install display \
+  --core-url ws://192.168.1.50:3100/api/v1/events/ws \
+  --yes
+```
 
 ## Roles and components
 
@@ -32,6 +86,26 @@ bts-install warranty
 
 `--dry-run` resolves and prints the same plan used for a real operation. `--yes` confirms host changes for non-interactive use. `--no-start` stages and enables new releases without starting them. `--quiet` suppresses normal output; `--json` provides stable machine-readable plans, status and diagnostics without an interactive legal banner.
 
+Common options:
+
+| Option | Purpose |
+| --- | --- |
+| `--component COMPONENT` | Select a component for a custom installation |
+| `--core-url URL` | Set Display's remote Core WebSocket URL |
+| `--core-http-url URL` | Set the remote Core HTTP URL for Addons or Telephony |
+| `--core-ws-url URL` | Set the remote Core WebSocket URL for Display or Addons |
+| `--repository OWNER/REPO` | Select the public release repository |
+| `--channel stable` | Use the newest published v0.3.x release |
+| `--channel v0.3.x` | Use a specific v0.3.x release |
+| `--dry-run` | Print the plan without changing the machine |
+| `--yes` | Confirm changes without a prompt |
+| `--no-start` | Install and enable without starting services |
+| `--json` | Print stable machine-readable output where supported |
+| `--quiet` | Suppress normal output |
+| `--purge` | Remove installer-owned configuration during removal |
+
+`--root` exists for isolated testing and recovery. It is not a container or chroot deployment interface.
+
 ## Persistent state
 
 Installer state is stored at `/var/lib/bts-install/state.json` with mode `0600`. It records schema and installer versions, the overall and per-component BTS versions, selected role, authoritative component set, repository/channel, platform/architecture, timestamps and whether tty1 was installer-managed. It never stores credentials. Writes use a fully synced temporary file, atomic rename and parent-directory sync. Schema 1 is migrated to schema 2 when read; newer schemas are rejected.
@@ -49,6 +123,21 @@ Services load a shared non-secret `/etc/bts/bts.env` and one optional component 
 
 Installer-written files use mode `0640` in the traversable, non-writable `/etc/bts` directory. Server component files are owned by `root:bts`; Display configuration is owned by `root:bts-display`, so a display-only host needs no unrelated service account. Interactive Telephony configuration reads and confirms the ARI password without echoing it. Automation uses `--secret-file` (with no group or other access) or `--secret-fd`; password command arguments are deliberately unsupported. ARI validation distinguishes unreachable endpoints, rejected authentication, malformed configuration and successful responses before configuration replacement or service restart.
 
+Configure Telephony interactively:
+
+```sh
+sudo bts-install configure telephony
+```
+
+For automation, prepare a root-owned environment file containing `BTS_ARI_PASSWORD` and pass it without placing the password in command arguments:
+
+```sh
+sudo bts-install configure telephony \
+  --secret-file /root/bts-telephony.env
+```
+
+The file must not be accessible to group or other users. It may also contain `BTS_ARI_URL`, `BTS_ARI_USERNAME` and `BTS_CORE_URL`.
+
 Display configuration accepts `--core-url` or a prompt and requires the published WebSocket path. Connectivity may be temporarily unavailable: Display stays active, shows a calm disconnected state and reconnects automatically.
 
 Remote Addons and Telephony hosts use `--core-http-url`; Addons additionally accepts `--core-ws-url`. Non-interactive installation of a Core client without a local Core requires its applicable endpoint flags, so the installer never silently assumes a local service.
@@ -60,6 +149,16 @@ The installer detects Debian-family or Arch Linux through `/etc/os-release` and 
 The selected release manifest provides every asset name and checksum. Assets are downloaded, SHA-256 verified, checked for compatible manifest/bundle schemas, and inspected before extraction. Absolute paths, parent traversal, special members and escaping links are rejected. Re-running an already satisfied component plan performs no work. Adding or removing one component does not restart unrelated services; dependency references are calculated from the complete desired component set.
 
 Display installation creates the kiosk account, installs Cage/seatd/font runtime dependencies, grants display device groups, discloses tty1 takeover, and enables only Display. ARM64 DRM, Cage, seatd and tty behaviour must still be accepted on real supported hardware.
+
+### Display hardware
+
+Cage normally selects the connected DRM output. If a host has several graphics devices, set the required device in `/etc/bts/display.env`:
+
+```env
+WLR_DRM_DEVICES=/dev/dri/card0
+```
+
+Display owns tty1 while installed. Removing Display through `bts-install` restores the login service when tty1 was installer-managed.
 
 ## Activation, upgrades and rollback
 
@@ -76,12 +175,27 @@ The `current` link is replaced atomically only after bundle validation. An upgra
 
 `status` reports installer/BTS versions, role, component installation, unit enablement/activity and configured remote endpoints without secrets. `doctor` checks state, component configuration permissions, activated binaries and service activity, and supplies a concrete recovery command for errors. Hardware-specific graphics, seat, tty, Asterisk and ARI behaviour requires real-host acceptance and is not claimed by automated tests.
 
+```sh
+bts-install status
+bts-install status --json
+sudo bts-install doctor
+sudo bts-install doctor --json
+```
+
 ## Removal
 
 Removal stops and disables only selected services, removes their activation link, updates state and preserves configuration. `--purge` additionally removes the selected installer-owned component configuration. Display removal unmasks and restores the tty1 login service. User data and release history are retained because they may not be solely installer-owned.
+
+```sh
+sudo bts-install remove display
+sudo bts-install uninstall
+sudo bts-install uninstall --purge
+```
 
 ## Legal interface
 
 Interactive mutating entry points show the program/version, `GPL-3.0-or-later` identifier, no-warranty notice and `licence` command. Help, version, licence and warranty work offline. The full GPL text is installed at `/usr/share/licenses/bts/LICENSE`; `licence` honours `$PAGER` and otherwise writes it directly.
 
 Copyright notices use `Copyright © YEAR BTS contributors`. Individual authorship remains preserved by Git history and contributor records.
+
+Release publishers should also read the [release manifest and portable bundle specification](release-manifest-v1.md).
