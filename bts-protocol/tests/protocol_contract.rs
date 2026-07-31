@@ -7,8 +7,9 @@ use bts_protocol::{
     PresentationId, PresentationRejection, PresentationRejectionCode, PresentationRequest,
     ProtocolVersion, RegistrationRejection, RegistrationRejectionReason, ReservedDtmfAction,
     ResolvedTarget, RoutingError, TagMatch, TagQuery, TargetScope, TerminalCapabilities,
-    TerminalCapability, TerminalClientMessage, TerminalConnectionId, TerminalId, TerminalIdentity,
-    TerminalImplementationId, TerminalName, TerminalRegistration, TerminalTag, TerminalTarget,
+    TerminalCapability, TerminalClientMessage, TerminalConnectionId, TerminalGroupChange,
+    TerminalId, TerminalIdentity, TerminalImplementationId, TerminalMetadataChange, TerminalName,
+    TerminalRegistration, TerminalTag, TerminalTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -402,5 +403,48 @@ fn existing_menu_entry_wire_shape_is_preserved() {
             "order": 40
         }))
         .is_err()
+    );
+}
+
+#[test]
+fn terminal_administration_events_have_stable_wire_shapes() {
+    let renamed = EventKind::TerminalMetadataChanged {
+        terminal_id: terminal_id("hall-display"),
+        change: TerminalMetadataChange::Renamed {
+            name: TerminalName::new("Hallway").unwrap(),
+        },
+    };
+    let member_added = EventKind::TerminalGroupChanged {
+        group_id: GroupId::new("downstairs").unwrap(),
+        change: TerminalGroupChange::MemberAdded {
+            terminal_id: terminal_id("hall-display"),
+        },
+    };
+
+    let renamed_wire = serde_json::to_value(&renamed).unwrap();
+    assert_eq!(
+        renamed_wire,
+        json!({
+            "type": "terminal_metadata_changed",
+            "terminal_id": "hall-display",
+            "change": { "change": "renamed", "name": "Hallway" }
+        })
+    );
+    let member_wire = serde_json::to_value(&member_added).unwrap();
+    assert_eq!(
+        member_wire,
+        json!({
+            "type": "terminal_group_changed",
+            "group_id": "downstairs",
+            "change": { "change": "member_added", "terminal_id": "hall-display" }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<EventKind>(renamed_wire).unwrap()).unwrap(),
+        json!({
+            "type": "terminal_metadata_changed",
+            "terminal_id": "hall-display",
+            "change": { "change": "renamed", "name": "Hallway" }
+        })
     );
 }

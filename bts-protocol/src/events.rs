@@ -6,9 +6,29 @@ use uuid::Uuid;
 
 use crate::addons::v1::{ActionRequest, AddonId, AddonManifest};
 use crate::{
-    BtsState, DisplayCommand, PresentationId, PresentationRequest, TerminalCapabilities,
-    TerminalTarget, VoiceInputRequest, VoiceInputResult,
+    BtsState, DisplayCommand, GroupId, GroupName, PresentationId, PresentationRequest,
+    TerminalCapabilities, TerminalId, TerminalName, TerminalTag, TerminalTarget, VoiceInputRequest,
+    VoiceInputResult,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "change", rename_all = "snake_case")]
+pub enum TerminalMetadataChange {
+    Renamed { name: TerminalName },
+    DescriptionChanged { description: Option<String> },
+    TagAdded { tag: TerminalTag },
+    TagRemoved { tag: TerminalTag },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "change", rename_all = "snake_case")]
+pub enum TerminalGroupChange {
+    Created { name: GroupName },
+    Renamed { name: GroupName },
+    Deleted,
+    MemberAdded { terminal_id: TerminalId },
+    MemberRemoved { terminal_id: TerminalId },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -81,6 +101,14 @@ pub enum EventKind {
     },
     DisplayRequested {
         command: DisplayCommand,
+    },
+    TerminalMetadataChanged {
+        terminal_id: TerminalId,
+        change: TerminalMetadataChange,
+    },
+    TerminalGroupChanged {
+        group_id: GroupId,
+        change: TerminalGroupChange,
     },
     PhoneCallStarted {
         channel_id: String,
