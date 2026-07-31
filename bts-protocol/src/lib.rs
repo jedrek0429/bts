@@ -1,12 +1,14 @@
 //! Shared, implementation-independent BTS wire contracts.
 
 pub mod addons;
+pub mod assets;
 pub mod display;
 pub mod events;
 pub mod state;
 pub mod telephony;
 
 pub use addons::*;
+pub use assets::*;
 pub use display::*;
 pub use events::*;
 pub use state::*;

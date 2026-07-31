@@ -67,6 +67,7 @@ impl AddonVersion {
 #[serde(rename_all = "snake_case")]
 pub enum AddonCapability {
     Display,
+    Assets,
     Configuration,
     DataDirectory,
     ExternalHttp,
