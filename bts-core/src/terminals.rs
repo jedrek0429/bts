@@ -15,7 +15,8 @@ use bts_protocol::{
     GroupId, GroupIdentity, GroupName, ProtocolVersion, RegistrationRejection,
     RegistrationRejectionReason, TerminalCapabilities, TerminalConnectionId, TerminalEvent,
     TerminalEventKind, TerminalGroupChange, TerminalId, TerminalIdentity, TerminalImplementationId,
-    TerminalMetadataChange, TerminalName, TerminalRegistration, TerminalTag,
+    TerminalImplementationVersion, TerminalMetadataChange, TerminalName, TerminalRegistration,
+    TerminalRuntimeDiagnostics, TerminalTag,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -120,6 +121,14 @@ pub struct TerminalPresence {
     pub last_seen_at: DateTime<Utc>,
     pub protocol_version: ProtocolVersion,
     pub declared_capabilities: TerminalCapabilities,
+    pub implementation_version: Option<TerminalImplementationVersion>,
+    pub runtime_diagnostics: TerminalRuntimeDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiredTerminalPresence {
+    pub terminal_id: TerminalId,
+    pub connection_id: TerminalConnectionId,
 }
 
 /// One atomic view of definitions, groups and live presence for routing.
@@ -297,7 +306,35 @@ impl TerminalRegistry {
         remote_address: Option<SocketAddr>,
         now: Instant,
     ) -> Result<RegistrationOutcome, RegisterError> {
-        self.register_observed(registration, connection_id, remote_address, now, Utc::now())
+        self.register_with_metadata(
+            registration,
+            connection_id,
+            remote_address,
+            now,
+            None,
+            TerminalRuntimeDiagnostics::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_with_metadata(
+        &self,
+        registration: TerminalRegistration,
+        connection_id: TerminalConnectionId,
+        remote_address: Option<SocketAddr>,
+        now: Instant,
+        implementation_version: Option<TerminalImplementationVersion>,
+        runtime_diagnostics: TerminalRuntimeDiagnostics,
+    ) -> Result<RegistrationOutcome, RegisterError> {
+        self.register_observed_with_metadata(
+            registration,
+            connection_id,
+            remote_address,
+            now,
+            Utc::now(),
+            implementation_version,
+            runtime_diagnostics,
+        )
     }
 
     pub fn register_observed(
@@ -307,6 +344,28 @@ impl TerminalRegistry {
         remote_address: Option<SocketAddr>,
         now: Instant,
         observed_at: DateTime<Utc>,
+    ) -> Result<RegistrationOutcome, RegisterError> {
+        self.register_observed_with_metadata(
+            registration,
+            connection_id,
+            remote_address,
+            now,
+            observed_at,
+            None,
+            TerminalRuntimeDiagnostics::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_observed_with_metadata(
+        &self,
+        registration: TerminalRegistration,
+        connection_id: TerminalConnectionId,
+        remote_address: Option<SocketAddr>,
+        now: Instant,
+        observed_at: DateTime<Utc>,
+        implementation_version: Option<TerminalImplementationVersion>,
+        runtime_diagnostics: TerminalRuntimeDiagnostics,
     ) -> Result<RegistrationOutcome, RegisterError> {
         let terminal_id = registration.identity.id.clone();
         if !ProtocolVersion::CURRENT.is_compatible_with(registration.protocol_version) {
@@ -410,6 +469,8 @@ impl TerminalRegistry {
                 last_seen_at: observed_at,
                 protocol_version: registration.protocol_version,
                 declared_capabilities: registration.capabilities,
+                implementation_version,
+                runtime_diagnostics,
             },
         );
 
@@ -509,25 +570,28 @@ impl TerminalRegistry {
     }
 
     /// Removes presences whose last activity is strictly older than the timeout.
-    pub fn expire_stale(&self, now: Instant) -> Vec<TerminalId> {
+    pub fn expire_stale(&self, now: Instant) -> Vec<ExpiredTerminalPresence> {
         let mut state = self.lock();
         let stale_after = state.stale_after;
         let mut expired = state
             .presences
             .iter()
             .filter(|(_, presence)| is_stale(presence, now, stale_after))
-            .map(|(terminal_id, _)| terminal_id.clone())
+            .map(|(terminal_id, presence)| ExpiredTerminalPresence {
+                terminal_id: terminal_id.clone(),
+                connection_id: presence.connection_id,
+            })
             .collect::<Vec<_>>();
-        expired.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        expired.sort_by(|left, right| left.terminal_id.as_str().cmp(right.terminal_id.as_str()));
         if !expired.is_empty()
             && let Err(error) = checkpoint_registry(&state)
         {
             warn!(%error, "could not checkpoint timed-out terminal metadata");
         }
-        for terminal_id in &expired {
-            if let Some(presence) = state.presences.remove(terminal_id) {
+        for expired_presence in &expired {
+            if let Some(presence) = state.presences.remove(&expired_presence.terminal_id) {
                 warn!(
-                    terminal_id = %terminal_id,
+                    terminal_id = %expired_presence.terminal_id,
                     connection_id = ?presence.connection_id,
                     "terminal presence timed out"
                 );
@@ -1370,10 +1434,11 @@ mod tests {
         let (_directory, _path, registry) = registry();
         let now = Instant::now();
         let id = terminal_id("hall-display");
+        let connection_id = TerminalConnectionId::new();
         registry
             .register(
                 registration("hall-display", "Hall Display"),
-                TerminalConnectionId::new(),
+                connection_id,
                 None,
                 now,
             )
@@ -1382,7 +1447,10 @@ mod tests {
         assert!(registry.expire_stale(now + TIMEOUT).is_empty());
         assert_eq!(
             registry.expire_stale(now + TIMEOUT + Duration::from_nanos(1)),
-            vec![id.clone()]
+            vec![ExpiredTerminalPresence {
+                terminal_id: id.clone(),
+                connection_id,
+            }]
         );
         assert!(registry.presence(&id).is_none());
         assert!(registry.definition(&id).is_some());

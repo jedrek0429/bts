@@ -11,7 +11,8 @@ use bts_protocol::{
     TERMINAL_EVENT_STREAM_VERSION, TagMatch, TagQuery, TargetScope, TerminalCapabilities,
     TerminalCapability, TerminalClientMessage, TerminalConnectionId, TerminalEvent,
     TerminalEventKind, TerminalGroupChange, TerminalId, TerminalIdentity, TerminalImplementationId,
-    TerminalMetadataChange, TerminalName, TerminalRegistration, TerminalTag, TerminalTarget,
+    TerminalImplementationVersion, TerminalMetadataChange, TerminalName, TerminalRegistration,
+    TerminalRuntimeDiagnostics, TerminalTag, TerminalTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -118,6 +119,54 @@ fn registration_ignores_unknown_optional_fields() {
         registration
             .capabilities
             .contains(&capability("future_capability"))
+    );
+}
+
+#[test]
+fn terminal_registration_metadata_is_typed_bounded_and_forward_compatible() {
+    let message: TerminalClientMessage = serde_json::from_value(json!({
+        "message": "register",
+        "registration": {
+            "identity": { "id": "bedroom-display", "name": "Bedroom Display" },
+            "implementation": "bts-display",
+            "protocol_version": { "major": 0, "minor": 3 },
+            "capabilities": ["render_text"]
+        },
+        "implementation_version": "1.2.3",
+        "runtime_diagnostics": {
+            "platform": "linux",
+            "architecture": "aarch64",
+            "renderer": "glow",
+            "display.resolution": "1280x720",
+            "future.metric": "retained"
+        },
+        "future_registration_field": true
+    }))
+    .unwrap();
+    let TerminalClientMessage::Register {
+        implementation_version,
+        runtime_diagnostics,
+        ..
+    } = message
+    else {
+        panic!("expected registration")
+    };
+    assert_eq!(
+        implementation_version.unwrap().as_version(),
+        &semver::Version::new(1, 2, 3)
+    );
+    assert_eq!(runtime_diagnostics.iter().count(), 5);
+
+    let too_many = (0..33)
+        .map(|index| (format!("metric.{index}"), "value".to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    assert!(TerminalRuntimeDiagnostics::new(too_many).is_err());
+    assert!(TerminalRuntimeDiagnostics::new([("platform".to_owned(), "x".repeat(257),)]).is_err());
+    assert!(
+        TerminalImplementationVersion::new(
+            semver::Version::parse(&format!("1.0.0+{}", "x".repeat(65))).unwrap()
+        )
+        .is_err()
     );
 }
 
@@ -236,7 +285,17 @@ fn lifecycle_and_presentation_messages_round_trip() {
     let resolved = ResolvedTarget::new(TerminalTarget::all(), [terminal_id.clone()]).unwrap();
 
     let client_messages = [
-        TerminalClientMessage::Register { registration },
+        TerminalClientMessage::Register {
+            registration,
+            implementation_version: Some(
+                TerminalImplementationVersion::new(semver::Version::new(0, 3, 0)).unwrap(),
+            ),
+            runtime_diagnostics: TerminalRuntimeDiagnostics::new([(
+                "platform".to_owned(),
+                "linux".to_owned(),
+            )])
+            .unwrap(),
+        },
         TerminalClientMessage::Heartbeat {
             terminal_id: terminal_id.clone(),
             connection_id,
@@ -283,6 +342,7 @@ fn lifecycle_and_presentation_messages_round_trip() {
         CoreTerminalMessage::RegistrationAcknowledged {
             terminal_id: terminal_id.clone(),
             connection_id,
+            core_epoch: Uuid::nil(),
             protocol_version: ProtocolVersion::CURRENT,
             heartbeat_interval_seconds: 30,
         },

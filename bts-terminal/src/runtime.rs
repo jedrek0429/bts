@@ -17,6 +17,7 @@ use bts_protocol::{
     RegistrationRejection, TerminalClientMessage, TerminalConnectionId, TerminalId,
 };
 use tokio::{sync::mpsc as tokio_mpsc, time::Instant as TokioInstant};
+use uuid::Uuid;
 
 use crate::{
     TerminalConfiguration,
@@ -528,6 +529,7 @@ where
                     CoreTerminalMessage::RegistrationAcknowledged {
                         terminal_id,
                         connection_id,
+                        core_epoch,
                         protocol_version,
                         heartbeat_interval_seconds,
                     } => {
@@ -561,6 +563,7 @@ where
                                 was_registered: false,
                             };
                         }
+                        dispatch_history.begin_epoch(core_epoch);
                         publish_state(
                             events,
                             ConnectionState::Registered {
@@ -1016,6 +1019,17 @@ impl Drop for PendingPresentation {
 struct DispatchHistory {
     recent: RecentPresentationIds,
     greatest_generation: Option<PresentationGeneration>,
+    core_epoch: Option<Uuid>,
+}
+
+impl DispatchHistory {
+    fn begin_epoch(&mut self, core_epoch: Uuid) {
+        if self.core_epoch != Some(core_epoch) {
+            self.recent = RecentPresentationIds::default();
+            self.greatest_generation = None;
+            self.core_epoch = Some(core_epoch);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1079,6 +1093,13 @@ fn serialise_registration(
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string(&TerminalClientMessage::Register {
         registration: configuration.registration().clone(),
+        implementation_version: Some(
+            bts_protocol::TerminalImplementationVersion::new(
+                configuration.implementation_version().clone(),
+            )
+            .expect("validated terminal implementation version remains valid"),
+        ),
+        runtime_diagnostics: configuration.runtime_diagnostics().clone(),
     })
 }
 
@@ -1348,9 +1369,24 @@ mod tests {
         connection_id: TerminalConnectionId,
         heartbeat_interval_seconds: u32,
     ) -> CoreTerminalMessage {
+        acknowledgement_for_epoch(
+            configuration,
+            connection_id,
+            heartbeat_interval_seconds,
+            Uuid::nil(),
+        )
+    }
+
+    fn acknowledgement_for_epoch(
+        configuration: &TerminalConfiguration,
+        connection_id: TerminalConnectionId,
+        heartbeat_interval_seconds: u32,
+        core_epoch: Uuid,
+    ) -> CoreTerminalMessage {
         CoreTerminalMessage::RegistrationAcknowledged {
             terminal_id: configuration.terminal_id().clone(),
             connection_id,
+            core_epoch,
             protocol_version: ProtocolVersion::CURRENT,
             heartbeat_interval_seconds,
         }
@@ -1796,6 +1832,76 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_new_core_epoch_resets_generation_and_replay_history() {
+        let mut harness = Harness::start();
+        let (first_peer, _) = harness.open_connection().await;
+        let first_connection = TerminalConnectionId::new();
+        register(&mut harness, &first_peer, first_connection, 60).await;
+
+        let first = dispatch(
+            harness.configuration.terminal_id(),
+            [harness.configuration.terminal_id().clone()],
+            harness.configuration.terminal_id(),
+            first_connection,
+            8,
+            Duration::from_secs(10),
+        );
+        first_peer.send_core(CoreTerminalMessage::PresentationDispatch {
+            presentation: Box::new(first),
+        });
+        harness.next_presentation().await;
+        first_peer.close_from_core();
+        harness
+            .next_event_matching(|event| {
+                matches!(
+                    event,
+                    TerminalEvent::ConnectionStateChanged(ConnectionState::Retrying { .. })
+                )
+            })
+            .await;
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let (second_peer, _) = harness.open_connection().await;
+        let second_connection = TerminalConnectionId::new();
+        second_peer.send_core(acknowledgement_for_epoch(
+            &harness.configuration,
+            second_connection,
+            60,
+            Uuid::new_v4(),
+        ));
+        harness
+            .next_event_matching(|event| {
+                matches!(
+                    event,
+                    TerminalEvent::ConnectionStateChanged(ConnectionState::Registered { .. })
+                )
+            })
+            .await;
+
+        let restarted = dispatch(
+            harness.configuration.terminal_id(),
+            [harness.configuration.terminal_id().clone()],
+            harness.configuration.terminal_id(),
+            second_connection,
+            1,
+            Duration::from_secs(10),
+        );
+        second_peer.send_core(CoreTerminalMessage::PresentationDispatch {
+            presentation: Box::new(restarted),
+        });
+        assert_eq!(
+            harness
+                .next_presentation()
+                .await
+                .completion()
+                .generation()
+                .get(),
+            1
+        );
+        harness.finish().await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn consumer_acceptance_and_rejection_include_connection_ownership() {
         let mut harness = Harness::start();
         let (mut peer, _) = harness.open_connection().await;
@@ -2025,6 +2131,13 @@ mod tests {
             message,
             TerminalClientMessage::Register {
                 registration: configuration.registration().clone(),
+                implementation_version: Some(
+                    bts_protocol::TerminalImplementationVersion::new(
+                        configuration.implementation_version().clone(),
+                    )
+                    .unwrap(),
+                ),
+                runtime_diagnostics: configuration.runtime_diagnostics().clone(),
             }
         );
     }

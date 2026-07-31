@@ -102,6 +102,9 @@ pub enum EventKind {
     DisplayRequested {
         command: DisplayCommand,
     },
+    PresentationRequested {
+        request: PresentationRequest,
+    },
     PhoneCallStarted {
         channel_id: String,
         caller: Option<String>,

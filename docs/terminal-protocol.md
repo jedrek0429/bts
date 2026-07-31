@@ -13,6 +13,17 @@ not routing capabilities. Registration may acquire optional fields in later
 protocol versions, but routing decisions must use only typed, validated routing
 fields.
 
+Terminals connect to the dedicated `/api/v1/terminals/ws` WebSocket endpoint.
+Registration reports a bounded semantic implementation version and up to 32
+bounded runtime diagnostic key/value pairs. Diagnostics such as `platform`,
+`architecture`, `renderer` and `display.resolution` are retained only with live
+presence. They never affect identity, approved capabilities, routing, tags or
+groups, and they are never written to the terminal registry file.
+
+Terminal administration and delivery completion remain off the adjacent-version
+event stream. Observers use `/api/v1/terminals/events/ws`, whose messages carry
+the independent terminal event stream version.
+
 ## Target resolution
 
 `TerminalTarget` represents an unresolved request for one terminal, a group, a

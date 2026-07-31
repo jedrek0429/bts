@@ -1,11 +1,19 @@
 //! Stable terminal identity, capability and registration contracts.
 
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
+use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize};
 
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 const MAX_NAME_LENGTH: usize = 100;
+const MAX_IMPLEMENTATION_VERSION_LENGTH: usize = 64;
+const MAX_RUNTIME_DIAGNOSTICS: usize = 32;
+const MAX_DIAGNOSTIC_VALUE_LENGTH: usize = 256;
 
 /// An invalid machine-readable protocol identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +309,122 @@ impl TerminalCapabilities {
         self.0.is_empty()
     }
 }
+
+/// A terminal implementation's semantic version, independent of the terminal
+/// protocol compatibility version.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct TerminalImplementationVersion(Version);
+
+impl TerminalImplementationVersion {
+    pub fn new(version: Version) -> Result<Self, ImplementationVersionError> {
+        if version.to_string().len() <= MAX_IMPLEMENTATION_VERSION_LENGTH {
+            Ok(Self(version))
+        } else {
+            Err(ImplementationVersionError)
+        }
+    }
+
+    pub const fn as_version(&self) -> &Version {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for TerminalImplementationVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value.len() > MAX_IMPLEMENTATION_VERSION_LENGTH {
+            return Err(serde::de::Error::custom(ImplementationVersionError));
+        }
+        let version = Version::parse(&value).map_err(serde::de::Error::custom)?;
+        Self::new(version).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImplementationVersionError;
+
+impl fmt::Display for ImplementationVersionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "terminal implementation version must contain at most {MAX_IMPLEMENTATION_VERSION_LENGTH} bytes"
+        )
+    }
+}
+
+impl Error for ImplementationVersionError {}
+
+/// Bounded, informational runtime metadata. These values are never routing
+/// capabilities and Core retains them only with ephemeral presence.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TerminalRuntimeDiagnostics(BTreeMap<String, String>);
+
+impl TerminalRuntimeDiagnostics {
+    pub fn new(
+        values: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, RuntimeDiagnosticsError> {
+        let values = values.into_iter().collect::<BTreeMap<_, _>>();
+        if values.len() > MAX_RUNTIME_DIAGNOSTICS {
+            return Err(RuntimeDiagnosticsError::TooMany);
+        }
+        for (key, value) in &values {
+            validate_identifier("runtime diagnostic key", key)
+                .map_err(|_| RuntimeDiagnosticsError::InvalidKey(key.clone()))?;
+            if value.chars().count() > MAX_DIAGNOSTIC_VALUE_LENGTH
+                || value.chars().any(char::is_control)
+            {
+                return Err(RuntimeDiagnosticsError::InvalidValue(key.clone()));
+            }
+        }
+        Ok(Self(values))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+}
+
+impl<'de> Deserialize<'de> for TerminalRuntimeDiagnostics {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let values = BTreeMap::<String, String>::deserialize(deserializer)?;
+        Self::new(values).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeDiagnosticsError {
+    TooMany,
+    InvalidKey(String),
+    InvalidValue(String),
+}
+
+impl fmt::Display for RuntimeDiagnosticsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooMany => write!(
+                formatter,
+                "at most {MAX_RUNTIME_DIAGNOSTICS} runtime diagnostics may be reported"
+            ),
+            Self::InvalidKey(key) => write!(formatter, "invalid runtime diagnostic key {key:?}"),
+            Self::InvalidValue(key) => write!(
+                formatter,
+                "runtime diagnostic {key:?} must contain at most {MAX_DIAGNOSTIC_VALUE_LENGTH} non-control characters"
+            ),
+        }
+    }
+}
+
+impl Error for RuntimeDiagnosticsError {}
 
 /// The validated fields a terminal supplies when opening a connection.
 ///
