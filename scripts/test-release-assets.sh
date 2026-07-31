@@ -8,12 +8,12 @@ assets="$test_root/assets"
 install -d "$assets" "$test_root/bin"
 for component in core display telephony addons; do
     install -m755 /usr/bin/true "$test_root/bin/bts-$component"
-    "$repository_root/scripts/build-component-bundle" "$component" 0.3.0 x86_64 "$test_root/bin/bts-$component" "$assets" >/dev/null
+    "$repository_root/scripts/build-component-bundle" "$component" 0.4.0 x86_64 "$test_root/bin/bts-$component" "$assets" >/dev/null
 done
-"$repository_root/scripts/build-component-bundle" display 0.3.0 aarch64 "$test_root/bin/bts-display" "$assets" >/dev/null
+"$repository_root/scripts/build-component-bundle" display 0.4.0 aarch64 "$test_root/bin/bts-display" "$assets" >/dev/null
 install -m755 /usr/bin/true "$assets/bts-install"
 install -m644 "$repository_root/LICENSE" "$assets/LICENSE"
-"$repository_root/scripts/generate-release-manifest.py" 0.3.0 "$assets"
+"$repository_root/scripts/generate-release-manifest.py" 0.4.0 "$assets"
 
 python3 - "$assets" <<'PY'
 import hashlib
@@ -24,7 +24,7 @@ import sys
 root = pathlib.Path(sys.argv[1])
 manifest = json.loads((root / "release-manifest.json").read_text())
 assert manifest["schema_version"] == 1
-assert manifest["release_version"] == "0.3.0"
+assert manifest["release_version"] == "0.4.0"
 assert {"core", "display", "telephony", "addons"} == set(manifest["components"])
 assert {item["architecture"] for item in manifest["components"]["display"]} == {"x86_64", "aarch64"}
 for item in [manifest["installer"], manifest["licence_asset"], *[asset for assets in manifest["components"].values() for asset in assets]]:

@@ -31,7 +31,7 @@ Options:
   --core-ws-url URL      Remote Core WebSocket URL for Display or Addons
   --cage-args ARGS       Override Cage arguments for Display (default: -m last)
   --repository OWNER/REPO  Release repository (default: jedrek0429/bts)
-  --channel CHANNEL      Release channel or explicit v0.3.x tag (default: stable)
+  --channel CHANNEL      Release channel or explicit version tag (default: stable)
   --root PATH            Alternate installation root (testing/recovery only)
   --yes                  Confirm planned host changes non-interactively
   --no-start             Install and enable without starting services
@@ -208,8 +208,10 @@ impl Cli {
         if !repository.contains('/') || repository.starts_with('/') || repository.ends_with('/') {
             bail!("--repository must use OWNER/REPOSITORY form.");
         }
-        if channel != "stable" && !channel.starts_with("v0.3.") {
-            bail!("The v0.3 installer accepts channel 'stable' or an explicit v0.3.x tag.");
+        if channel != "stable"
+            && (!channel.starts_with('v') || !crate::manifest::is_release_version(&channel))
+        {
+            bail!("The installer accepts channel 'stable' or an explicit vMAJOR.MINOR.PATCH tag.");
         }
 
         Ok(Self {
@@ -433,8 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn only_accepts_release_line_channels() {
+    fn only_accepts_stable_or_version_channels() {
         assert!(parse(&["bts-install", "status", "--channel", "v0.3.7"]).is_ok());
+        assert!(parse(&["bts-install", "status", "--channel", "v0.4.0"]).is_ok());
         assert!(parse(&["bts-install", "status", "--channel", "main"]).is_err());
     }
 }

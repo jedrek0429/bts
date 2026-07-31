@@ -91,8 +91,9 @@ async fn run() -> Result<()> {
             )?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
-                let mut next =
-                    state.unwrap_or_else(|| InstallerState::new("0.3.0", platform, architecture));
+                let mut next = state.unwrap_or_else(|| {
+                    InstallerState::new(INSTALLER_VERSION, platform, architecture)
+                });
                 execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
                 next.selected_role = plan.role;
                 next.installed_components = plan.after.clone();
