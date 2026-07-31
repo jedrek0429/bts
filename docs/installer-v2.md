@@ -152,7 +152,7 @@ sudo bts-install configure display \
   --cage-args "-m extend"
 ```
 
-The value is stored as `BTS_CAGE_ARGS` in `/etc/bts/display.env`. systemd expands it into arguments before the fixed `-- bts-display` command delimiter; it is not evaluated by a shell. Do not include the `--` delimiter in the custom value. Run `cage --help` for arguments supported by the installed Cage version.
+The value is stored as `BTS_CAGE_ARGS` in `/etc/bts/display.env`. The service uses systemd's unbraced `$BTS_CAGE_ARGS` form, which splits the value into arguments before the fixed `-- bts-display` command delimiter without invoking a shell. Do not include the `--` delimiter in the custom value. Run `cage --help` for arguments supported by the installed Cage version.
 
 Remote Addons and Telephony hosts use `--core-http-url`; Addons additionally accepts `--core-ws-url`. Non-interactive installation of a Core client without a local Core requires its applicable endpoint flags, so the installer never silently assumes a local service.
 

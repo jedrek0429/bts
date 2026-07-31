@@ -16,6 +16,8 @@ pub struct ReleaseClient {
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
+    draft: bool,
+    prerelease: bool,
     assets: Vec<GithubAsset>,
 }
 
@@ -54,7 +56,7 @@ impl ReleaseClient {
                 .context("GitHub release metadata is invalid")?;
             releases
                 .into_iter()
-                .find(|release| release.tag_name.starts_with("v0.3."))
+                .find(is_stable_release)
                 .context("Repository has no published v0.3.x release")?
         } else {
             let endpoint = format!(
@@ -120,6 +122,10 @@ impl ReleaseClient {
     }
 }
 
+fn is_stable_release(release: &GithubRelease) -> bool {
+    release.tag_name.starts_with("v0.3.") && !release.draft && !release.prerelease
+}
+
 pub fn validate_local_assets(
     manifest: &ReleaseManifest,
     files: &BTreeMap<String, Vec<u8>>,
@@ -129,4 +135,27 @@ pub fn validate_local_assets(
         .map(|(name, bytes)| (name.clone(), hex::encode(Sha256::digest(bytes))))
         .collect();
     validate_release_assets(manifest, &checksums)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_release_excludes_drafts_and_prereleases() {
+        let release = |tag_name: &str, draft, prerelease| GithubRelease {
+            tag_name: tag_name.into(),
+            draft,
+            prerelease,
+            assets: Vec::new(),
+        };
+        let releases = [
+            release("v0.3.2", true, false),
+            release("v0.3.1", false, true),
+            release("v0.3.0", false, false),
+        ];
+
+        let selected = releases.into_iter().find(is_stable_release);
+        assert_eq!(selected.unwrap().tag_name, "v0.3.0");
+    }
 }
