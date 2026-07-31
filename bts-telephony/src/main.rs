@@ -1,18 +1,15 @@
 use anyhow::Context;
 use asterisk_ari::{AriClient, Config, apis::channels};
-use bts_protocol::{EventKind, NewEvent};
+use std::{collections::HashMap, sync::Arc};
+
+use bts_protocol::{ActionRequest, AddonManifest, EventKind, NewEvent};
 use reqwest::Client;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const APPLICATION_NAME: &str = "bts";
 const EVENT_SOURCE: &str = "bts-telephony";
-const DEFAULT_MENU_MEDIA_URIS: &str = concat!(
-    "sound:bts/welcome,",
-    "sound:bts/press-2-time,",
-    "sound:bts/press-3-weather,",
-    "sound:bts/press-0-clear"
-);
+const WELCOME_PROMPT: &str = "sound:bts/welcome";
 
 #[derive(Clone)]
 struct EventPublisher {
@@ -61,8 +58,8 @@ async fn main() -> anyhow::Result<()> {
     let core_url =
         std::env::var("BTS_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned());
 
-    let menu_media_uris =
-        std::env::var("BTS_MENU_MEDIA_URIS").unwrap_or_else(|_| DEFAULT_MENU_MEDIA_URIS.to_owned());
+    let (menu_media_uris, menu_actions) = load_menu(&core_url).await?;
+    let menu_actions = Arc::new(menu_actions);
 
     let config = Config::new(&ari_url, &ari_username, &ari_password);
     let mut ari = AriClient::with_config(config);
@@ -137,9 +134,11 @@ async fn main() -> anyhow::Result<()> {
      * A digit was pressed during the call.
      */
     let dtmf_publisher = publisher.clone();
+    let dtmf_actions = menu_actions.clone();
 
     ari.on_channel_dtmf_received(move |_, event| {
         let publisher = dtmf_publisher.clone();
+        let actions = dtmf_actions.clone();
 
         async move {
             let channel_id = event.data.channel.id.clone();
@@ -164,6 +163,19 @@ async fn main() -> anyhow::Result<()> {
                     %error,
                     "failed to publish DTMF event"
                 );
+            }
+
+            if let Some(action) = actions.get(&event.data.digit)
+                && let Err(error) = publisher
+                    .publish(EventKind::ActionRequested {
+                        request: ActionRequest {
+                            action: action.clone(),
+                            parameters: serde_json::Value::Null,
+                        },
+                    })
+                    .await
+            {
+                warn!(channel_id = %channel_id, %error, "failed to publish menu action");
             }
 
             Ok(())
@@ -228,6 +240,43 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn load_menu(
+    core_url: &str,
+) -> anyhow::Result<(String, HashMap<String, bts_protocol::ActionId>)> {
+    let endpoint = format!("{}/api/v1/addons", core_url.trim_end_matches('/'));
+    let manifests = Client::new()
+        .get(endpoint)
+        .send()
+        .await
+        .context("failed to request addon menu from bts-core")?
+        .error_for_status()
+        .context("bts-core rejected addon menu request")?
+        .json::<Vec<AddonManifest>>()
+        .await
+        .context("failed to decode addon menu")?;
+    let menu = build_menu(manifests);
+    anyhow::ensure!(
+        !menu.1.is_empty(),
+        "bts-core has no registered telephone menu entries"
+    );
+    Ok(menu)
+}
+
+fn build_menu(manifests: Vec<AddonManifest>) -> (String, HashMap<String, bts_protocol::ActionId>) {
+    let mut entries: Vec<_> = manifests
+        .into_iter()
+        .flat_map(|manifest| manifest.menu)
+        .collect();
+    entries.sort_by_key(|entry| (entry.order, entry.digit));
+    let mut actions = HashMap::new();
+    let mut media = vec![WELCOME_PROMPT.to_owned()];
+    for entry in entries {
+        actions.insert(entry.digit.to_string(), entry.action);
+        media.push(entry.prompt);
+    }
+    (media.join(","), actions)
+}
+
 fn initialise_logging() {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("bts_telephony=info"));
@@ -236,4 +285,39 @@ fn initialise_logging() {
         .with_env_filter(filter)
         .compact()
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bts_protocol::{ADDON_API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
+
+    fn manifest(id: &str, digit: char, order: u16, prompt: &str) -> AddonManifest {
+        AddonManifest {
+            api_version: ADDON_API_VERSION,
+            id: AddonId::new(id),
+            name: id.into(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: vec![],
+            menu: vec![MenuEntry {
+                digit,
+                prompt: prompt.into(),
+                action: ActionId::new(format!("{id}.run")),
+                order,
+            }],
+            capabilities: vec![],
+            screens: vec![],
+        }
+    }
+
+    #[test]
+    fn menu_is_ordered_by_manifest_order_then_digit() {
+        let (media, actions) = build_menu(vec![
+            manifest("later", '3', 30, "sound:later"),
+            manifest("first", '2', 20, "sound:first"),
+        ]);
+        assert_eq!(media, "sound:bts/welcome,sound:first,sound:later");
+        assert_eq!(actions["2"], ActionId::new("first.run"));
+        assert_eq!(actions["3"], ActionId::new("later.run"));
+    }
 }

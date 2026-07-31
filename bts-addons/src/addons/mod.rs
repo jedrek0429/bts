@@ -2,190 +2,193 @@ pub(crate) mod clock;
 pub(crate) mod message;
 pub(crate) mod weather;
 
-use anyhow::Result;
-use async_trait::async_trait;
-use bts_addons::{
-    ADDON_API_VERSION, ActionKind, Addon, AddonCapability, AddonContext, AddonFailure, AddonId,
-    AddonManifest, AddonVersion,
-};
-use bts_protocol::{Action, Event, EventKind};
+use bts_addons::{Addon, AddonContext, AddonFailure, AddonRegistry};
+use bts_protocol::{AddonId, Event, EventKind};
+use std::path::PathBuf;
 
 pub(crate) struct Addons {
-    addons: Vec<Box<dyn Addon>>,
+    registry: AddonRegistry,
+    core_url: String,
+    data_root: PathBuf,
 }
 
 impl Addons {
-    pub(crate) fn new() -> Self {
-        Self {
-            addons: vec![
-                Box::new(DtmfAddon),
-                Box::new(clock::ClockAddon::new()),
-                Box::new(weather::WeatherAddon::new()),
-                Box::new(message::MessageAddon),
-            ],
-        }
+    pub(crate) fn new(core_url: String, data_root: PathBuf) -> anyhow::Result<Self> {
+        let addons: Vec<Box<dyn Addon>> = vec![
+            Box::new(clock::ClockAddon::new()),
+            Box::new(weather::WeatherAddon::new()),
+            Box::new(message::MessageAddon),
+        ];
+        Ok(Self {
+            registry: AddonRegistry::new(addons)?,
+            core_url,
+            data_root,
+        })
     }
-
-    pub(crate) async fn start(&self, context: &AddonContext) -> Vec<AddonFailure> {
+    fn context(&self, id: &AddonId) -> AddonContext {
+        AddonContext::new(&self.core_url, id.clone(), &self.data_root)
+    }
+    pub(crate) async fn start(&self) -> Vec<AddonFailure> {
         let mut failures = Vec::new();
-
-        for addon in &self.addons {
-            if let Err(error) = addon.start(context).await {
-                failures.push(failure(addon.as_ref(), "start", error));
+        for (id, addon) in self.registry.entries() {
+            let context = self.context(id);
+            let manifest = addon.manifest();
+            if let Err(error) = context
+                .publish(EventKind::AddonRegistered { manifest })
+                .await
+            {
+                failures.push(failure(id, "registration", error));
+                continue;
+            }
+            if let Err(error) = addon.start(&context).await {
+                failures.push(failure(id, "start", error));
             }
         }
-
         failures
     }
-
-    pub(crate) async fn handle(&self, context: &AddonContext, event: &Event) -> Vec<AddonFailure> {
+    pub(crate) async fn handle(&self, event: &Event) -> Vec<AddonFailure> {
+        let targets: Vec<_> = match &event.kind {
+            EventKind::ActionRequested { request } => self
+                .registry
+                .action_owner(&request.action)
+                .into_iter()
+                .cloned()
+                .collect(),
+            _ => self.registry.entries().map(|(id, _)| id.clone()).collect(),
+        };
         let mut failures = Vec::new();
-
-        for addon in &self.addons {
-            if let Err(error) = addon.handle_event(context, event).await {
-                failures.push(failure(addon.as_ref(), "event handling", error));
+        for id in targets {
+            let addon = self
+                .registry
+                .addon(&id)
+                .expect("registered addon disappeared");
+            if let Err(error) = addon.handle_event(&self.context(&id), event).await {
+                failures.push(failure(&id, "event handling", error));
             }
         }
-
         failures
     }
-
-    pub(crate) async fn stop(&self, context: &AddonContext) -> Vec<AddonFailure> {
+    pub(crate) async fn stop(&self) -> Vec<AddonFailure> {
         let mut failures = Vec::new();
-
-        for addon in self.addons.iter().rev() {
-            if let Err(error) = addon.stop(context).await {
-                failures.push(failure(addon.as_ref(), "stop", error));
+        for (id, addon) in self.registry.entries() {
+            let context = self.context(id);
+            if let Err(error) = addon.stop(&context).await {
+                failures.push(failure(id, "stop", error));
             }
+            let _ = context.release_all().await;
+            let _ = context
+                .publish(EventKind::AddonStopped {
+                    addon_id: id.clone(),
+                })
+                .await;
         }
-
         failures
     }
 }
-
-fn failure(addon: &dyn Addon, operation: &'static str, error: anyhow::Error) -> AddonFailure {
+fn failure(id: &AddonId, operation: &'static str, error: anyhow::Error) -> AddonFailure {
     AddonFailure {
-        addon_id: addon.manifest().id,
+        addon_id: id.clone(),
         operation,
         error,
     }
 }
 
-struct DtmfAddon;
-
-#[async_trait]
-impl Addon for DtmfAddon {
-    fn manifest(&self) -> AddonManifest {
-        AddonManifest {
-            api_version: ADDON_API_VERSION,
-            id: AddonId::new("dtmf-actions"),
-            name: "Telephone Actions".to_owned(),
-            version: AddonVersion::new(1, 0, 0),
-            actions: vec![ActionKind::Clock, ActionKind::Weather, ActionKind::Blank],
-            capabilities: vec![AddonCapability::PublishEvents],
-        }
-    }
-
-    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
-        let EventKind::PhoneDtmfReceived { digit, .. } = &event.kind else {
-            return Ok(());
-        };
-
-        if let Some(action) = action_for_digit(digit) {
-            context
-                .publish(&self.manifest().id, EventKind::ActionRequested { action })
-                .await?;
-        }
-
-        Ok(())
-    }
-}
-
-fn action_for_digit(digit: &str) -> Option<Action> {
-    match digit {
-        "2" => Some(Action::Clock),
-        "3" => Some(Action::Weather),
-        "0" => Some(Action::Blank),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use bts_protocol::{
+        ADDON_API_VERSION, ActionId, ActionRegistration, ActionRequest, AddonManifest, AddonVersion,
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-
-    use super::*;
-
     struct TestAddon {
-        id: &'static str,
+        manifest: AddonManifest,
         calls: Arc<AtomicUsize>,
         fails: bool,
     }
-
     #[async_trait]
     impl Addon for TestAddon {
         fn manifest(&self) -> AddonManifest {
-            AddonManifest {
-                api_version: ADDON_API_VERSION,
-                id: AddonId::new(self.id),
-                name: self.id.to_owned(),
-                version: AddonVersion::new(1, 0, 0),
-                actions: Vec::new(),
-                capabilities: Vec::new(),
-            }
+            self.manifest.clone()
         }
-
-        async fn handle_event(&self, _context: &AddonContext, _event: &Event) -> Result<()> {
+        async fn handle_event(&self, _: &AddonContext, _: &Event) -> Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fails {
-                anyhow::bail!("expected failure");
+                anyhow::bail!("failure")
             }
             Ok(())
         }
     }
-
+    fn addon(id: &str, action: &str, calls: Arc<AtomicUsize>, fails: bool) -> Box<dyn Addon> {
+        Box::new(TestAddon {
+            manifest: AddonManifest {
+                api_version: ADDON_API_VERSION,
+                id: AddonId::new(id),
+                name: id.into(),
+                version: AddonVersion::new(1, 0, 0),
+                actions: vec![ActionRegistration {
+                    id: ActionId::new(action),
+                    description: "test".into(),
+                }],
+                menu: vec![],
+                capabilities: vec![],
+                screens: vec![],
+            },
+            calls,
+            fails,
+        })
+    }
     #[tokio::test]
-    async fn one_addon_failure_does_not_stop_the_host() {
-        let first_calls = Arc::new(AtomicUsize::new(0));
-        let second_calls = Arc::new(AtomicUsize::new(0));
-        let addons = Addons {
-            addons: vec![
-                Box::new(TestAddon {
-                    id: "failing",
-                    calls: first_calls.clone(),
-                    fails: true,
-                }),
-                Box::new(TestAddon {
-                    id: "healthy",
-                    calls: second_calls.clone(),
-                    fails: false,
-                }),
-            ],
+    async fn action_dispatches_only_to_owner() {
+        let a = Arc::new(AtomicUsize::new(0));
+        let b = Arc::new(AtomicUsize::new(0));
+        let host = Addons {
+            registry: AddonRegistry::new(vec![
+                addon("a", "a.run", a.clone(), false),
+                addon("b", "b.run", b.clone(), false),
+            ])
+            .unwrap(),
+            core_url: "http://127.0.0.1:1".into(),
+            data_root: PathBuf::new(),
         };
-        let context = AddonContext::new("http://127.0.0.1:1");
         let event = Event::new(
             "test",
             EventKind::ActionRequested {
-                action: Action::Blank,
+                request: ActionRequest {
+                    action: ActionId::new("b.run"),
+                    parameters: serde_json::Value::Null,
+                },
             },
         );
-
-        let failures = addons.handle(&context, &event).await;
-
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].addon_id, AddonId::new("failing"));
-        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(second_calls.load(Ordering::SeqCst), 1);
+        assert!(host.handle(&event).await.is_empty());
+        assert_eq!(a.load(Ordering::SeqCst), 0);
+        assert_eq!(b.load(Ordering::SeqCst), 1);
     }
-
-    #[test]
-    fn telephone_digits_map_to_declared_actions() {
-        assert!(matches!(action_for_digit("2"), Some(Action::Clock)));
-        assert!(matches!(action_for_digit("3"), Some(Action::Weather)));
-        assert!(matches!(action_for_digit("0"), Some(Action::Blank)));
-        assert!(action_for_digit("9").is_none());
+    #[tokio::test]
+    async fn failure_does_not_stop_broadcast() {
+        let a = Arc::new(AtomicUsize::new(0));
+        let b = Arc::new(AtomicUsize::new(0));
+        let host = Addons {
+            registry: AddonRegistry::new(vec![
+                addon("a", "a.run", a.clone(), true),
+                addon("b", "b.run", b.clone(), false),
+            ])
+            .unwrap(),
+            core_url: "http://127.0.0.1:1".into(),
+            data_root: PathBuf::new(),
+        };
+        let event = Event::new(
+            "test",
+            EventKind::SystemStarted {
+                component: "test".into(),
+            },
+        );
+        assert_eq!(host.handle(&event).await.len(), 1);
+        assert_eq!(a.load(Ordering::SeqCst), 1);
+        assert_eq!(b.load(Ordering::SeqCst), 1);
     }
 }
