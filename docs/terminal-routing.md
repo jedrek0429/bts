@@ -77,8 +77,11 @@ the previous state untouched. A single-terminal action therefore cannot change
 another terminal; group and all actions change exactly their accepted
 recipients.
 
-State survives a terminal disconnect while Core remains running, allowing the
-future terminal runtime to restore it explicitly after reconnect. It is not
+State survives a terminal disconnect while Core remains running. A terminal may
+preserve already applied local content during a transient disconnect, but Core
+does not replay effective state on registration in terminal transport v1. A
+reconnect receives only later explicit dispatches, with a new connection ID and
+a generation greater than earlier work. State is not
 persisted across Core restarts because Core cannot assume a terminal retained
 the rendered state through that restart. Merely resolving or changing a future
 telephony session target is a pure selection operation and does not copy,
@@ -102,6 +105,9 @@ retained legacy lease or blank, never an older targeted presentation. This gives
 mixed callers a deterministic boundary without silently reviving stale content.
 The release-line `BtsState.display` remains a best-effort single-display
 projection for adjacent consumers; terminal state and lease authority live in
-`PresentationManager`. New callers must submit an explicit
+`PresentationManager`. New callers submit `presentation_requested` through the
+existing event ingress; its `TerminalTarget` is passed to
+`PresentationManager::begin_dispatch` and does not change the global legacy
+`BtsState.display` projection. New callers must submit an explicit
 `PresentationRequest`; the compatibility mapping is not the permanent routing
 default.

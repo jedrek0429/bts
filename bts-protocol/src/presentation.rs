@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     DisplayState, RegistrationRejection, ResolvedTarget, TerminalCapabilities, TerminalId,
-    TerminalRegistration, TerminalTarget,
+    TerminalImplementationVersion, TerminalRegistration, TerminalRuntimeDiagnostics,
+    TerminalTarget,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -246,6 +247,10 @@ impl PresentationDeliveryResult {
 pub enum TerminalClientMessage {
     Register {
         registration: TerminalRegistration,
+        #[serde(default)]
+        implementation_version: Option<TerminalImplementationVersion>,
+        #[serde(default)]
+        runtime_diagnostics: TerminalRuntimeDiagnostics,
     },
     Heartbeat {
         terminal_id: TerminalId,
@@ -276,6 +281,8 @@ pub enum CoreTerminalMessage {
     RegistrationAcknowledged {
         terminal_id: TerminalId,
         connection_id: TerminalConnectionId,
+        #[serde(default)]
+        core_epoch: Uuid,
         protocol_version: crate::ProtocolVersion,
         heartbeat_interval_seconds: u32,
     },

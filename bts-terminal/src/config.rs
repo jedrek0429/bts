@@ -1,70 +1,12 @@
-use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
+use std::{error::Error, fmt, time::Duration};
 
 use bts_protocol::{
     ProtocolVersion, TerminalCapabilities, TerminalId, TerminalIdentity, TerminalImplementationId,
-    TerminalName, TerminalRegistration,
+    TerminalImplementationVersion, TerminalName, TerminalRegistration,
 };
 use semver::Version;
 
-const MAX_DIAGNOSTICS: usize = 32;
-const MAX_DIAGNOSTIC_KEY_LENGTH: usize = 64;
-const MAX_DIAGNOSTIC_VALUE_LENGTH: usize = 256;
-
-/// Non-authoritative information useful when diagnosing a terminal at runtime.
-///
-/// The 0.3 registration contract does not yet carry these values. They remain
-/// available to consuming applications until #49 adds typed wire reporting and
-/// Core presence storage.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RuntimeDiagnostics(BTreeMap<String, String>);
-
-impl RuntimeDiagnostics {
-    pub fn new(
-        values: impl IntoIterator<Item = (String, String)>,
-    ) -> Result<Self, ConfigurationError> {
-        let values = values.into_iter().collect::<BTreeMap<_, _>>();
-        if values.len() > MAX_DIAGNOSTICS {
-            return Err(ConfigurationError::InvalidDiagnostics(format!(
-                "at most {MAX_DIAGNOSTICS} runtime diagnostics may be stored"
-            )));
-        }
-
-        for (key, value) in &values {
-            let valid_key = !key.is_empty()
-                && key.len() <= MAX_DIAGNOSTIC_KEY_LENGTH
-                && key
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                && key.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
-                && key.bytes().all(|character| {
-                    character.is_ascii_lowercase()
-                        || character.is_ascii_digit()
-                        || matches!(character, b'.' | b'_' | b'-')
-                });
-            if !valid_key {
-                return Err(ConfigurationError::InvalidDiagnostics(format!(
-                    "invalid runtime diagnostic key {key:?}"
-                )));
-            }
-            if value.chars().count() > MAX_DIAGNOSTIC_VALUE_LENGTH
-                || value.chars().any(char::is_control)
-            {
-                return Err(ConfigurationError::InvalidDiagnostics(format!(
-                    "runtime diagnostic {key:?} must contain at most {MAX_DIAGNOSTIC_VALUE_LENGTH} non-control characters"
-                )));
-            }
-        }
-
-        Ok(Self(values))
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-    }
-}
+pub use bts_protocol::TerminalRuntimeDiagnostics as RuntimeDiagnostics;
 
 /// Deterministic reconnect delays with no jitter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +72,7 @@ impl Default for ReconnectPolicy {
 pub struct TerminalConfiguration {
     core_websocket_url: String,
     registration: TerminalRegistration,
-    implementation_version: Version,
+    implementation_version: TerminalImplementationVersion,
     runtime_diagnostics: RuntimeDiagnostics,
     reconnect_policy: ReconnectPolicy,
     registration_timeout: Duration,
@@ -163,7 +105,8 @@ impl TerminalConfiguration {
                 protocol_version: ProtocolVersion::CURRENT,
                 capabilities,
             },
-            implementation_version,
+            implementation_version: TerminalImplementationVersion::new(implementation_version)
+                .map_err(|error| ConfigurationError::InvalidVersion(error.to_string()))?,
             runtime_diagnostics: RuntimeDiagnostics::default(),
             reconnect_policy: ReconnectPolicy::default(),
             registration_timeout: Duration::from_secs(10),
@@ -222,7 +165,7 @@ impl TerminalConfiguration {
     }
 
     pub fn implementation_version(&self) -> &Version {
-        &self.implementation_version
+        self.implementation_version.as_version()
     }
 
     pub fn capabilities(&self) -> &TerminalCapabilities {
@@ -253,7 +196,7 @@ impl TerminalConfiguration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigurationError {
     InvalidCoreWebsocketUrl,
-    InvalidDiagnostics(String),
+    InvalidVersion(String),
     InvalidReconnectPolicy(String),
     InvalidTimeout(String),
     InvalidPendingLimit,
@@ -265,7 +208,7 @@ impl fmt::Display for ConfigurationError {
             Self::InvalidCoreWebsocketUrl => {
                 formatter.write_str("the Core WebSocket URL must start with ws:// or wss://")
             }
-            Self::InvalidDiagnostics(detail) | Self::InvalidReconnectPolicy(detail) => {
+            Self::InvalidVersion(detail) | Self::InvalidReconnectPolicy(detail) => {
                 formatter.write_str(detail)
             }
             Self::InvalidTimeout(name) => write!(formatter, "the {name} must be greater than zero"),

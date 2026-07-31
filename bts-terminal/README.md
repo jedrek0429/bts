@@ -52,10 +52,9 @@ hostname, IP address, connector, room name or physical output.
 
 Bounded diagnostic key/value pairs may be attached with
 `RuntimeDiagnostics`. Implementation version and diagnostics are retained in
-the typed local configuration but are not fields of the 0.3 registration wire
-contract and are therefore not reported to or stored by Core. Adding typed,
-bounded wire fields and Core presence storage is an explicit #49 prerequisite;
-the runtime does not send untyped extension metadata in their place.
+the typed local configuration and sent as bounded fields during registration.
+Core retains them only in live terminal presence; they do not affect identity,
+routing or persisted administrative state.
 
 ## Lifecycle safety
 
@@ -71,8 +70,9 @@ A newer generation invalidates every older pending item before the newer work
 is published, and the shared work status prevents an older item already queued
 to a renderer from being treated as applicable. Recently observed presentation
 IDs are also retained in a bounded cache so stale replays are not applied
-again. Generation reset after a Core process restart requires the Core epoch or
-restoration handshake planned with #49.
+again. Core supplies an epoch during registration; when that epoch changes, the
+runtime clears its generation and replay history so a restarted Core can safely
+begin a new generation sequence. Core does not replay presentations in v1.
 
 Reconnect delay is deterministic exponential backoff capped by
 `ReconnectPolicy::maximum_delay`. A successfully registered connection resets
@@ -87,7 +87,6 @@ terminal is registered, the runtime sends the protocol disconnect message and
 closes the WebSocket. Dropping the handle also signals shutdown and joins the
 worker so it does not leave an orphaned task.
 
-The production WebSocket connector is implemented here, but the Core terminal
-endpoint, connection-to-registry/storage wiring and delivery transport remain
-part of #49. Until that endpoint exists, only the transport-independent runtime
-behaviour can be exercised end to end with the in-process fake transport.
+The production WebSocket connector uses Core's dedicated versioned terminal
+endpoint at `/api/v1/terminals/ws`. The legacy event stream is a separate,
+compatible transport and is not used for terminal registration or delivery.
