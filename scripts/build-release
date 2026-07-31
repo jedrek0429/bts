@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+version=$("$repository_root/scripts/release-version.py" workspace-version)
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  build-release component COMPONENT ARCH BINARY OUTPUT_DIRECTORY
+  build-release installer BINARY OUTPUT_DIRECTORY
+  build-release assemble OUTPUT_DIRECTORY
+  build-release all [OUTPUT_DIRECTORY]
+EOF
+    exit 2
+}
+
+require_workspace_version() {
+    "$repository_root/scripts/release-version.py" check-workspace
+}
+
+native_architecture() {
+    case $(uname -m) in
+        x86_64) printf '%s\n' x86_64 ;;
+        aarch64|arm64) printf '%s\n' aarch64 ;;
+        *) echo "Unsupported build architecture: $(uname -m)" >&2; exit 1 ;;
+    esac
+}
+
+(($# >= 1)) || usage
+command=$1
+shift
+
+case "$command" in
+    component)
+        (($# == 4)) || usage
+        require_workspace_version
+        "$repository_root/scripts/build-component-bundle" "$1" "$version" "$2" "$3" "$4"
+        ;;
+    installer)
+        (($# == 2)) || usage
+        require_workspace_version
+        [[ -x "$1" ]] || { echo "Installer binary is not executable: $1" >&2; exit 1; }
+        install -d "$2"
+        install -m755 "$1" "$2/bts-install"
+        install -m644 "$repository_root/LICENSE" "$2/LICENSE"
+        ;;
+    assemble)
+        (($# == 1)) || usage
+        require_workspace_version
+        "$repository_root/scripts/generate-release-manifest.py" "$version" "$1"
+        (cd "$1" && sha256sum --check SHA256SUMS)
+        ;;
+    all)
+        (($# <= 1)) || usage
+        output_directory=${1:-"$repository_root/target/bts-release/$version"}
+        require_workspace_version
+        cargo build --manifest-path "$repository_root/Cargo.toml" --locked --release --workspace
+        architecture=$(native_architecture)
+        for component in core display telephony addons; do
+            "$0" component "$component" "$architecture" \
+                "$repository_root/target/release/bts-$component" "$output_directory"
+        done
+        "$0" installer "$repository_root/target/release/bts-install" "$output_directory"
+        "$0" assemble "$output_directory"
+        printf '%s\n' "$output_directory"
+        ;;
+    *) usage ;;
+esac

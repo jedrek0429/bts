@@ -76,16 +76,13 @@ jobs:
         run: cargo build --locked --release --workspace
       - name: Build portable assets
         run: |
-          version=${RELEASE_VERSION#v}
-          scripts/release-version.py classify "$version" >/dev/null
           assets="$RUNNER_TEMP/release-assets"
           install -d "$assets"
           for component in core display telephony addons; do
-            scripts/build-component-bundle \
-              "$component" "$version" x86_64 "target/release/bts-$component" "$assets"
+            scripts/build-release component \
+              "$component" x86_64 "target/release/bts-$component" "$assets"
           done
-          install -m755 target/release/bts-install "$assets/bts-install"
-          install -m644 LICENSE "$assets/LICENSE"
+          scripts/build-release installer target/release/bts-install "$assets"
           printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
@@ -109,11 +106,9 @@ jobs:
         run: cargo build --locked --release -p bts-display
       - name: Build ARM64 Display bundle
         run: |
-          version=${RELEASE_VERSION#v}
-          scripts/release-version.py classify "$version" >/dev/null
           assets="$RUNNER_TEMP/release-assets"
-          scripts/build-component-bundle \
-            display "$version" aarch64 target/release/bts-display "$assets"
+          scripts/build-release component \
+            display aarch64 target/release/bts-display "$assets"
           printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
@@ -133,9 +128,7 @@ jobs:
           path: release-assets
           merge-multiple: true
       - name: Generate and validate final manifest and checksums
-        run: |
-          scripts/generate-release-manifest.py "${RELEASE_VERSION#v}" release-assets
-          (cd release-assets && sha256sum --check SHA256SUMS)
+        run: scripts/build-release assemble release-assets
       - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
