@@ -1,7 +1,12 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use bts_protocol::{DisplayState, EventKind};
+use async_trait::async_trait;
+use bts_addons::{
+    ADDON_API_VERSION, ActionKind, Addon, AddonCapability, AddonContext, AddonId, AddonManifest,
+    AddonVersion,
+};
+use bts_protocol::{Action, DisplayState, Event, EventKind};
 use chrono::Local;
 use tokio::{
     sync::Mutex,
@@ -10,9 +15,8 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::AddonContext;
-
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+const ADDON_ID: &str = "clock";
 
 pub(crate) struct ClockAddon {
     update_task: Mutex<Option<JoinHandle<()>>>,
@@ -25,7 +29,7 @@ impl ClockAddon {
         }
     }
 
-    pub(crate) async fn show(&self, context: &AddonContext) -> Result<()> {
+    async fn show(&self, context: &AddonContext) -> Result<()> {
         self.stop_update_task().await;
         publish_clock(context).await?;
 
@@ -65,17 +69,52 @@ impl ClockAddon {
     }
 }
 
+#[async_trait]
+impl Addon for ClockAddon {
+    fn manifest(&self) -> AddonManifest {
+        AddonManifest {
+            api_version: ADDON_API_VERSION,
+            id: AddonId::new(ADDON_ID),
+            name: "Clock Service".to_owned(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: vec![ActionKind::Clock],
+            capabilities: vec![AddonCapability::PublishEvents, AddonCapability::ReadState],
+        }
+    }
+
+    async fn handle_event(&self, context: &AddonContext, event: &Event) -> Result<()> {
+        if matches!(
+            &event.kind,
+            EventKind::ActionRequested {
+                action: Action::Clock
+            }
+        ) {
+            self.show(context).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn stop(&self, _context: &AddonContext) -> Result<()> {
+        self.stop_update_task().await;
+        Ok(())
+    }
+}
+
 async fn publish_clock(context: &AddonContext) -> Result<()> {
     let now = Local::now();
 
     context
-        .publish(EventKind::DisplaySet {
-            display: DisplayState::Clock {
-                time: now.format("%H:%M").to_string(),
-                seconds: now.format("%S").to_string(),
-                date: now.format("%A, %-d %B %Y").to_string(),
+        .publish(
+            &AddonId::new(ADDON_ID),
+            EventKind::DisplaySet {
+                display: DisplayState::Clock {
+                    time: now.format("%H:%M").to_string(),
+                    seconds: now.format("%S").to_string(),
+                    date: now.format("%A, %-d %B %Y").to_string(),
+                },
             },
-        })
+        )
         .await
 }
 
