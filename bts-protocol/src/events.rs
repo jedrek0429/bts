@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::addons::v1::{ActionRequest, AddonId, AddonManifest};
-use crate::{BtsState, DisplayCommand, VoiceInputRequest, VoiceInputResult};
+use crate::{
+    BtsState, DisplayCommand, PresentationId, PresentationRequest, TerminalCapabilities,
+    TerminalTarget, VoiceInputRequest, VoiceInputResult,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -24,6 +27,33 @@ impl Event {
             source: source.into(),
             kind,
         }
+    }
+
+    /// Converts a legacy untargeted display update into an immediate
+    /// presentation for all online terminals.
+    ///
+    /// This adapter preserves the existing `display_requested` wire event while
+    /// clients migrate to explicit presentation requests. Release operations do
+    /// not contain presentation content and therefore return `None`.
+    #[deprecated(
+        note = "legacy display events are untargeted; send an explicit PresentationRequest instead"
+    )]
+    pub fn legacy_presentation_request(&self) -> Option<PresentationRequest> {
+        let EventKind::DisplayRequested { command } = &self.kind else {
+            return None;
+        };
+        let display = match command {
+            DisplayCommand::Show { display, .. } | DisplayCommand::Update { display, .. } => {
+                display.clone()
+            }
+            DisplayCommand::Release { .. } | DisplayCommand::ReleaseAll { .. } => return None,
+        };
+        Some(PresentationRequest {
+            id: PresentationId::from_uuid(self.id),
+            target: TerminalTarget::all(),
+            required_capabilities: TerminalCapabilities::default(),
+            display,
+        })
     }
 }
 

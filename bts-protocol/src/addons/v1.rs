@@ -1,6 +1,8 @@
 //! BTS Addon API version 1.
 
-use crate::{AssetRef, BtsState, DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
+use crate::{
+    AssetRef, BtsState, DisplayLeaseId, DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -76,7 +78,8 @@ pub struct ActionRegistration {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MenuEntry {
-    pub digit: char,
+    /// A validated addon key. Platform-reserved controls cannot be represented.
+    pub digit: DtmfMenuKey,
     pub prompt: String,
     pub action: ActionId,
     pub order: u16,

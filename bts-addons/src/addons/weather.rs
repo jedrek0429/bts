@@ -4,7 +4,7 @@ use bts_protocol::addons::v1::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
     AddonManifest, MenuEntry,
 };
-use bts_protocol::{DisplayLeaseId, DisplayState, Event, EventKind, ScreenKind};
+use bts_protocol::{DisplayLeaseId, DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
@@ -62,7 +62,7 @@ impl Addon for WeatherAddon {
                 description: "Show current weather".into(),
             }],
             menu: vec![MenuEntry {
-                digit: '3',
+                digit: DtmfMenuKey::new('3').expect("3 is an addon DTMF key"),
                 prompt: "sound:bts/press-3-weather".into(),
                 action: ActionId::new(ACTION),
                 order: 30,

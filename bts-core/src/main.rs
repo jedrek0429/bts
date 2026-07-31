@@ -22,8 +22,8 @@ use bts_protocol::core::{
     CORE_EVENTS_WEBSOCKET_PATH, CORE_STATE_PATH,
 };
 use bts_protocol::{
-    AssetId, AssetRef, AssetUpload, BtsState, DisplayCommand, Event, EventKind, NewEvent,
-    ServerMessage,
+    AssetId, AssetRef, AssetUpload, BtsState, DisplayCommand, DtmfMenuKey, Event, EventKind,
+    NewEvent, ServerMessage,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, broadcast};
@@ -49,7 +49,7 @@ struct StoredAsset {
 struct AddonRegistry {
     manifests: HashMap<AddonId, AddonManifest>,
     actions: HashMap<ActionId, AddonId>,
-    digits: HashMap<char, AddonId>,
+    digits: HashMap<DtmfMenuKey, AddonId>,
 }
 
 #[tokio::main]
@@ -427,10 +427,7 @@ fn validate_manifest(manifest: &AddonManifest) -> Result<(), (StatusCode, String
         ));
     }
     for entry in &manifest.menu {
-        if !entry.digit.is_ascii_digit()
-            || !actions.contains(&entry.action)
-            || entry.prompt.trim().is_empty()
-        {
+        if !actions.contains(&entry.action) || entry.prompt.trim().is_empty() {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!("invalid menu entry for digit {}", entry.digit),
@@ -559,7 +556,7 @@ mod tests {
     use bts_protocol::addons::v1::{
         API_VERSION, ActionRegistration, AddonCapability, AddonVersion, MenuEntry,
     };
-    use bts_protocol::{DisplayLease, DisplayLeaseId, DisplayState, ScreenKind};
+    use bts_protocol::{DisplayLease, DisplayLeaseId, DisplayState, DtmfMenuKey, ScreenKind};
 
     fn manifest(id: &str, action: &str, digit: char) -> AddonManifest {
         AddonManifest {
@@ -572,7 +569,7 @@ mod tests {
                 description: "Test".to_owned(),
             }],
             menu: vec![MenuEntry {
-                digit,
+                digit: DtmfMenuKey::new(digit).unwrap(),
                 prompt: "sound:test".to_owned(),
                 action: ActionId::new(action),
                 order: 1,
@@ -612,9 +609,7 @@ mod tests {
 
     #[test]
     fn manifest_validation_rejects_invalid_menu_entries() {
-        let mut invalid = manifest("one", "one.run", 'x');
-        assert!(validate_manifest(&invalid).is_err());
-        invalid.menu[0].digit = '1';
+        let mut invalid = manifest("one", "one.run", '1');
         invalid.menu[0].action = ActionId::new("missing");
         assert!(validate_manifest(&invalid).is_err());
     }

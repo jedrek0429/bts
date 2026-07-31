@@ -4,7 +4,7 @@ use bts_protocol::addons::v1::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
     AddonManifest, MenuEntry,
 };
-use bts_protocol::{DisplayState, Event, EventKind, ScreenKind};
+use bts_protocol::{DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind};
 
 use super::addon_version;
 
@@ -32,8 +32,8 @@ impl Addon for MessageAddon {
                 },
             ],
             menu: vec![MenuEntry {
-                digit: '0',
-                prompt: "sound:bts/press-0-clear".into(),
+                digit: DtmfMenuKey::new('4').expect("4 is an addon DTMF key"),
+                prompt: "sound:bts/press-4-clear".into(),
                 action: ActionId::new(BLANK),
                 order: 90,
             }],

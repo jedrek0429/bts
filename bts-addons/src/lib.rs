@@ -13,7 +13,7 @@ use bts_protocol::addons::v1::{
 };
 use bts_protocol::{
     AssetRef, AssetUpload, BtsState, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
-    EventKind, NewEvent,
+    DtmfMenuKey, EventKind, NewEvent,
 };
 use reqwest::Client;
 
@@ -230,7 +230,7 @@ impl std::error::Error for AddonFailure {}
 pub struct AddonRegistry {
     addons: HashMap<AddonId, Box<dyn Addon>>,
     actions: HashMap<ActionId, AddonId>,
-    digits: HashMap<char, AddonId>,
+    digits: HashMap<DtmfMenuKey, AddonId>,
 }
 
 impl AddonRegistry {
@@ -270,11 +270,6 @@ impl AddonRegistry {
             );
         }
         for entry in &manifest.menu {
-            anyhow::ensure!(
-                entry.digit.is_ascii_digit(),
-                "invalid menu digit {}",
-                entry.digit
-            );
             anyhow::ensure!(
                 manifest
                     .actions
@@ -320,8 +315,8 @@ impl AddonRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::Event;
     use bts_protocol::addons::v1::{API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
+    use bts_protocol::{DtmfMenuKey, Event};
 
     struct Stub(AddonManifest);
     #[async_trait]
@@ -344,7 +339,7 @@ mod tests {
                 description: "test".into(),
             }],
             menu: vec![MenuEntry {
-                digit,
+                digit: DtmfMenuKey::new(digit).unwrap(),
                 prompt: "sound:test".into(),
                 action: ActionId::new(action),
                 order: 1,

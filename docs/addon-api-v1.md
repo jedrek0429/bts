@@ -34,7 +34,7 @@ use bts_protocol::addons::v1::{
     AddonContext, AddonId, AddonManifest, AddonVersion, MenuEntry,
 };
 use bts_protocol::{
-    DisplayState, Event, EventKind, ScreenKind,
+    DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind,
 };
 
 struct NoticeAddon;
@@ -52,7 +52,7 @@ impl Addon for NoticeAddon {
                 description: "Show the example notice".into(),
             }],
             menu: vec![MenuEntry {
-                digit: '4',
+                digit: DtmfMenuKey::new('4').expect("4 is an addon DTMF key"),
                 prompt: "sound:bts/press-4-notice".into(),
                 action: ActionId::new("example.notice.show"),
                 order: 40,

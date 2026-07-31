@@ -297,6 +297,7 @@ fn initialise_logging() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bts_protocol::DtmfMenuKey;
     use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
 
     fn manifest(id: &str, digit: char, order: u16, prompt: &str) -> AddonManifest {
@@ -307,7 +308,7 @@ mod tests {
             version: AddonVersion::new(1, 0, 0),
             actions: vec![],
             menu: vec![MenuEntry {
-                digit,
+                digit: DtmfMenuKey::new(digit).unwrap(),
                 prompt: prompt.into(),
                 action: ActionId::new(format!("{id}.run")),
                 order,
