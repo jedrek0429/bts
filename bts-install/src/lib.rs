@@ -1,4 +1,4 @@
-//! Testable deployment engine for the BTS v0.3 installer.
+//! Testable deployment engine for the BTS installer.
 
 pub mod activation;
 pub mod archive;

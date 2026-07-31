@@ -57,7 +57,7 @@ impl ReleaseClient {
             releases
                 .into_iter()
                 .find(is_stable_release)
-                .context("Repository has no published v0.3.x release")?
+                .context("Repository has no published compatible BTS release")?
         } else {
             let endpoint = format!(
                 "https://api.github.com/repos/{}/releases/tags/{}",
@@ -73,8 +73,9 @@ impl ReleaseClient {
                 .context("GitHub release metadata is invalid")?
         };
         ensure!(
-            release.tag_name.starts_with("v0.3."),
-            "Selected release '{}' is outside the v0.3.x release line.",
+            release.tag_name.starts_with('v')
+                && crate::manifest::is_release_version(&release.tag_name),
+            "Selected release tag '{}' is invalid.",
             release.tag_name
         );
         let urls: BTreeMap<_, _> = release
@@ -123,7 +124,10 @@ impl ReleaseClient {
 }
 
 fn is_stable_release(release: &GithubRelease) -> bool {
-    release.tag_name.starts_with("v0.3.") && !release.draft && !release.prerelease
+    release.tag_name.starts_with('v')
+        && crate::manifest::is_release_version(&release.tag_name)
+        && !release.draft
+        && !release.prerelease
 }
 
 pub fn validate_local_assets(
@@ -151,11 +155,11 @@ mod tests {
         };
         let releases = [
             release("v0.3.2", true, false),
-            release("v0.3.1", false, true),
-            release("v0.3.0", false, false),
+            release("v0.4.0", false, true),
+            release("v0.5.0", false, false),
         ];
 
         let selected = releases.into_iter().find(is_stable_release);
-        assert_eq!(selected.unwrap().tag_name, "v0.3.0");
+        assert_eq!(selected.unwrap().tag_name, "v0.5.0");
     }
 }

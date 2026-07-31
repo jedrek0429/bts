@@ -1,6 +1,6 @@
 # BTS release manifest schema 1
 
-Every v0.3 tagged release contains `bts-install`, `bts-install.sha256`, `release-manifest.json`, `SHA256SUMS`, `LICENSE` and component bundles. Checksums are generated after final asset naming. CI rebuilds representative assets and verifies that every manifest entry names an existing file with the matching SHA-256 digest.
+Every tagged BTS release contains `bts-install`, `bts-install.sha256`, `release-manifest.json`, `SHA256SUMS`, `LICENSE` and component bundles. Checksums are generated after final asset naming. CI rebuilds representative assets and verifies that every manifest entry names an existing file with the matching SHA-256 digest.
 
 ## Manifest
 
@@ -30,7 +30,7 @@ Every v0.3 tagged release contains `bts-install`, `bts-install.sha256`, `release
 }
 ```
 
-Component keys are `core`, `display`, `telephony` and `addons`. Platform is currently `linux`; architectures are `x86_64` and `aarch64`. Unsupported component/architecture pairs are absent. The installer must not infer filenames. Schema, release-line and bundle-format mismatches are hard errors before download activation.
+Component keys are `core`, `display`, `telephony` and `addons`. Platform is currently `linux`; architectures are `x86_64` and `aarch64`. Unsupported component/architecture pairs are absent. The installer must not infer filenames. Schema and bundle-format mismatches are hard errors before download activation.
 
 ## Portable bundle format 1
 

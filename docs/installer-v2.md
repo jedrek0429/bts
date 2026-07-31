@@ -1,10 +1,10 @@
 # `bts-install`
 
-`bts-install` is the sole supported BTS v0.3 deployment manager. It installs portable release bundles rather than building source or installing native BTS packages.
+`bts-install` is the supported BTS deployment manager. It installs portable release bundles rather than building source or installing native BTS packages.
 
 ## Install the installer
 
-Download `bts-install` and its checksum from the same tagged v0.3 release. Verify the checksum before running or installing the binary:
+Download `bts-install` and its checksum from the same tagged release. Verify the checksum before running or installing the binary:
 
 ```sh
 release=v0.3.0
@@ -17,7 +17,7 @@ chmod +x bts-install
 sudo install -m 0755 bts-install /usr/local/bin/bts-install
 ```
 
-The v0.3 installer reads public GitHub Releases. Private-release authentication is not supported.
+The installer reads public GitHub Releases. Private-release authentication is not supported.
 
 ## Quick start
 
@@ -96,8 +96,8 @@ Common options:
 | `--core-ws-url URL` | Set the remote Core WebSocket URL for Display or Addons |
 | `--cage-args ARGS` | Override Cage arguments for Display |
 | `--repository OWNER/REPO` | Select the public release repository |
-| `--channel stable` | Use the newest published v0.3.x release |
-| `--channel v0.3.x` | Use a specific v0.3.x release |
+| `--channel stable` | Use the newest published compatible release |
+| `--channel vMAJOR.MINOR.PATCH` | Use a specific tagged release |
 | `--dry-run` | Print the plan without changing the machine |
 | `--yes` | Confirm changes without a prompt |
 | `--no-start` | Install and enable without starting services |

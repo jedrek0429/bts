@@ -17,11 +17,13 @@ pub struct Activation {
 
 pub fn activate(root: &Path, component: Component, version: &str) -> Result<Activation> {
     ensure!(
-        version.starts_with("0.3.")
+        !version.is_empty()
+            && version != "."
+            && version != ".."
             && version
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')),
-        "Unsafe or incompatible activation version '{version}'."
+        "Unsafe activation version '{version}'."
     );
     let base = rooted(root, &format!("/usr/lib/bts/components/{component}"));
     let release = base.join("releases").join(version);

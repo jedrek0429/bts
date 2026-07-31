@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the BTS v0.3 release manifest and checksum index."""
+"""Generate a BTS release manifest and checksum index."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import re
 import sys
 
 BUNDLE = re.compile(
-    r"^bts-(core|display|telephony|addons)-v(0\.3\.\d+)-linux-(x86_64|aarch64)\.tar\.zst$"
+    r"^bts-(core|display|telephony|addons)-v(\d+\.\d+\.\d+)-linux-(x86_64|aarch64)\.tar\.zst$"
 )
 
 
@@ -27,8 +27,8 @@ def main() -> int:
         raise SystemExit("Usage: generate-release-manifest.py VERSION ASSET_DIRECTORY")
     version = sys.argv[1].removeprefix("v")
     root = pathlib.Path(sys.argv[2])
-    if not re.fullmatch(r"0\.3\.\d+", version):
-        raise SystemExit("Release version must belong to v0.3.x")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise SystemExit("Release version must use MAJOR.MINOR.PATCH form")
     installer = root / "bts-install"
     licence = root / "LICENSE"
     if not installer.is_file() or not licence.is_file():

@@ -23,7 +23,7 @@ impl Architecture {
             "x86_64" | "amd64" => Ok(Self::X86_64),
             "aarch64" | "arm64" => Ok(Self::Aarch64),
             other => bail!(
-                "Unsupported architecture '{other}'. BTS v0.3 supports x86_64 and aarch64 release assets."
+                "Unsupported architecture '{other}'. BTS supports x86_64 and aarch64 release assets."
             ),
         }
     }
@@ -61,7 +61,7 @@ impl Platform {
             Ok(Self::Arch)
         } else {
             bail!(
-                "Unsupported operating system '{id}'. BTS v0.3 supports Debian-family Linux and Arch Linux through platform adapters."
+                "Unsupported operating system '{id}'. BTS supports Debian-family Linux and Arch Linux through platform adapters."
             )
         }
     }

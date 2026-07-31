@@ -52,8 +52,8 @@ impl ReleaseManifest {
             MANIFEST_SCHEMA_VERSION
         );
         ensure!(
-            is_v03(&self.release_version),
-            "Release '{}' is not compatible with the BTS v0.3 installer.",
+            is_release_version(&self.release_version),
+            "Release version '{}' is invalid.",
             self.release_version
         );
         validate_asset(&self.installer)?;
@@ -140,11 +140,12 @@ fn validate_asset(asset: &ReleaseAsset) -> Result<()> {
     Ok(())
 }
 
-fn is_v03(version: &str) -> bool {
+pub fn is_release_version(version: &str) -> bool {
     let version = version.strip_prefix('v').unwrap_or(version);
-    version.starts_with("0.3.")
-        && version[4..]
-            .split('.')
+    let parts = version.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts
+            .iter()
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
@@ -230,12 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_incompatible_or_unsafe_manifests() {
+    fn rejects_incompatible_schema_or_unsafe_manifests() {
         let mut value = manifest();
         value.schema_version = 2;
         assert!(value.validate().is_err());
         let mut value = manifest();
         value.release_version = "0.4.0".into();
+        assert!(value.validate().is_ok());
+        value.release_version = "0.4".into();
         assert!(value.validate().is_err());
         let mut value = manifest();
         value.installer.filename = "../installer".into();
