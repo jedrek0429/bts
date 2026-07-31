@@ -5,6 +5,7 @@ members = [
     "bts-core",
     "bts-display",
     "bts-protocol",
+    "bts-terminal",
     "bts-telephony",
     "bts-addons",
 ]

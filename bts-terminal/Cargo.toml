@@ -1,0 +1,18 @@
+[package]
+name = "bts-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme = "README.md"
+
+[dependencies]
+async-trait.workspace = true
+bts-protocol = { path = "../bts-protocol" }
+futures-util.workspace = true
+semver.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
