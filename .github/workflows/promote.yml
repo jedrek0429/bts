@@ -1,0 +1,110 @@
+name: Promote release
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: promote-${{ github.ref }}
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: release
+        name: Inspect release intent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/release-version.py check-workspace
+          version=$(scripts/release-version.py workspace-version)
+          kind=$(scripts/release-version.py classify "$version")
+          publish=false
+          prerelease=false
+
+          if [[ "$GITHUB_REF_NAME" == release/* ]]; then
+            scripts/release-version.py check-branch "$GITHUB_REF_NAME" "$version"
+            if [[ "$kind" == candidate ]]; then
+              mapfile -t candidate_tags < <(git tag --list)
+              scripts/release-version.py check-candidate "$version" "${candidate_tags[@]}"
+              publish=true
+              prerelease=true
+            fi
+          elif [[ "$GITHUB_REF_NAME" == main ]]; then
+            release_branch=$(gh api \
+              "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+              --jq '[.[] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("release/")))] | first | .head.ref // ""')
+            if [[ -n "$release_branch" ]]; then
+              scripts/release-version.py check-branch "$release_branch" "$version"
+              [[ "$kind" == stable ]] || {
+                echo "A release branch must contain a stable version before merging to main." >&2
+                exit 1
+              }
+              publish=true
+            fi
+          fi
+
+          if [[ "$publish" == true ]]; then
+            tag="v$version"
+            if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+              target=$(git rev-parse "refs/tags/$tag^{commit}")
+              [[ "$target" == "$GITHUB_SHA" ]] || {
+                echo "Tag $tag already identifies another commit." >&2
+                exit 1
+              }
+            fi
+          fi
+
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  validation:
+    needs: inspect
+    if: needs.inspect.outputs.publish == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  tag:
+    needs: [inspect, validation]
+    if: needs.inspect.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create immutable release tag
+        env:
+          VERSION: ${{ needs.inspect.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$tag" -m "BTS $VERSION"
+          git push origin "refs/tags/$tag"
+
+  package:
+    needs: [inspect, validation, tag]
+    if: needs.inspect.outputs.publish == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.inspect.outputs.version }}
+      prerelease: ${{ needs.inspect.outputs.prerelease == 'true' }}

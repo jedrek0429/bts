@@ -32,6 +32,8 @@ Every tagged BTS release contains `bts-install`, `bts-install.sha256`, `release-
 
 Component keys are `core`, `display`, `telephony` and `addons`. Platform is currently `linux`; architectures are `x86_64` and `aarch64`. Unsupported component/architecture pairs are absent. The installer must not infer filenames. Schema and bundle-format mismatches are hard errors before download activation.
 
+`release_version` is SemVer without build metadata and must match the GitHub tag after its leading `v` is removed. Stable and prerelease versions use the same schema.
+
 ## Portable bundle format 1
 
 Each `.tar.zst` has exactly one component root:

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, ensure};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -142,11 +143,7 @@ fn validate_asset(asset: &ReleaseAsset) -> Result<()> {
 
 pub fn is_release_version(version: &str) -> bool {
     let version = version.strip_prefix('v').unwrap_or(version);
-    let parts = version.split('.').collect::<Vec<_>>();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    Version::parse(version).is_ok_and(|version| version.build.is_empty())
 }
 
 pub fn validate_release_assets(
@@ -228,6 +225,8 @@ mod tests {
                 .select(Component::Core, Platform::Debian, Architecture::Aarch64)
                 .is_err()
         );
+        assert!(is_release_version("v0.4.0-rc.1"));
+        assert!(!is_release_version("v0.4.0+local"));
     }
 
     #[test]
