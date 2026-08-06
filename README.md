@@ -10,6 +10,8 @@ Components are independently deployable and communicate through the versioned co
 - [Build and run a development environment](docs/development.md)
 - [Versioning and releases](docs/versioning.md)
 - [Write addons with Addon API v1](docs/addon-api-v1.md)
+- [Understand terminal architecture and operation](docs/terminal-platform.md)
+- [Migrate an implicit single display](docs/terminal-migration.md)
 - [Generate voice prompts](docs/voice-prompts.md)
 - [Release manifest and bundle format](docs/release-manifest-v1.md)
 - [Project roadmap](docs/roadmap.md)
@@ -39,7 +41,11 @@ cp deploy/dev/core.env.example ~/.config/bts/dev/core.env
 ./scripts/bts-dev up core
 ```
 
-Use the `voice` profile for Core, Addons and Telephony, or launch a named native Display separately. The [development guide](docs/development.md) covers component files, profiles, migration, local release bundles and hardware boundaries.
+Use the `voice` profile for Core, Addons and Telephony, the `two-terminals`
+profile for an isolated Core and two headless production-runtime terminals, or
+launch a named native Display separately. The [development
+guide](docs/development.md) covers component files, profiles, migration, local
+release bundles and hardware boundaries.
 
 ## Licence
 

@@ -189,6 +189,13 @@ sudo bts-install upgrade display
 
 The installer refuses to activate a new Display release while the endpoint or identity is missing or still points at the legacy event stream. This leaves the existing display release running until its identity is visible and editable in `/etc/bts/display.env`.
 
+Upgrade Core before any Display. Repeat the configuration step separately on
+every display-only host and choose a different ID each time; never copy a
+universal `display` or `default` identity into several machines. A cloned image
+must be assigned a new ID before first service start. Detailed mixed-version
+behaviour and rollback guidance are in [Single-display migration and rolling
+compatibility](terminal-migration.md).
+
 Remote Addons and Telephony hosts use `--core-http-url`; Addons additionally accepts `--core-ws-url`. Non-interactive installation of a Core client without a local Core requires its applicable endpoint flags, so the installer never silently assumes a local service.
 
 ## Installation and reconciliation

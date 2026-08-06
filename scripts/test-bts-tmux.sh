@@ -85,11 +85,26 @@ PATH="$test_root/bin:$PATH" \
     "$repository_root/scripts/bts-dev" status core > "$test_root/status-output"
 grep -q 'Status: running' "$test_root/status-output"
 
-# Profiles are data files, leaving #34 an extension point without a simulator here.
+# Existing profiles remain data-driven when the headless selector is added.
 : > "$log"
 BTS_DEV_SESSION=voice-test run_dev up voice > "$test_root/voice-output"
 grep -q 'Components: core,addons,telephony' "$test_root/voice-output"
-grep -q 'Readiness order: core, addons, ARI tunnel, telephony, displays.' "$test_root/voice-output"
+grep -q 'Readiness order: core, addons, ARI tunnel, telephony, headless terminals, displays.' "$test_root/voice-output"
+
+# The #34 profile uses the reusable headless runtime with two stable identities.
+: > "$log"
+BTS_DEV_SESSION=two-terminal-test run_dev up two-terminals > "$test_root/two-terminal-output"
+grep -q 'Components: core,terminal:bedroom-display,terminal:dining-display' "$test_root/two-terminal-output"
+grep -q 'new-session .*core' "$log"
+grep -q 'new-window .*terminal-bedroom-display' "$log"
+grep -q 'new-window .*terminal-dining-display' "$log"
+grep -q 'bts-terminal-simulator' "$log"
+grep -q 'BTS_TERMINAL_ID.*bedroom-display' "$log"
+grep -q 'BTS_TERMINAL_ID.*dining-display' "$log"
+if grep -Eq 'bts-display|bts-telephony|ARI password|ari-tunnel' "$log"; then
+    echo "The two-terminal profile unexpectedly selected graphical or telephony components." >&2
+    exit 1
+fi
 
 # Legacy shared development configuration is rejected with migration guidance.
 printf '%s\n' 'RUST_LOG=debug' > "$test_root/dev.env"

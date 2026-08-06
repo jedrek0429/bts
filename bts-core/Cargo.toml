@@ -19,7 +19,11 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+bts-addons = { path = "../bts-addons" }
 bts-terminal = { path = "../bts-terminal" }
+bts-terminal-simulator = { path = "../bts-terminal-simulator" }
+bts-telephony = { path = "../bts-telephony" }
 reqwest.workspace = true
 semver.workspace = true
 tokio-tungstenite.workspace = true

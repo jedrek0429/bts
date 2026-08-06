@@ -1,13 +1,11 @@
-mod session;
-
 use anyhow::Context;
 use asterisk_ari::{AriClient, Config, apis::channels};
 use std::{collections::HashMap, sync::Arc};
 
 use bts_protocol::addons::v1::{ActionId, AddonManifest};
 use bts_protocol::{EventKind, NewEvent, TelephonyTargets};
+use bts_telephony::session::{CallerIdentity, TelephonySession};
 use reqwest::Client;
-use session::{CallerIdentity, TelephonySession};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;

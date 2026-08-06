@@ -13,8 +13,9 @@ Usage:
   scripts/bts-dev up SELECTOR...
   scripts/bts-dev status SELECTOR...
 
-Selectors are core, addons, telephony, display:NAME, or a profile stored as
-deploy/dev/profiles/SELECTOR.components. Display remains a native process.
+Selectors are core, addons, telephony, terminal:NAME, display:NAME, or a profile
+stored as deploy/dev/profiles/SELECTOR.components. Display remains native;
+terminal:NAME starts the reusable headless simulator.
 EOF
 }
 
@@ -33,9 +34,9 @@ expand_selector() {
     local selector=$1 line
     case "$selector" in
         core|addons|telephony) expanded+=("$selector") ;;
-        display:*)
-            [[ $selector =~ ^display:[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
-                printf 'Invalid display selector: %s\n' "$selector" >&2
+        terminal:*|display:*)
+            [[ $selector =~ ^(terminal|display):[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
+                printf 'Invalid named component selector: %s\n' "$selector" >&2
                 exit 2
             }
             expanded+=("$selector")
@@ -67,6 +68,9 @@ for component in core addons telephony; do
 done
 while IFS= read -r component; do
     [[ -z $component ]] || components+=("$component")
+done < <(printf '%s\n' "${!selected[@]}" | grep '^terminal:' | sort || true)
+while IFS= read -r component; do
+    [[ -z $component ]] || components+=("$component")
 done < <(printf '%s\n' "${!selected[@]}" | grep '^display:' | sort || true)
 ((${#components[@]} > 0)) || { printf 'The selection contains no components.\n' >&2; exit 2; }
 
@@ -82,6 +86,7 @@ show_configuration() {
     printf 'Components: %s\n' "$selection"
     for component in "${components[@]}"; do
         case "$component" in
+            terminal:*) file=$config_root/terminal-${component#terminal:}.env ;;
             display:*) file=$config_root/display-${component#display:}.env ;;
             *) file=$config_root/$component.env ;;
         esac
@@ -110,13 +115,11 @@ if [[ -r $legacy_file ]]; then
     exit 1
 fi
 
-for command in python3; do
-    command -v "$command" >/dev/null 2>&1 || {
-        printf '%s is required but was not found in PATH.\n' "$command" >&2
-        exit 1
-    }
-done
-if [[ -v selected[addons] || -v selected[telephony] ]]; then
+command -v python3 >/dev/null 2>&1 || {
+    printf 'python3 is required but was not found in PATH.\n' >&2
+    exit 1
+}
+if [[ -v selected[addons] || -v selected[telephony] ]] || printf '%s\n' "${components[@]}" | grep -q '^terminal:'; then
     command -v curl >/dev/null 2>&1 || { printf 'curl is required for readiness checks.\n' >&2; exit 1; }
 fi
 if [[ -v selected[telephony] ]]; then
@@ -143,7 +146,7 @@ printf '%s\n' "$selection" > "$selection_file"
 quote() { printf '%q' "$1"; }
 common_command() {
     local file=$1
-    printf 'unset RUST_LOG BTS_CORE_BIND BTS_CORE_TERMINAL_STATE_PATH BTS_CORE_HTTP_URL BTS_CORE_WS_URL BTS_ADDON_DATA_ROOT BTS_CORE_URL BTS_ARI_URL BTS_ARI_USERNAME BTS_ARI_PASSWORD BTS_ARI_SSH_HOST BTS_ARI_TUNNEL_PORT BTS_TERMINAL_ID BTS_TERMINAL_NAME BTS_CAGE_ARGS BTS_DISPLAY_TTY BTS_CABIN_FONT WLR_DRM_DEVICES; set -a; [[ ! -r %s ]] || source %s; set +a; export RUST_LOG="${RUST_LOG:-info}"; ' "$(quote "$file")" "$(quote "$file")"
+    printf 'unset RUST_LOG BTS_CORE_BIND BTS_CORE_TERMINAL_STATE_PATH BTS_CORE_HTTP_URL BTS_CORE_WS_URL BTS_ADDON_DATA_ROOT BTS_CORE_URL BTS_ARI_URL BTS_ARI_USERNAME BTS_ARI_PASSWORD BTS_ARI_SSH_HOST BTS_ARI_TUNNEL_PORT BTS_TERMINAL_ID BTS_TERMINAL_NAME BTS_TERMINAL_CAPABILITIES BTS_TERMINAL_SIMULATOR_RESPONSE BTS_CAGE_ARGS BTS_DISPLAY_TTY BTS_CABIN_FONT WLR_DRM_DEVICES; set -a; [[ ! -r %s ]] || source %s; set +a; export RUST_LOG="${RUST_LOG:-info}"; ' "$(quote "$file")" "$(quote "$file")"
 }
 new_window() {
     local name=$1 command=$2
@@ -187,6 +190,15 @@ if [[ -v selected[telephony] ]]; then
 fi
 
 for component in "${components[@]}"; do
+    [[ $component == terminal:* ]] || continue
+    terminal_name=${component#terminal:}
+    file=$config_root/terminal-$terminal_name.env
+    command=$(common_command "$file")
+    command+="export BTS_CORE_HTTP_URL=\"\${BTS_CORE_HTTP_URL:-http://127.0.0.1:3100}\"; export BTS_CORE_WS_URL=\"\${BTS_CORE_WS_URL:-ws://127.0.0.1:3100$api_prefix/terminals/ws}\"; export BTS_TERMINAL_ID=\"\${BTS_TERMINAL_ID:-$terminal_name}\"; export BTS_TERMINAL_NAME=\"\${BTS_TERMINAL_NAME:-$terminal_name}\"; until curl -fsS \"\$BTS_CORE_HTTP_URL/health\" >/dev/null 2>&1; do sleep 1; done; cargo run -p bts-terminal-simulator; exec \"\${SHELL:-/bin/sh}\""
+    new_window "terminal-$terminal_name" "$command"
+done
+
+for component in "${components[@]}"; do
     [[ $component == display:* ]] || continue
     display_name=${component#display:}
     file=$config_root/display-$display_name.env
@@ -197,6 +209,6 @@ done
 
 tmux select-window -t "$session:${components[0]//:/-}"
 show_configuration
-printf 'Readiness order: core, addons, ARI tunnel, telephony, displays.\n'
+printf 'Readiness order: core, addons, ARI tunnel, telephony, headless terminals, displays.\n'
 printf 'Attach with: tmux attach -t %q\n' "$session"
 [[ ${BTS_DEV_DETACH:-0} == 1 ]] || exec tmux attach-session -t "$session"

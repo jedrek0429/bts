@@ -13,16 +13,16 @@ const TARGET_UNAVAILABLE_PROMPT: &str =
 const INVALID_SELECTION_PROMPT: &str = "sound:bts/invalid-selection";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CallerIdentity {
-    pub(crate) number: Option<String>,
-    pub(crate) name: Option<String>,
+pub struct CallerIdentity {
+    pub number: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct SessionSettings;
+pub struct SessionSettings;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum MenuContext {
+pub enum MenuContext {
     NoTargets,
     MainMenu,
     Addon {
@@ -36,15 +36,15 @@ pub(crate) enum MenuContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TargetChoice {
-    code: String,
-    option: TelephonyTargetOption,
+pub struct TargetChoice {
+    pub code: String,
+    pub option: TelephonyTargetOption,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SessionOutcome {
-    pub(crate) media: Option<String>,
-    pub(crate) action: Option<ActionRequest>,
+pub struct SessionOutcome {
+    pub media: Option<String>,
+    pub action: Option<ActionRequest>,
 }
 
 impl SessionOutcome {
@@ -64,19 +64,19 @@ impl SessionOutcome {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TelephonySession {
+pub struct TelephonySession {
     #[allow(dead_code)] // Retained for caller-scoped settings and auditing.
-    pub(crate) caller: CallerIdentity,
-    pub(crate) selected_target: Option<TerminalTarget>,
-    pub(crate) current_context: MenuContext,
-    pub(crate) return_stack: Vec<MenuContext>,
+    pub caller: CallerIdentity,
+    pub selected_target: Option<TerminalTarget>,
+    pub current_context: MenuContext,
+    pub return_stack: Vec<MenuContext>,
     #[allow(dead_code)] // Issue #32 establishes the settings slot before settings are added.
-    pub(crate) settings: SessionSettings,
+    pub settings: SessionSettings,
     main_menu_media: String,
 }
 
 impl TelephonySession {
-    pub(crate) fn new(
+    pub fn new(
         caller: CallerIdentity,
         targets: &TelephonyTargets,
         main_menu_media: String,
@@ -108,7 +108,7 @@ impl TelephonySession {
         (session, outcome)
     }
 
-    pub(crate) fn handle_dtmf(
+    pub fn handle_dtmf(
         &mut self,
         digit: &str,
         fresh_targets: &TelephonyTargets,

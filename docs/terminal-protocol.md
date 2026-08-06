@@ -62,6 +62,10 @@ deprecated content-only convenience, while the Core lifecycle adapter owns the
 complete priority and restoration semantics. New protocol clients choose an
 explicit `TerminalTarget`.
 
+The operator sequence for assigning identities and running adjacent versions is
+documented in [Single-display migration and rolling
+compatibility](terminal-migration.md).
+
 ## Reserved DTMF controls
 
 The platform owns these controls globally:

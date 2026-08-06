@@ -117,6 +117,7 @@ cp deploy/dev/core.env.example ~/.config/bts/dev/core.env
 cp deploy/dev/addons.env.example ~/.config/bts/dev/addons.env
 cp deploy/dev/telephony.env.example ~/.config/bts/dev/telephony.env
 cp deploy/dev/display.env.example ~/.config/bts/dev/display-bedroom.env
+cp deploy/dev/terminal.env.example ~/.config/bts/dev/terminal-bedroom-display.env
 ```
 
 Each tmux pane sources only its own file. Missing Core, Addons and Telephony files use loopback development defaults; Display requires explicit identity in a named file. State is isolated under `${XDG_STATE_HOME:-~/.local/state}/bts/dev/SESSION`, including Core's terminal registry and Addons data.
@@ -128,19 +129,56 @@ scripts/bts-dev up core
 scripts/bts-dev up core addons
 scripts/bts-dev up telephony
 scripts/bts-dev up voice
+scripts/bts-dev up two-terminals
+scripts/bts-dev up terminal:bedroom-display
 scripts/bts-dev up display:bedroom
 scripts/bts-dev status core
 ```
 
-`core` never reads Telephony configuration and needs no Asterisk or ARI credentials. Addons and Telephony may be selected independently and wait for their configured Core endpoint. Only a Telephony selection reads ARI settings, prompts for an omitted password, or creates the optional SSH tunnel configured by `BTS_ARI_SSH_HOST`. Readiness is ordered deterministically as Core, Addons, ARI tunnel, Telephony and named Displays.
+`core` never reads Telephony configuration and needs no Asterisk or ARI credentials. Addons and Telephony may be selected independently and wait for their configured Core endpoint. Only a Telephony selection reads ARI settings, prompts for an omitted password, or creates the optional SSH tunnel configured by `BTS_ARI_SSH_HOST`. Readiness is ordered deterministically as Core, Addons, ARI tunnel, Telephony, headless terminals and named Displays.
 
 The launcher reports the resolved components, configuration files and state directory. A matching existing session is reused; a session with a mismatched or unknown selection is rejected. Kill a session with `tmux kill-session -t SESSION` before applying configuration changes. `scripts/bts-tmux` remains a compatibility entry point and selects the `all` profile when invoked without arguments.
 
-Profiles are plain component lists in `deploy/dev/profiles/*.components`. This is the extension point for later headless-terminal profiles; #50 does not include the #34 simulator or two-terminal acceptance harness. `BTS_DEV_PROFILE_DIR`, `BTS_DEV_CONFIG_DIR`, `BTS_DEV_STATE_DIR` and `BTS_DEV_SESSION` provide explicit test or parallel-worktree isolation.
+Profiles are plain component lists in `deploy/dev/profiles/*.components`. The
+`two-terminals` profile starts one isolated Core plus
+`terminal:bedroom-display` and `terminal:dining-display`. It uses the production
+`bts-terminal` lifecycle through `bts-terminal-simulator` and does not start
+Display, Telephony, Asterisk or ARI:
+
+```sh
+scripts/bts-dev up two-terminals
+```
+
+Without component files, the selector names are stable IDs and suggested names.
+To use the Bedroom and Dining Room example, create independent files:
+
+```sh
+cp deploy/dev/terminal.env.example ~/.config/bts/dev/terminal-bedroom-display.env
+cp deploy/dev/terminal.env.example ~/.config/bts/dev/terminal-dining-display.env
+sed -i 's/bedroom-display/dining-display/; s/Bedroom/Dining Room/' \
+  ~/.config/bts/dev/terminal-dining-display.env
+```
+
+Each simulator waits for Core's health endpoint, registers through
+`/api/v1/terminals/ws`, accepts presentations and emits JSON lines for lifecycle
+and presentation observations. `BTS_TERMINAL_CAPABILITIES` is a comma-separated
+functional set. `BTS_TERMINAL_SIMULATOR_RESPONSE` may be `accept`, `reject` or
+`ignore` for reproducible manual delivery experiments. Core registry state is
+isolated beneath the session state directory.
+
+Run the automated coherent-system coverage with:
+
+```sh
+cargo test -p bts-core --test multi_terminal
+scripts/test-bts-tmux.sh
+```
+
+`BTS_DEV_PROFILE_DIR`, `BTS_DEV_CONFIG_DIR`, `BTS_DEV_STATE_DIR` and
+`BTS_DEV_SESSION` provide explicit test or parallel-worktree isolation.
 
 The old `~/.config/bts/dev.env` is deliberately not loaded because values such as `RUST_LOG` and `BTS_CORE_WS_URL` cannot be copied safely to every component. To migrate, move Core values to `core.env`, Addons HTTP/event-stream values to `addons.env`, ARI and `BTS_CORE_URL` values to `telephony.env`, and terminal identity plus the terminal WebSocket endpoint to a named `display-NAME.env`; then remove `dev.env`. The launcher reports this migration whenever the legacy file remains.
 
-Display is still a native graphical process. Running it through the launcher does not verify Cage, DRM, Wayland, TTY, input devices or physical display hardware; those checks remain manual.
+Display is still a native graphical process. Running it through the launcher does not verify Cage, DRM, Wayland, TTY, input devices or physical display hardware; those checks remain manual. The headless profile also does not verify Asterisk, audio, telephone hardware or real DTMF input.
 
 ## Core development endpoints
 
