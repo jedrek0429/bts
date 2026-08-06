@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bts_protocol::addons::v1::{ActionId, AddonId, MenuEntry};
+use bts_protocol::addons::v1::{ActionId, ActionRequest, AddonId, MenuEntry};
 use bts_protocol::{
     BtsState, CoreTerminalMessage, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
     DtmfMenuKey, DtmfMenuKeyError, Event, EventKind, GroupId, GroupIdentity, GroupName,
@@ -8,11 +8,12 @@ use bts_protocol::{
     PresentationDispatch, PresentationGeneration, PresentationId, PresentationRejection,
     PresentationRejectionCode, PresentationRequest, ProtocolVersion, RegistrationRejection,
     RegistrationRejectionReason, ReservedDtmfAction, ResolvedTarget, RoutingError, ServerMessage,
-    TERMINAL_EVENT_STREAM_VERSION, TagMatch, TagQuery, TargetScope, TerminalCapabilities,
-    TerminalCapability, TerminalClientMessage, TerminalConnectionId, TerminalEvent,
-    TerminalEventKind, TerminalGroupChange, TerminalId, TerminalIdentity, TerminalImplementationId,
-    TerminalImplementationVersion, TerminalMetadataChange, TerminalName, TerminalRegistration,
-    TerminalRuntimeDiagnostics, TerminalTag, TerminalTarget,
+    TERMINAL_EVENT_STREAM_VERSION, TagMatch, TagQuery, TargetScope, TelephonyTargetOption,
+    TelephonyTargets, TerminalCapabilities, TerminalCapability, TerminalClientMessage,
+    TerminalConnectionId, TerminalEvent, TerminalEventKind, TerminalGroupChange, TerminalId,
+    TerminalIdentity, TerminalImplementationId, TerminalImplementationVersion,
+    TerminalMetadataChange, TerminalName, TerminalRegistration, TerminalRuntimeDiagnostics,
+    TerminalTag, TerminalTarget,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -471,6 +472,52 @@ fn reserved_dtmf_controls_cannot_be_addon_menu_keys() {
     };
     assert_eq!(serde_json::to_value(&entry).unwrap()["digit"], json!("7"));
     assert_eq!(round_trip(&entry), entry);
+}
+
+#[test]
+fn addon_action_context_is_additive_and_carries_the_unresolved_target() {
+    let legacy: ActionRequest = serde_json::from_value(json!({
+        "action": "clock.show",
+        "parameters": null
+    }))
+    .unwrap();
+    assert!(legacy.target.is_none());
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("target")
+            .is_none()
+    );
+
+    let target = TerminalTarget::Terminal {
+        id: terminal_id("bedroom-display"),
+        scope: TargetScope::Online,
+    };
+    let targeted = ActionRequest {
+        action: ActionId::new("clock.show"),
+        parameters: Value::Null,
+        target: Some(target.clone()),
+    };
+    let wire = serde_json::to_value(&targeted).unwrap();
+    assert_eq!(
+        wire["target"],
+        json!({ "target": "terminal", "id": "bedroom-display" })
+    );
+    assert_eq!(round_trip(&targeted), targeted);
+
+    let catalogue = TelephonyTargets {
+        terminals: vec![TelephonyTargetOption {
+            target: target.clone(),
+            name: "Bedroom".to_owned(),
+        }],
+        groups: Vec::new(),
+        all: Some(TelephonyTargetOption {
+            target: TerminalTarget::all(),
+            name: "All available terminals".to_owned(),
+        }),
+    };
+    assert!(catalogue.contains(&target));
+    assert_eq!(round_trip(&catalogue), catalogue);
 }
 
 #[test]

@@ -27,8 +27,8 @@ use axum::{
 use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::core::{
     CORE_ADDONS_PATH, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
-    CORE_EVENTS_WEBSOCKET_PATH, CORE_STATE_PATH, CORE_TERMINAL_EVENTS_WEBSOCKET_PATH,
-    CORE_TERMINALS_WEBSOCKET_PATH,
+    CORE_EVENTS_WEBSOCKET_PATH, CORE_STATE_PATH, CORE_TELEPHONY_TARGETS_PATH,
+    CORE_TERMINAL_EVENTS_WEBSOCKET_PATH, CORE_TERMINALS_WEBSOCKET_PATH,
 };
 use bts_protocol::{
     AssetId, AssetRef, AssetUpload, BtsState, DisplayCommand, DtmfMenuKey, Event, EventKind,
@@ -191,6 +191,7 @@ fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route(CORE_STATE_PATH, get(get_state))
         .route(CORE_ADDONS_PATH, get(get_addons))
+        .route(CORE_TELEPHONY_TARGETS_PATH, get(get_telephony_targets))
         .route(CORE_ASSETS_PATH, post(upload_asset))
         .route(CORE_ASSET_PATH, get(get_asset))
         .route(CORE_EVENTS_PATH, post(submit_event))
@@ -249,6 +250,14 @@ fn spawn_terminal_expiry(
 
 async fn health() -> &'static str {
     "BTS Core is online\n"
+}
+
+async fn get_telephony_targets(
+    State(state): State<AppState>,
+) -> Json<bts_protocol::TelephonyTargets> {
+    Json(crate::telephony::target_catalogue(
+        &state.terminals.routing_snapshot(std::time::Instant::now()),
+    ))
 }
 
 async fn get_state(State(state): State<AppState>) -> Json<BtsState> {
