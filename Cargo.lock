@@ -322,14 +322,14 @@ name = "bts-display"
 version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
+ "bts-core",
  "bts-protocol",
- "chrono",
+ "bts-terminal",
  "eframe",
- "futures-util",
- "serde_json",
+ "reqwest",
+ "semver",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.27.0",
  "tracing",
  "tracing-subscriber",
 ]
@@ -340,6 +340,7 @@ version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "bts-compat",
+ "bts-protocol",
  "hex",
  "libc",
  "reqwest",

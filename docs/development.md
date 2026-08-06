@@ -62,7 +62,9 @@ version=$(scripts/release-version.py workspace-version)
 sudo target/release/bts-install \
   --release-dir "target/bts-release/$version" \
   install display \
-  --core-url ws://CORE:3100/api/v1/events/ws
+  --core-url ws://CORE:3100/api/v1/terminals/ws \
+  --terminal-id development-display \
+  --terminal-name "Development Display"
 ```
 
 Use the actual workspace version in the path. Local assets pass the normal manifest, checksum, archive and activation checks. `--release-dir` is accepted by `install`, `add` and `upgrade`; pass it again when upgrading from another local build. Use a VM or disposable host for service-level testing. `--root` is reserved for isolated tests and recovery and must not be treated as a container.
@@ -85,7 +87,10 @@ Run each process in a separate terminal:
 cargo run -p bts-core
 cargo run -p bts-addons
 cargo run -p bts-telephony
-cage -- cargo run -p bts-display
+BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/terminals/ws \
+BTS_TERMINAL_ID=development-display \
+BTS_TERMINAL_NAME="Development Display" \
+  cage -- cargo run -p bts-display
 ```
 
 Components connect to Core through environment variables and do not need to run on the same host:
@@ -93,7 +98,7 @@ Components connect to Core through environment variables and do not need to run 
 ```env
 BTS_CORE_URL=http://127.0.0.1:3100
 BTS_CORE_HTTP_URL=http://127.0.0.1:3100
-BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws
+BTS_CORE_WS_URL=ws://127.0.0.1:3100/api/v1/events/ws # Addons event stream
 BTS_ARI_URL=http://127.0.0.1:8088
 BTS_ARI_USERNAME=bts
 BTS_ARI_PASSWORD=CHANGE_ME
@@ -127,6 +132,8 @@ Core listens on port 3100 by default:
 - `GET /api/v1/state`
 - `GET /api/v1/addons`
 - `GET /api/v1/events/ws`
+- `GET /api/v1/terminals/ws`
+- `GET /api/v1/terminals/events/ws`
 - `GET /api/v1/assets/{asset_id}`
 - `POST /api/v1/events`
 - `POST /api/v1/assets`

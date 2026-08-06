@@ -11,19 +11,55 @@ use anyhow::{Context, Result, ensure};
 use crate::cli::SecretInput;
 
 pub fn validate_websocket_url(value: &str) -> Result<()> {
+    validate_websocket_url_for_path(value, bts_compat::CORE_EVENTS_WEBSOCKET_PATH)
+}
+
+pub fn validate_terminal_websocket_url(value: &str) -> Result<()> {
+    validate_websocket_url_for_path(value, bts_compat::CORE_TERMINALS_WEBSOCKET_PATH)?;
+    let path = value.split(['?', '#']).next().unwrap_or(value);
+    ensure!(
+        path.ends_with(bts_compat::CORE_TERMINALS_WEBSOCKET_PATH),
+        "Core URL must identify the published {} endpoint.",
+        bts_compat::CORE_TERMINALS_WEBSOCKET_PATH
+    );
+    Ok(())
+}
+
+fn validate_websocket_url_for_path(value: &str, endpoint: &str) -> Result<()> {
     ensure!(
         value.starts_with("ws://") || value.starts_with("wss://"),
         "Core URL must use ws:// or wss://."
     );
     ensure!(
-        value.contains(bts_compat::CORE_EVENTS_WEBSOCKET_PATH),
+        value.contains(endpoint),
         "Core URL must identify the published {} endpoint.",
-        bts_compat::CORE_EVENTS_WEBSOCKET_PATH
+        endpoint
     );
     ensure!(
         !value.chars().any(char::is_whitespace),
         "Core URL must not contain whitespace."
     );
+    Ok(())
+}
+
+pub fn validate_display(values: &BTreeMap<String, String>) -> Result<()> {
+    validate_terminal_websocket_url(
+        values
+            .get("BTS_CORE_WS_URL")
+            .context("BTS_CORE_WS_URL is not configured")?,
+    )?;
+    bts_protocol::TerminalId::new(
+        values
+            .get("BTS_TERMINAL_ID")
+            .context("BTS_TERMINAL_ID is not configured")?,
+    )
+    .context("BTS_TERMINAL_ID is invalid")?;
+    bts_protocol::TerminalName::new(
+        values
+            .get("BTS_TERMINAL_NAME")
+            .context("BTS_TERMINAL_NAME is not configured")?,
+    )
+    .context("BTS_TERMINAL_NAME is invalid")?;
     Ok(())
 }
 
@@ -236,7 +272,21 @@ mod tests {
     #[test]
     fn validates_display_and_telephony_configuration() {
         assert!(validate_websocket_url("ws://core:3100/api/v1/events/ws").is_ok());
+        assert!(validate_terminal_websocket_url("ws://core:3100/api/v1/terminals/ws").is_ok());
+        assert!(validate_terminal_websocket_url("ws://core:3100/api/v1/events/ws").is_err());
+        assert!(
+            validate_terminal_websocket_url("ws://core:3100/api/v1/terminals/ws/other").is_err()
+        );
         assert!(validate_websocket_url("http://core").is_err());
+        validate_display(&BTreeMap::from([
+            (
+                "BTS_CORE_WS_URL".into(),
+                "ws://core:3100/api/v1/terminals/ws".into(),
+            ),
+            ("BTS_TERMINAL_ID".into(), "bedroom-display".into()),
+            ("BTS_TERMINAL_NAME".into(), "Bedroom".into()),
+        ]))
+        .unwrap();
         let values = BTreeMap::from([
             ("BTS_ARI_URL".into(), "http://asterisk:8088".into()),
             ("BTS_ARI_USERNAME".into(), "bts".into()),

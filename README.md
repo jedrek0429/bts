@@ -1,6 +1,6 @@
 # Bansleben Telephone Services
 
-BTS is a phone-controlled home information system written in Rust. Asterisk handles calls, `bts-core` routes events, independent addons provide behaviour, and `bts-display` renders the shared state.
+BTS is a phone-controlled home information system written in Rust. Asterisk handles calls, `bts-core` routes events and terminal-specific presentation state, independent addons provide behaviour, and each `bts-display` instance renders its registered terminal's presentation.
 
 Components are independently deployable and communicate through the versioned contracts in `bts-protocol`.
 

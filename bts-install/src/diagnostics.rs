@@ -276,11 +276,7 @@ fn validate_component_configuration(path: &Path, component: Component) -> anyhow
                 .parse::<std::net::SocketAddr>()?;
         }
         Component::Display => {
-            crate::config::validate_websocket_url(
-                values
-                    .get("BTS_CORE_WS_URL")
-                    .ok_or_else(|| anyhow::anyhow!("BTS_CORE_WS_URL is missing"))?,
-            )?;
+            crate::config::validate_display(&values)?;
             if let Some(arguments) = values.get("BTS_CAGE_ARGS") {
                 crate::config::validate_cage_args(arguments)?;
             }
