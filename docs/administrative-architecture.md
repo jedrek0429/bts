@@ -16,9 +16,10 @@ bts-protocol
   endpoint constants and structured server-error categories. It contains no
   HTTP client, argument parsing, prompts, output formatting or exit codes.
 - `bts-core` remains authoritative for resource state, validation, reference
-  resolution, persistence, idempotency and mutation safety. Stage 1 defines no
-  production administrative handler.
-- `bts-sdk` will own HTTP transport, timeouts, discovery and compatibility
+  resolution, persistence, idempotency and mutation safety. It currently serves
+  discovery, process status and current-state resources; later issues add the
+  frozen terminal and group operations.
+- `bts-sdk` owns HTTP transport, timeouts, discovery and compatibility
   negotiation, URL construction, typed operations and decoding server errors.
   It must not contain terminal registration, heartbeat, presentation or
   renderer behaviour.
@@ -26,10 +27,10 @@ bts-protocol
   owns Clap grammar, environment configuration, prompts, human formatting,
   colour and process exit behaviour.
 
-The intended workspace dependency graph is enforced by
-`scripts/test-administrative-boundaries.py`. When the later crates are added,
-`bts-sdk` must depend on `bts-protocol`, and `bts-cli` must depend on `bts-sdk`
-without bypassing it.
+The workspace dependency graph is enforced by
+`scripts/test-administrative-boundaries.py`: `bts-sdk` depends on
+`bts-protocol` without depending on Core or any runtime component. When
+`bts-cli` is added, it must depend on `bts-sdk` without bypassing it.
 
 The administrative surface manages BTS resources only. It does not start or
 stop systemd services or containers, edit host or Asterisk configuration,
@@ -51,3 +52,4 @@ until Addon API v1 work explicitly introduces it.
 
 See [Administrative API v1](administrative-api-v1.md) for the HTTP and DTO
 contract and [btscli v1 contract](btscli-v1.md) for operator behaviour.
+The implemented Rust client is described in [bts-sdk](bts-sdk.md).

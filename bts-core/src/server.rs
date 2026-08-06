@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     future::Future,
     net::SocketAddr,
     path::PathBuf,
@@ -26,14 +26,19 @@ use axum::{
 };
 use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::core::{
-    CORE_ADDONS_PATH, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
+    CORE_ADDONS_PATH, CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH, CORE_API_DISCOVERY_PATH,
+    CORE_API_VERSION, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
     CORE_EVENTS_WEBSOCKET_PATH, CORE_STATE_PATH, CORE_TELEPHONY_TARGETS_PATH,
     CORE_TERMINAL_EVENTS_WEBSOCKET_PATH, CORE_TERMINALS_WEBSOCKET_PATH,
 };
 use bts_protocol::{
-    AssetId, AssetRef, AssetUpload, BtsState, DisplayCommand, DtmfMenuKey, Event, EventKind,
-    NewEvent, PresentationRequest, ServerMessage,
+    AdministrativeApiCompatibility, AdministrativeError, AdministrativeErrorCategory,
+    AdministrativeErrorCode, AdministrativeErrorResponse, ApiDiscovery, AssetId, AssetRef,
+    AssetUpload, BtsState, CoreOperationalStatus, CoreStateResource, CoreStatusResource,
+    DisplayCommand, DtmfMenuKey, Event, EventKind, NewEvent, PresentationRequest, ServerMessage,
+    TerminalStateSummary,
 };
+use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{RwLock, broadcast, oneshot, watch};
 use tracing::{error, info, warn};
@@ -44,6 +49,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 128;
 
 #[derive(Clone)]
 struct AppState {
+    started_at: DateTime<Utc>,
     current: Arc<RwLock<BtsState>>,
     registry: Arc<RwLock<AddonRegistry>>,
     terminals: TerminalRegistry,
@@ -140,6 +146,7 @@ impl CoreServer {
         );
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let state = AppState {
+            started_at: Utc::now(),
             current: Arc::new(RwLock::new(BtsState::default())),
             registry: Arc::new(RwLock::new(AddonRegistry::default())),
             terminals: self.services.terminals,
@@ -189,6 +196,10 @@ impl CoreServer {
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route(CORE_API_DISCOVERY_PATH, get(api_discovery))
+        .route(CORE_ADMIN_STATUS_PATH, get(administrative_status))
+        .route(CORE_ADMIN_STATE_PATH, get(administrative_state))
+        .route("/api/v1/admin/{*path}", any(administrative_not_found))
         .route(CORE_STATE_PATH, get(get_state))
         .route(CORE_ADDONS_PATH, get(get_addons))
         .route(CORE_TELEPHONY_TARGETS_PATH, get(get_telephony_targets))
@@ -250,6 +261,64 @@ fn spawn_terminal_expiry(
 
 async fn health() -> &'static str {
     "BTS Core is online\n"
+}
+
+fn product_version() -> semver::Version {
+    semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .expect("the workspace package version is valid SemVer")
+}
+
+async fn api_discovery() -> Json<ApiDiscovery> {
+    Json(ApiDiscovery {
+        product: "bts-core".to_owned(),
+        product_version: product_version(),
+        administrative_api: AdministrativeApiCompatibility {
+            current: CORE_API_VERSION,
+            supported: BTreeSet::from([CORE_API_VERSION]),
+            base_path: bts_protocol::core::CORE_ADMIN_BASE_PATH.to_owned(),
+        },
+    })
+}
+
+async fn administrative_status(State(state): State<AppState>) -> Json<CoreStatusResource> {
+    Json(CoreStatusResource {
+        status: CoreOperationalStatus::Ready,
+        product_version: product_version(),
+        administrative_api_version: CORE_API_VERSION,
+        started_at: state.started_at,
+    })
+}
+
+async fn administrative_state(State(state): State<AppState>) -> Json<CoreStateResource> {
+    let captured_at = Utc::now();
+    let current = state.current.read().await.clone();
+    let terminals = state.terminals.routing_snapshot(std::time::Instant::now());
+    Json(CoreStateResource {
+        captured_at,
+        state: current,
+        terminals: TerminalStateSummary {
+            registered: terminals.definitions.len(),
+            online: terminals.presences.len(),
+            groups: terminals.groups.len(),
+        },
+    })
+}
+
+async fn administrative_not_found() -> (StatusCode, Json<AdministrativeErrorResponse>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(AdministrativeErrorResponse {
+            error: AdministrativeError {
+                category: AdministrativeErrorCategory::NotFound,
+                code: AdministrativeErrorCode::new("administrative_route_not_found")
+                    .expect("the static administrative error code is valid"),
+                message: "The requested administrative resource was not found".to_owned(),
+                resource: None,
+                reference: None,
+                candidates: Vec::new(),
+            },
+        }),
+    )
 }
 
 async fn get_telephony_targets(
