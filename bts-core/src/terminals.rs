@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result as AnyResult, bail};
+pub use bts_protocol::{DescriptionError, TerminalDescription};
 use bts_protocol::{
     GroupId, GroupIdentity, GroupName, ProtocolVersion, RegistrationRejection,
     RegistrationRejectionReason, TerminalCapabilities, TerminalConnectionId, TerminalEvent,
@@ -19,7 +20,7 @@ use bts_protocol::{
     TerminalRuntimeDiagnostics, TerminalTag,
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -31,7 +32,6 @@ pub const DEFAULT_EXPIRY_INTERVAL: Duration = Duration::from_secs(30);
 
 const TERMINAL_STATE_SCHEMA_VERSION: u16 = 2;
 const CHANGE_CHANNEL_CAPACITY: usize = 128;
-const MAX_DESCRIPTION_LENGTH: usize = 500;
 
 /// A durable terminal definition. Group and tag membership is retained here but
 /// will be administered by the later terminal-management slice.
@@ -53,56 +53,6 @@ pub struct TerminalDefinition {
     #[serde(default)]
     pub last_reported_protocol_version: Option<ProtocolVersion>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct TerminalDescription(String);
-
-impl TerminalDescription {
-    pub fn new(value: impl Into<String>) -> Result<Self, DescriptionError> {
-        let value = value.into();
-        let characters = value.chars().count();
-        if (1..=MAX_DESCRIPTION_LENGTH).contains(&characters)
-            && value.trim() == value
-            && !value.chars().any(char::is_control)
-        {
-            Ok(Self(value))
-        } else {
-            Err(DescriptionError { value })
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for TerminalDescription {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DescriptionError {
-    value: String,
-}
-
-impl std::fmt::Display for DescriptionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "terminal description must be 1-{MAX_DESCRIPTION_LENGTH} characters, have no surrounding whitespace and contain no control characters: {:?}",
-            self.value
-        )
-    }
-}
-
-impl std::error::Error for DescriptionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalGroup {
@@ -655,7 +605,7 @@ impl TerminalRegistry {
             TerminalEventKind::MetadataChanged {
                 terminal_id: terminal_id.clone(),
                 change: TerminalMetadataChange::DescriptionChanged {
-                    description: description.map(|value| value.0),
+                    description: description.map(|value| value.as_str().to_owned()),
                 },
             },
         )
@@ -1529,7 +1479,7 @@ mod tests {
             "".to_owned(),
             " padded".to_owned(),
             "two\nlines".to_owned(),
-            "x".repeat(MAX_DESCRIPTION_LENGTH + 1),
+            "x".repeat(501),
         ] {
             assert!(TerminalDescription::new(invalid).is_err());
         }
