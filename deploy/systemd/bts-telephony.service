@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=bts
 Group=bts
-EnvironmentFile=-/etc/bts/bts.env
+Environment=RUST_LOG=info
 EnvironmentFile=-/etc/bts/telephony.env
 ExecCondition=/usr/bin/sh -c '[ -f /etc/bts/telephony.env ] && grep -Eq "^BTS_ARI_PASSWORD=[^[:space:]]+$" /etc/bts/telephony.env && ! grep -Eq "^BTS_ARI_PASSWORD=CHANGE_ME$" /etc/bts/telephony.env'
 ExecStart=/usr/lib/bts/components/telephony/current/bin/bts-telephony

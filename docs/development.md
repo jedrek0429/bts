@@ -93,7 +93,7 @@ BTS_TERMINAL_NAME="Development Display" \
   cage -- cargo run -p bts-display
 ```
 
-Components connect to Core through environment variables and do not need to run on the same host:
+Components connect to Core through their own environment variables and do not need to run on the same host. Do not source these as one shared block; `BTS_CORE_WS_URL`, in particular, names different endpoints for Addons and Display:
 
 ```env
 BTS_CORE_URL=http://127.0.0.1:3100
@@ -107,22 +107,40 @@ BTS_ADDON_DATA_ROOT=/var/lib/bts/addons
 
 Do not commit real ARI credentials.
 
-## Reusable tmux session
+## Reusable native sessions
 
-Copy the development environment template:
-
-```sh
-mkdir -p ~/.config/bts
-cp deploy/bts-dev.env.example ~/.config/bts/dev.env
-```
-
-Edit any ARI settings, then start the session:
+Create component-specific development files as needed:
 
 ```sh
-./scripts/bts-tmux
+mkdir -p ~/.config/bts/dev
+cp deploy/dev/core.env.example ~/.config/bts/dev/core.env
+cp deploy/dev/addons.env.example ~/.config/bts/dev/addons.env
+cp deploy/dev/telephony.env.example ~/.config/bts/dev/telephony.env
+cp deploy/dev/display.env.example ~/.config/bts/dev/display-bedroom.env
 ```
 
-The launcher starts Core, Addons and Telephony. It can maintain an optional SSH tunnel to a remote ARI endpoint. It deliberately does not start Display. If `BTS_ARI_PASSWORD` is absent, the Telephony pane requests it without echoing or saving it. An existing session is reused; recreate it after changing configuration.
+Each tmux pane sources only its own file. Missing Core, Addons and Telephony files use loopback development defaults; Display requires explicit identity in a named file. State is isolated under `${XDG_STATE_HOME:-~/.local/state}/bts/dev/SESSION`, including Core's terminal registry and Addons data.
+
+Select individual components or a reusable profile:
+
+```sh
+scripts/bts-dev up core
+scripts/bts-dev up core addons
+scripts/bts-dev up telephony
+scripts/bts-dev up voice
+scripts/bts-dev up display:bedroom
+scripts/bts-dev status core
+```
+
+`core` never reads Telephony configuration and needs no Asterisk or ARI credentials. Addons and Telephony may be selected independently and wait for their configured Core endpoint. Only a Telephony selection reads ARI settings, prompts for an omitted password, or creates the optional SSH tunnel configured by `BTS_ARI_SSH_HOST`. Readiness is ordered deterministically as Core, Addons, ARI tunnel, Telephony and named Displays.
+
+The launcher reports the resolved components, configuration files and state directory. A matching existing session is reused; a session with a mismatched or unknown selection is rejected. Kill a session with `tmux kill-session -t SESSION` before applying configuration changes. `scripts/bts-tmux` remains a compatibility entry point and selects the `all` profile when invoked without arguments.
+
+Profiles are plain component lists in `deploy/dev/profiles/*.components`. This is the extension point for later headless-terminal profiles; #50 does not include the #34 simulator or two-terminal acceptance harness. `BTS_DEV_PROFILE_DIR`, `BTS_DEV_CONFIG_DIR`, `BTS_DEV_STATE_DIR` and `BTS_DEV_SESSION` provide explicit test or parallel-worktree isolation.
+
+The old `~/.config/bts/dev.env` is deliberately not loaded because values such as `RUST_LOG` and `BTS_CORE_WS_URL` cannot be copied safely to every component. To migrate, move Core values to `core.env`, Addons HTTP/event-stream values to `addons.env`, ARI and `BTS_CORE_URL` values to `telephony.env`, and terminal identity plus the terminal WebSocket endpoint to a named `display-NAME.env`; then remove `dev.env`. The launcher reports this migration whenever the legacy file remains.
+
+Display is still a native graphical process. Running it through the launcher does not verify Cage, DRM, Wayland, TTY, input devices or physical display hardware; those checks remain manual.
 
 ## Core development endpoints
 
@@ -148,6 +166,7 @@ CI additionally runs ShellCheck, release-asset consistency tests and `systemd-an
 shellcheck \
   scripts/build-release \
   scripts/build-component-bundle \
+  scripts/bts-dev \
   scripts/bts-tmux \
   scripts/test-bts-tmux.sh \
   scripts/test-release-assets.sh \

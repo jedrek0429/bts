@@ -31,15 +31,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Start Core, Addons and Telephony in a reusable development session:
+Start only the native components needed in a reusable development session:
 
 ```sh
-mkdir -p ~/.config/bts
-cp deploy/bts-dev.env.example ~/.config/bts/dev.env
-./scripts/bts-tmux
+mkdir -p ~/.config/bts/dev
+cp deploy/dev/core.env.example ~/.config/bts/dev/core.env
+./scripts/bts-dev up core
 ```
 
-The launcher does not start Display. The [development guide](docs/development.md) covers prerequisites, local release bundles, installer testing and individual processes.
+Use the `voice` profile for Core, Addons and Telephony, or launch a named native Display separately. The [development guide](docs/development.md) covers component files, profiles, migration, local release bundles and hardware boundaries.
 
 ## Licence
 

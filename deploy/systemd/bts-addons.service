@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=bts
 Group=bts
-EnvironmentFile=-/etc/bts/bts.env
+Environment=RUST_LOG=info
 EnvironmentFile=-/etc/bts/addons.env
 ExecStart=/usr/lib/bts/components/addons/current/bin/bts-addons
 Restart=always

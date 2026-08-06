@@ -120,7 +120,7 @@ Installer state is stored at `/var/lib/bts-install/state.json` with mode `0600`.
 
 ## Configuration
 
-Services load a shared non-secret `/etc/bts/bts.env` and one optional component file:
+Each service loads only its authoritative component file:
 
 ```text
 /etc/bts/core.env
@@ -129,7 +129,17 @@ Services load a shared non-secret `/etc/bts/bts.env` and one optional component 
 /etc/bts/addons.env
 ```
 
+Every unit sets `RUST_LOG=info` before loading its component file, so `RUST_LOG` in that file may override the safe default. Core addresses live only with the consuming component. No service loads `/etc/bts/bts.env`.
+
 Installer-written files use mode `0640` in the traversable, non-writable `/etc/bts` directory. Server component files are owned by `root:bts`; Display configuration is owned by `root:bts-display`, so a display-only host needs no unrelated service account. Interactive Telephony configuration reads and confirms the ARI password without echoing it. Automation uses `--secret-file` (with no group or other access) or `--secret-fd`; password command arguments are deliberately unsupported. ARI validation distinguishes unreachable endpoints, rejected authentication, malformed configuration and successful responses before configuration replacement or service restart.
+
+### Migration from `/etc/bts/bts.env`
+
+The first mutating installer operation plans a component-scoped migration before replacing a service unit. Uniquely owned settings move into the installed component's file without overwriting a different existing value. `BTS_CORE_WS_URL` is assigned only when its versioned path identifies either the Display terminal stream or the Addons event stream. The legacy file is removed only after all authoritative files have been written with their service ownership and permissions.
+
+Ambiguous values are never copied broadly. The old packaged `RUST_LOG=info` is consumed because it exactly matches every new unit default; a customised shared `RUST_LOG` with several installed components, an unknown setting, an endpoint without a recognised path, a setting for an uninstalled component, or a conflict with an existing component file stops the operation and retains `bts.env`. Move the value explicitly to each intended component file and retry. `bts-install doctor` reports both migratable and ambiguous legacy configuration. A single-component installation can migrate a customised `RUST_LOG` unambiguously.
+
+Removal without `--purge` preserves the removed component's file. Purging removes only that component file; it never removes another component's settings. Legacy configuration is migrated before removal so uninstalling one component cannot discard settings belonging to another.
 
 Configure Telephony interactively:
 

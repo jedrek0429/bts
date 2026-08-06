@@ -9,6 +9,91 @@ use std::{
 use anyhow::{Context, Result, ensure};
 
 use crate::cli::SecretInput;
+use crate::model::Component;
+
+pub type ComponentEnvironments = BTreeMap<Component, BTreeMap<String, String>>;
+
+pub fn plan_legacy_environment_migration(
+    root: &Path,
+    installed: &std::collections::BTreeSet<Component>,
+) -> Result<Option<ComponentEnvironments>> {
+    let legacy = root.join("etc/bts/bts.env");
+    if !legacy.exists() {
+        return Ok(None);
+    }
+    let shared =
+        parse_environment(&fs::read_to_string(&legacy).with_context(|| {
+            format!("Could not read legacy configuration {}", legacy.display())
+        })?)?;
+    let mut migrated = ComponentEnvironments::new();
+    for component in installed {
+        let path = root.join("etc/bts").join(component.config_name());
+        let values = if path.exists() {
+            parse_environment(&fs::read_to_string(&path)?)?
+        } else {
+            BTreeMap::new()
+        };
+        migrated.insert(*component, values);
+    }
+    for (key, value) in shared {
+        let Some(component) = legacy_owner(&key, &value, installed)? else {
+            continue;
+        };
+        let destination = migrated.get_mut(&component).with_context(|| {
+            format!("Legacy setting {key} belongs to uninstalled component {component}.")
+        })?;
+        if let Some(current) = destination.get(&key) {
+            ensure!(
+                current == &value,
+                "Legacy setting {key} conflicts with {}. Resolve the values before upgrading.",
+                component.config_name()
+            );
+        } else {
+            destination.insert(key, value);
+        }
+    }
+    Ok(Some(migrated))
+}
+
+fn legacy_owner(
+    key: &str,
+    value: &str,
+    installed: &std::collections::BTreeSet<Component>,
+) -> Result<Option<Component>> {
+    let owner = match key {
+        "BTS_CORE_BIND" | "BTS_CORE_TERMINAL_STATE_PATH" => Component::Core,
+        "BTS_TERMINAL_ID" | "BTS_TERMINAL_NAME" | "BTS_CAGE_ARGS" | "BTS_DISPLAY_TTY"
+        | "BTS_CABIN_FONT" | "WLR_DRM_DEVICES" => Component::Display,
+        "BTS_ARI_URL" | "BTS_ARI_USERNAME" | "BTS_ARI_PASSWORD" | "BTS_CORE_URL" => {
+            Component::Telephony
+        }
+        "BTS_CORE_HTTP_URL" | "BTS_ADDON_DATA_ROOT" => Component::Addons,
+        "BTS_CORE_WS_URL" if value.contains(bts_compat::CORE_TERMINALS_WEBSOCKET_PATH) => {
+            Component::Display
+        }
+        "BTS_CORE_WS_URL" if value.contains(bts_compat::CORE_EVENTS_WEBSOCKET_PATH) => {
+            Component::Addons
+        }
+        "BTS_CORE_WS_URL" => {
+            anyhow::bail!(
+                "Legacy BTS_CORE_WS_URL is ambiguous; move it explicitly to display.env or addons.env."
+            )
+        }
+        "RUST_LOG" if value == "info" => return Ok(None),
+        "RUST_LOG" if installed.len() == 1 => *installed.iter().next().unwrap(),
+        "RUST_LOG" => anyhow::bail!(
+            "Legacy RUST_LOG is shared by multiple components; move it to each intended component file."
+        ),
+        _ => anyhow::bail!(
+            "Legacy setting {key} has no unambiguous component owner; move it manually before upgrading."
+        ),
+    };
+    ensure!(
+        installed.contains(&owner),
+        "Legacy setting {key} belongs to uninstalled component {owner}; preserve it manually before upgrading."
+    );
+    Ok(Some(owner))
+}
 
 pub fn validate_websocket_url(value: &str) -> Result<()> {
     validate_websocket_url_for_path(value, bts_compat::CORE_EVENTS_WEBSOCKET_PATH)
@@ -320,5 +405,67 @@ mod tests {
         assert_eq!(values.get("BTS_ARI_PASSWORD").unwrap(), "secret");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_secret_input(&SecretInput::File(path)).is_err());
+    }
+
+    #[test]
+    fn legacy_settings_migrate_only_to_their_unambiguous_component() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(
+            root.path().join("etc/bts/bts.env"),
+            concat!(
+                "BTS_CORE_BIND=127.0.0.1:3100\n",
+                "BTS_CORE_HTTP_URL=http://core:3100\n",
+                "BTS_CORE_WS_URL=ws://core:3100/api/v1/events/ws\n",
+            ),
+        )
+        .unwrap();
+        let plan = plan_legacy_environment_migration(
+            root.path(),
+            &[Component::Core, Component::Addons].into(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan[&Component::Core]["BTS_CORE_BIND"], "127.0.0.1:3100");
+        assert_eq!(
+            plan[&Component::Addons]["BTS_CORE_WS_URL"],
+            "ws://core:3100/api/v1/events/ws"
+        );
+        assert!(!plan[&Component::Core].contains_key("BTS_CORE_HTTP_URL"));
+    }
+
+    #[test]
+    fn legacy_migration_rejects_shared_or_conflicting_values() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(root.path().join("etc/bts/bts.env"), "RUST_LOG=debug\n").unwrap();
+        let installed = [Component::Core, Component::Addons].into();
+        assert!(plan_legacy_environment_migration(root.path(), &installed).is_err());
+
+        fs::write(
+            root.path().join("etc/bts/bts.env"),
+            "BTS_CORE_BIND=127.0.0.1:3100\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/bts/core.env"),
+            "BTS_CORE_BIND=0.0.0.0:3100\n",
+        )
+        .unwrap();
+        assert!(plan_legacy_environment_migration(root.path(), &installed).is_err());
+    }
+
+    #[test]
+    fn legacy_packaged_log_default_is_consumed_without_broad_copying() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(root.path().join("etc/bts/bts.env"), "RUST_LOG=info\n").unwrap();
+        let plan = plan_legacy_environment_migration(
+            root.path(),
+            &[Component::Core, Component::Addons].into(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(plan.values().all(|values| !values.contains_key("RUST_LOG")));
     }
 }

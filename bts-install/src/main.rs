@@ -91,6 +91,7 @@ async fn run() -> Result<()> {
             )?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
+                migrate_legacy_configuration(&cli, &plan.after)?;
                 let mut next = state.unwrap_or_else(|| {
                     InstallerState::new(INSTALLER_VERSION, platform, architecture)
                 });
@@ -108,6 +109,7 @@ async fn run() -> Result<()> {
             let plan = InstallationPlan::add(current, components, platform, cli.no_start)?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
+                migrate_legacy_configuration(&cli, &plan.after)?;
                 let mut next = current.clone();
                 execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
                 next.selected_role = Some(Role::Custom);
@@ -123,6 +125,7 @@ async fn run() -> Result<()> {
             let plan = InstallationPlan::remove(current, components, platform, cli.purge)?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
+                migrate_legacy_configuration(&cli, &plan.before)?;
                 let mut next = current.clone();
                 execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
                 next.selected_role = Some(Role::Custom);
@@ -136,6 +139,14 @@ async fn run() -> Result<()> {
                 .as_mut()
                 .context("No managed BTS installation exists.")?;
             let selected = select_upgrade_components(current, components)?;
+            if !cli.dry_run {
+                migrate_legacy_configuration(&cli, &current.installed_components)?;
+            } else {
+                config::plan_legacy_environment_migration(
+                    &cli.root,
+                    &current.installed_components,
+                )?;
+            }
             require_display_migration_before_upgrade(&cli, &selected)?;
             upgrade(&cli, current, &selected, platform, architecture).await?;
             if !cli.dry_run {
@@ -147,6 +158,14 @@ async fn run() -> Result<()> {
                 .as_ref()
                 .context("No managed BTS installation exists.")?;
             let selected = choose_configuration_component(*component, current, &cli)?;
+            if !cli.dry_run {
+                migrate_legacy_configuration(&cli, &current.installed_components)?;
+            } else {
+                config::plan_legacy_environment_migration(
+                    &cli.root,
+                    &current.installed_components,
+                )?;
+            }
             configure_component(&cli, selected).await?;
         }
         Command::Uninstall(components) => {
@@ -161,10 +180,11 @@ async fn run() -> Result<()> {
             let plan = InstallationPlan::remove(current, &selected, platform, cli.purge)?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
+                migrate_legacy_configuration(&cli, &plan.before)?;
                 let mut next = current.clone();
                 execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
                 next.installed_components = plan.after.clone();
-                persist_uninstall_state(&cli, &state_path, &mut state, next)?;
+                persist_uninstall_state(&state_path, &mut state, next)?;
             }
         }
         _ => unreachable!(),
@@ -571,9 +591,6 @@ fn ensure_default_configuration(
     local_core_selected: bool,
 ) -> Result<()> {
     let path = rooted(&cli.root, &format!("/etc/bts/{}", component.config_name()));
-    if path.exists() && component != Component::Display {
-        return Ok(());
-    }
     let existing = if path.exists() {
         config::parse_environment(&fs::read_to_string(&path)?)?
     } else {
@@ -585,29 +602,64 @@ fn ensure_default_configuration(
             existing,
             local_core_selected.then_some(bts_compat::LOCAL_CORE_TERMINAL_WEBSOCKET_URL),
         )?,
-        Component::Telephony => BTreeMap::from([
-            ("BTS_ARI_URL".into(), "http://localhost:8088".into()),
-            ("BTS_ARI_USERNAME".into(), "bts".into()),
-            (
-                "BTS_CORE_URL".into(),
-                resolve_core_http(cli, local_core_selected)?,
-            ),
-        ]),
-        Component::Core => BTreeMap::from([("BTS_CORE_BIND".into(), "0.0.0.0:3100".into())]),
-        Component::Addons => BTreeMap::from([
-            (
-                "BTS_CORE_HTTP_URL".into(),
-                resolve_core_http(cli, local_core_selected)?,
-            ),
-            (
-                "BTS_CORE_WS_URL".into(),
-                resolve_core_websocket(cli, local_core_selected)?,
-            ),
-            ("BTS_ADDON_DATA_ROOT".into(), "/var/lib/bts/addons".into()),
-        ]),
+        Component::Telephony => {
+            let mut values = existing;
+            values
+                .entry("BTS_ARI_URL".into())
+                .or_insert_with(|| "http://localhost:8088".into());
+            values
+                .entry("BTS_ARI_USERNAME".into())
+                .or_insert_with(|| "bts".into());
+            if !values.contains_key("BTS_CORE_URL") {
+                values.insert(
+                    "BTS_CORE_URL".into(),
+                    resolve_core_http(cli, local_core_selected)?,
+                );
+            }
+            values
+        }
+        Component::Core => {
+            let mut values = existing;
+            values
+                .entry("BTS_CORE_BIND".into())
+                .or_insert_with(|| "0.0.0.0:3100".into());
+            values
+        }
+        Component::Addons => {
+            let mut values = existing;
+            if !values.contains_key("BTS_CORE_HTTP_URL") {
+                values.insert(
+                    "BTS_CORE_HTTP_URL".into(),
+                    resolve_core_http(cli, local_core_selected)?,
+                );
+            }
+            if !values.contains_key("BTS_CORE_WS_URL") {
+                values.insert(
+                    "BTS_CORE_WS_URL".into(),
+                    resolve_core_websocket(cli, local_core_selected)?,
+                );
+            }
+            values
+                .entry("BTS_ADDON_DATA_ROOT".into())
+                .or_insert_with(|| "/var/lib/bts/addons".into());
+            values
+        }
     };
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)
+}
+
+fn migrate_legacy_configuration(cli: &Cli, installed: &BTreeSet<Component>) -> Result<()> {
+    let Some(migration) = config::plan_legacy_environment_migration(&cli.root, installed)? else {
+        return Ok(());
+    };
+    for (component, values) in migration {
+        let path = rooted(&cli.root, &format!("/etc/bts/{}", component.config_name()));
+        config::write_secure(&path, &values)?;
+        secure_config_ownership(cli, &path, component)?;
+    }
+    fs::remove_file(rooted(&cli.root, "/etc/bts/bts.env"))?;
+    Ok(())
 }
 
 fn resolve_display_configuration(
@@ -1128,16 +1180,12 @@ fn remove_component(cli: &Cli, component: Component, purge: bool) -> Result<()> 
 }
 
 fn persist_uninstall_state(
-    cli: &Cli,
     state_path: &Path,
     state: &mut Option<InstallerState>,
     next: InstallerState,
 ) -> Result<()> {
     if next.installed_components.is_empty() {
         fs::remove_file(state_path).ok();
-        if cli.purge {
-            fs::remove_file(rooted(&cli.root, "/etc/bts/bts.env")).ok();
-        }
         *state = None;
     } else {
         next.write_atomic(state_path)?;
@@ -1507,14 +1555,11 @@ mod tests {
     #[test]
     fn uninstall_updates_in_memory_state() {
         let root = tempfile::tempdir().unwrap();
-        let mut cli = Cli::parse(["bts-install", "status"]).unwrap();
-        cli.root = root.path().into();
         let state_path = root.path().join("var/lib/bts-install/state.json");
         let installed = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
         let mut state = Some(installed);
 
         persist_uninstall_state(
-            &cli,
             &state_path,
             &mut state,
             InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64),
@@ -1525,7 +1570,7 @@ mod tests {
 
         let mut remaining = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
         remaining.installed_components.insert(Component::Core);
-        persist_uninstall_state(&cli, &state_path, &mut state, remaining).unwrap();
+        persist_uninstall_state(&state_path, &mut state, remaining).unwrap();
 
         assert!(
             state
@@ -1533,5 +1578,66 @@ mod tests {
                 .is_some_and(|value| value.installed_components.contains(&Component::Core))
         );
         assert!(state_path.exists());
+    }
+
+    #[test]
+    fn migration_writes_authoritative_component_files_then_removes_shared_file() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("etc/bts");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("bts.env"),
+            concat!(
+                "BTS_CORE_BIND=127.0.0.1:3100\n",
+                "BTS_CORE_HTTP_URL=http://core:3100\n",
+                "BTS_CORE_WS_URL=ws://core:3100/api/v1/events/ws\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("addons.env"),
+            "BTS_ADDON_DATA_ROOT=/srv/bts/addons\n",
+        )
+        .unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "status",
+            "--root",
+            root.path().to_str().unwrap(),
+        ])
+        .unwrap();
+
+        migrate_legacy_configuration(&cli, &[Component::Core, Component::Addons].into()).unwrap();
+
+        assert!(!directory.join("bts.env").exists());
+        let core =
+            config::parse_environment(&fs::read_to_string(directory.join("core.env")).unwrap())
+                .unwrap();
+        let addons =
+            config::parse_environment(&fs::read_to_string(directory.join("addons.env")).unwrap())
+                .unwrap();
+        assert_eq!(core["BTS_CORE_BIND"], "127.0.0.1:3100");
+        assert_eq!(addons["BTS_ADDON_DATA_ROOT"], "/srv/bts/addons");
+        assert_eq!(addons["BTS_CORE_HTTP_URL"], "http://core:3100");
+    }
+
+    #[test]
+    fn purge_removes_only_the_selected_component_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("etc/bts");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("core.env"), "BTS_CORE_BIND=0.0.0.0:3100\n").unwrap();
+        fs::write(
+            directory.join("addons.env"),
+            "BTS_CORE_HTTP_URL=http://core:3100\n",
+        )
+        .unwrap();
+        let mut cli = Cli::parse(["bts-install", "status"]).unwrap();
+        cli.root = root.path().into();
+
+        remove_component(&cli, Component::Addons, true).unwrap();
+
+        assert!(directory.join("core.env").exists());
+        assert!(!directory.join("addons.env").exists());
     }
 }
