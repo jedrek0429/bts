@@ -4,12 +4,15 @@ use bts_core::server::{CoreConfiguration, CoreServer, CoreServices};
 use bts_protocol::{
     DisplayState, EventKind, NewEvent, PresentationDeliveryOutcome, PresentationId,
     PresentationRejection, PresentationRejectionCode, PresentationRequest, ProtocolVersion,
-    RegistrationRejectionReason, ScreenKind, TargetScope, TerminalCapabilities,
-    TerminalClientMessage, TerminalEvent as ProtocolTerminalEvent, TerminalEventKind, TerminalId,
-    TerminalIdentity, TerminalImplementationId, TerminalName, TerminalRegistration,
-    TerminalRuntimeDiagnostics, TerminalTarget,
+    RegistrationRejectionReason, ScreenKind, TargetScope, TelephonyTargets, TerminalCapabilities,
+    TerminalCapability, TerminalClientMessage, TerminalEvent as ProtocolTerminalEvent,
+    TerminalEventKind, TerminalId, TerminalIdentity, TerminalImplementationId, TerminalName,
+    TerminalRegistration, TerminalRuntimeDiagnostics, TerminalTarget,
     addons::v1::{API_VERSION, AddonCapability, AddonId, AddonManifest, AddonVersion},
-    core::{CORE_EVENTS_PATH, CORE_TERMINAL_EVENTS_WEBSOCKET_PATH, CORE_TERMINALS_WEBSOCKET_PATH},
+    core::{
+        CORE_EVENTS_PATH, CORE_TELEPHONY_TARGETS_PATH, CORE_TERMINAL_EVENTS_WEBSOCKET_PATH,
+        CORE_TERMINALS_WEBSOCKET_PATH,
+    },
 };
 use bts_terminal::{
     ConnectionState, RuntimeDiagnostics, TerminalConfiguration, TerminalEvent, TerminalHandle,
@@ -121,7 +124,9 @@ fn terminal_configuration(url: &str, id: &str) -> TerminalConfiguration {
         TerminalName::new(format!("{id} terminal")).unwrap(),
         TerminalImplementationId::new("integration-terminal").unwrap(),
         Version::new(1, 2, 3),
-        TerminalCapabilities::default(),
+        TerminalCapabilities::new([
+            TerminalCapability::new(TerminalCapability::RENDER_TEXT).unwrap()
+        ]),
     )
     .unwrap()
     .with_runtime_diagnostics(
@@ -196,6 +201,26 @@ async fn production_runtime_routes_and_completes_real_presentations() {
         TerminalRuntime::spawn(terminal_configuration(&core.terminal_url, "bravo")).unwrap();
     let alpha_connection = next_registered(&alpha);
     next_registered(&bravo);
+
+    let targets = reqwest::Client::new()
+        .get(format!("{}{}", core.http_url, CORE_TELEPHONY_TARGETS_PATH))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<TelephonyTargets>()
+        .await
+        .unwrap();
+    assert_eq!(
+        targets
+            .terminals
+            .iter()
+            .map(|target| target.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha terminal", "bravo terminal"]
+    );
+    assert!(targets.all.is_some());
 
     let presence = core.services.terminals.presence(&alpha_id).unwrap();
     assert_eq!(

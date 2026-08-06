@@ -86,6 +86,20 @@ An in-process host such as `bts-addons` registers the implementation with its ge
 
 Actions carry an opaque `ActionId` and JSON parameters. Core resolves and validates the registered owner, while the addon host dispatches the request only to that owner. Telephony retrieves manifests from `GET /api/v1/addons`, orders entries by `order` and digit, plays their prompts, and publishes the selected generic action. It has no addon-specific digit mapping.
 
+A telephony action carries its session's unresolved `TerminalTarget`. The addon
+host binds that value to the invocation's `AddonContext`; addons read
+`AddonContext::selected_target` rather than keeping a second current-terminal
+setting. In the built-in HTTP context, `show` and `update` become explicit
+targeted presentations when such a target is present. Cloned contexts retain
+the same immutable invocation target for background updates. Untargeted
+lifecycle and non-telephony contexts continue to use the existing lease path.
+An invocation-scoped `release` is intentionally a no-op because an explicit
+presentation has no restorable lease; it remains until a later presentation
+replaces it.
+
+Changing the telephony target emits no addon or presentation event. Only a
+subsequent action can cause the scoped context to submit a presentation.
+
 ## Displays and ownership
 
 `AddonContext::show` requests a new lease and returns its opaque `DisplayLeaseId`. Store that handle for a long-running screen. Use `update` with the same handle and `release` when finished. Core rejects updates from another addon or a stale lease. Lease ownership and priority are evaluated independently on every terminal. A higher numeric priority replaces a lower-priority screen on each affected terminal; updating a hidden lease changes what will later be restored. Releasing a visible lease restores the next terminal-local lease or blank, while release-all and addon shutdown remove only that addon's leases. An explicitly targeted presentation takes direct ownership of its accepted terminals and clears their legacy lease stacks, without changing unrelated terminals.

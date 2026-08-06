@@ -2,6 +2,7 @@
 
 use crate::{
     AssetRef, BtsState, DisplayLeaseId, DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind,
+    TerminalTarget,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -101,6 +102,11 @@ pub struct AddonManifest {
 pub struct ActionRequest {
     pub action: ActionId,
     pub parameters: serde_json::Value,
+    /// The mutable target selected by the originating telephony session.
+    ///
+    /// Non-telephony actions remain valid without session context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TerminalTarget>,
 }
 
 /// Transport-neutral services supplied to an addon by its host.
@@ -111,6 +117,10 @@ pub struct ActionRequest {
 pub trait AddonContext: Send + Sync {
     fn clone_box(&self) -> Box<dyn AddonContext>;
     fn addon_id(&self) -> &AddonId;
+    /// Returns the invocation-scoped telephony target, when one was supplied.
+    fn selected_target(&self) -> Option<&TerminalTarget> {
+        None
+    }
     async fn publish(&self, kind: EventKind) -> Result<()>;
     async fn state(&self) -> Result<BtsState>;
     async fn request_action(&self, action: ActionId, parameters: serde_json::Value) -> Result<()>;

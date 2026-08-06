@@ -74,7 +74,12 @@ impl Addons {
                 .registry
                 .addon(&id)
                 .expect("registered addon disappeared");
-            if let Err(error) = addon.handle_event(&self.context(&id), event).await {
+            let target = match &event.kind {
+                EventKind::ActionRequested { request } => request.target.clone(),
+                _ => None,
+            };
+            let context = self.context(&id).with_selected_target(target);
+            if let Err(error) = addon.handle_event(&context, event).await {
                 failures.push(failure(&id, "event handling", error));
             }
         }
@@ -115,7 +120,7 @@ mod tests {
         AddonVersion,
     };
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
     struct TestAddon {
@@ -174,6 +179,7 @@ mod tests {
                 request: ActionRequest {
                     action: ActionId::new("b.run"),
                     parameters: serde_json::Value::Null,
+                    target: None,
                 },
             },
         );
@@ -203,5 +209,48 @@ mod tests {
         assert_eq!(host.handle(&event).await.len(), 1);
         assert_eq!(a.load(Ordering::SeqCst), 1);
         assert_eq!(b.load(Ordering::SeqCst), 1);
+    }
+
+    struct TargetCapturingAddon {
+        seen: Arc<Mutex<Option<bts_protocol::TerminalTarget>>>,
+    }
+
+    #[async_trait]
+    impl Addon for TargetCapturingAddon {
+        fn manifest(&self) -> AddonManifest {
+            addon("target", "target.run", Arc::new(AtomicUsize::new(0)), false).manifest()
+        }
+
+        async fn handle_event(&self, context: &dyn AddonContext, _: &Event) -> Result<()> {
+            *self.seen.lock().unwrap() = context.selected_target().cloned();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn action_target_is_bound_to_the_invocation_context() {
+        let seen = Arc::new(Mutex::new(None));
+        let host = Addons {
+            registry: AddonRegistry::new(vec![Box::new(TargetCapturingAddon {
+                seen: seen.clone(),
+            })])
+            .unwrap(),
+            core_url: "http://127.0.0.1:1".into(),
+            data_root: PathBuf::new(),
+        };
+        let target = bts_protocol::TerminalTarget::all();
+        let event = Event::new(
+            "test",
+            EventKind::ActionRequested {
+                request: ActionRequest {
+                    action: ActionId::new("target.run"),
+                    parameters: serde_json::Value::Null,
+                    target: Some(target.clone()),
+                },
+            },
+        );
+
+        assert!(host.handle(&event).await.is_empty());
+        assert_eq!(*seen.lock().unwrap(), Some(target));
     }
 }

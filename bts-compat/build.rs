@@ -42,6 +42,7 @@ fn main() {
         r#"pub const CORE_API_VERSION: u16 = {core_api};
 pub const CORE_STATE_PATH: &str = "{core_prefix}/state";
 pub const CORE_ADDONS_PATH: &str = "{core_prefix}/addons";
+pub const CORE_TELEPHONY_TARGETS_PATH: &str = "{core_prefix}/telephony/targets";
 pub const CORE_ASSETS_PATH: &str = "{core_prefix}/assets";
 pub const CORE_ASSET_PATH: &str = "{core_prefix}/assets/{{asset_id}}";
 pub const CORE_EVENTS_PATH: &str = "{core_prefix}/events";
