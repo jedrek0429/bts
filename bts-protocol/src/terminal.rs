@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 const MAX_IDENTIFIER_LENGTH: usize = 64;
 const MAX_NAME_LENGTH: usize = 100;
+const MAX_DESCRIPTION_LENGTH: usize = 500;
 const MAX_IMPLEMENTATION_VERSION_LENGTH: usize = 64;
 const MAX_RUNTIME_DIAGNOSTICS: usize = 32;
 const MAX_DIAGNOSTIC_VALUE_LENGTH: usize = 256;
@@ -188,6 +189,57 @@ impl<'de> Deserialize<'de> for TerminalName {
         Self::new(value).map_err(serde::de::Error::custom)
     }
 }
+
+/// A terminal's optional operator-maintained description.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TerminalDescription(String);
+
+impl TerminalDescription {
+    pub fn new(value: impl Into<String>) -> Result<Self, DescriptionError> {
+        let value = value.into();
+        let characters = value.chars().count();
+        if (1..=MAX_DESCRIPTION_LENGTH).contains(&characters)
+            && value.trim() == value
+            && !value.chars().any(char::is_control)
+        {
+            Ok(Self(value))
+        } else {
+            Err(DescriptionError { value })
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for TerminalDescription {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescriptionError {
+    value: String,
+}
+
+impl fmt::Display for DescriptionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "terminal description must be 1-{MAX_DESCRIPTION_LENGTH} characters, have no surrounding whitespace and contain no control characters: {:?}",
+            self.value
+        )
+    }
+}
+
+impl Error for DescriptionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalIdentity {
