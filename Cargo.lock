@@ -304,6 +304,7 @@ dependencies = [
  "axum",
  "bts-addons",
  "bts-protocol",
+ "bts-sdk",
  "bts-telephony",
  "bts-terminal",
  "bts-terminal-simulator",
@@ -371,6 +372,20 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "bts-sdk"
+version = "0.3.0-dev.0"
+dependencies = [
+ "axum",
+ "bts-protocol",
+ "chrono",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

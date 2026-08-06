@@ -14,6 +14,7 @@ Components are independently deployable and communicate through the versioned co
 - [Migrate an implicit single display](docs/terminal-migration.md)
 - [Understand administrative crate boundaries](docs/administrative-architecture.md)
 - [Review the administrative API v1 contract](docs/administrative-api-v1.md)
+- [Use the Rust administrative SDK](docs/bts-sdk.md)
 - [Review the btscli v1 contract](docs/btscli-v1.md)
 - [Generate voice prompts](docs/voice-prompts.md)
 - [Release manifest and bundle format](docs/release-manifest-v1.md)

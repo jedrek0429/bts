@@ -1,8 +1,8 @@
 # Administrative API v1
 
-This document freezes the resource and wire contract for later Core and
-`bts-sdk` implementation. Defining a path here does not mean that the current
-Core serves it yet.
+This document freezes the resource and wire contract. Core currently serves
+discovery, status and state; the remaining terminal and group paths are
+reserved for their owning implementation issues.
 
 ## Discovery and versioning
 
@@ -10,6 +10,12 @@ Core serves it yet.
 including the Core product version and the exact supported administrative API
 versions. A consumer selects a version it supports and uses the advertised
 `base_path`; it must not guess paths from the product version.
+
+The v1 discovery DTO advertises one `base_path`, for `current`. Consequently,
+the initial SDK requires that its supported v1 is both current and present in
+the supported set. Advertising a path for a non-current concurrent version
+would require an additive discovery contract in a later issue; the SDK does
+not invent such a mapping.
 
 Administrative v1 uses `/api/v1/admin`. Its compatibility number comes from
 `compatibility.json` through `bts-compat`; documentation is not a second
