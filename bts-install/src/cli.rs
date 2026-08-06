@@ -29,6 +29,8 @@ Options:
   --core-url URL         Remote Core WebSocket URL for Display
   --core-http-url URL    Remote Core HTTP URL for Addons or Telephony
   --core-ws-url URL      Remote Core WebSocket URL for Display or Addons
+  --terminal-id ID       Stable terminal ID for Display
+  --terminal-name NAME   Suggested terminal name for Display
   --cage-args ARGS       Override Cage arguments for Display (default: -m last)
   --repository OWNER/REPO  Release repository (default: jedrek0429/bts)
   --channel CHANNEL      Release channel or explicit version tag (default: stable)
@@ -63,6 +65,8 @@ pub struct Cli {
     pub quiet: bool,
     pub core_http_url: Option<String>,
     pub core_ws_url: Option<String>,
+    pub terminal_id: Option<String>,
+    pub terminal_name: Option<String>,
     pub cage_args: Option<String>,
     pub secret_input: Option<SecretInput>,
     pub purge: bool,
@@ -116,6 +120,8 @@ impl Cli {
         let mut quiet = false;
         let mut core_http_url = None;
         let mut core_ws_url = None;
+        let mut terminal_id = None;
+        let mut terminal_name = None;
         let mut cage_args = None;
         let mut secret_input = None;
         let mut purge = false;
@@ -152,6 +158,8 @@ impl Cli {
                 "--purge" => purge = true,
                 "--core-url" | "--core-ws-url" => core_ws_url = Some(take_value(arg)?),
                 "--core-http-url" => core_http_url = Some(take_value("--core-http-url")?),
+                "--terminal-id" => terminal_id = Some(take_value("--terminal-id")?),
+                "--terminal-name" => terminal_name = Some(take_value("--terminal-name")?),
                 "--cage-args" => cage_args = Some(take_value("--cage-args")?),
                 "--secret-file" => {
                     if secret_input.is_some() {
@@ -221,12 +229,16 @@ impl Cli {
         }
         validate_options(
             &command,
-            no_start,
-            core_http_url.as_deref(),
-            core_ws_url.as_deref(),
-            cage_args.as_deref(),
-            secret_input.as_ref(),
-            purge,
+            &ValidationOptions {
+                no_start,
+                core_http_url: core_http_url.as_deref(),
+                core_ws_url: core_ws_url.as_deref(),
+                terminal_id: terminal_id.as_deref(),
+                terminal_name: terminal_name.as_deref(),
+                cage_args: cage_args.as_deref(),
+                secret: secret_input.as_ref(),
+                purge,
+            },
         )?;
         if !repository.contains('/') || repository.starts_with('/') || repository.ends_with('/') {
             bail!("--repository must use OWNER/REPOSITORY form.");
@@ -250,6 +262,8 @@ impl Cli {
             quiet,
             core_http_url,
             core_ws_url,
+            terminal_id,
+            terminal_name,
             cage_args,
             secret_input,
             purge,
@@ -270,6 +284,8 @@ impl Cli {
             quiet: false,
             core_http_url: None,
             core_ws_url: None,
+            terminal_id: None,
+            terminal_name: None,
             cage_args: None,
             secret_input: None,
             purge: false,
@@ -287,16 +303,19 @@ fn parse_components(values: &[String], required: bool) -> Result<Vec<Component>>
         .collect()
 }
 
-fn validate_options(
-    command: &Command,
+struct ValidationOptions<'a> {
     no_start: bool,
-    core_http_url: Option<&str>,
-    core_ws_url: Option<&str>,
-    cage_args: Option<&str>,
-    secret: Option<&SecretInput>,
+    core_http_url: Option<&'a str>,
+    core_ws_url: Option<&'a str>,
+    terminal_id: Option<&'a str>,
+    terminal_name: Option<&'a str>,
+    cage_args: Option<&'a str>,
+    secret: Option<&'a SecretInput>,
     purge: bool,
-) -> Result<()> {
-    if no_start
+}
+
+fn validate_options(command: &Command, options: &ValidationOptions<'_>) -> Result<()> {
+    if options.no_start
         && !matches!(
             command,
             Command::Install { .. } | Command::Add(_) | Command::Upgrade(_)
@@ -304,7 +323,7 @@ fn validate_options(
     {
         bail!("--no-start is only valid for install, add and upgrade.");
     }
-    if (core_http_url.is_some() || core_ws_url.is_some())
+    if (options.core_http_url.is_some() || options.core_ws_url.is_some())
         && !matches!(
             command,
             Command::Install { .. }
@@ -318,13 +337,26 @@ fn validate_options(
             "Core endpoint options are only valid while installing, adding or configuring a Core client component."
         );
     }
-    if cage_args.is_some() && !command_uses_display(command) {
+    if options.cage_args.is_some() && !command_uses_display(command) {
         bail!("--cage-args is only valid while installing, adding or configuring Display.");
     }
-    if let Some(value) = cage_args {
+    if (options.terminal_id.is_some() || options.terminal_name.is_some())
+        && !command_uses_display(command)
+    {
+        bail!(
+            "Terminal identity options are only valid while installing, adding or configuring Display."
+        );
+    }
+    if let Some(value) = options.terminal_id {
+        bts_protocol::TerminalId::new(value).context("--terminal-id is invalid")?;
+    }
+    if let Some(value) = options.terminal_name {
+        bts_protocol::TerminalName::new(value).context("--terminal-name is invalid")?;
+    }
+    if let Some(value) = options.cage_args {
         crate::config::validate_cage_args(value)?;
     }
-    if secret.is_some()
+    if options.secret.is_some()
         && !matches!(
             command,
             Command::Configure(None | Some(Component::Telephony))
@@ -332,7 +364,7 @@ fn validate_options(
     {
         bail!("Secure secret input is only valid when configuring Telephony.");
     }
-    if purge && !matches!(command, Command::Remove(_) | Command::Uninstall(_)) {
+    if options.purge && !matches!(command, Command::Remove(_) | Command::Uninstall(_)) {
         bail!("--purge is only valid for remove and uninstall.");
     }
     Ok(())
@@ -365,7 +397,11 @@ mod tests {
             "install",
             "display",
             "--core-url",
-            "ws://core/events",
+            "ws://core/api/v1/terminals/ws",
+            "--terminal-id",
+            "bedroom-display",
+            "--terminal-name",
+            "Bedroom",
             "--yes",
         ])
         .unwrap();
@@ -377,6 +413,8 @@ mod tests {
             }
         ));
         assert!(cli.yes);
+        assert_eq!(cli.terminal_id.as_deref(), Some("bedroom-display"));
+        assert_eq!(cli.terminal_name.as_deref(), Some("Bedroom"));
         let cli = parse(&[
             "bts-install",
             "configure",
@@ -447,6 +485,26 @@ mod tests {
             .is_err()
         );
         assert!(parse(&["bts-install", "install", "server", "--cage-args", "-s"]).is_err());
+        assert!(
+            parse(&[
+                "bts-install",
+                "install",
+                "server",
+                "--terminal-id",
+                "bedroom-display"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&[
+                "bts-install",
+                "install",
+                "display",
+                "--terminal-id",
+                "Bedroom Display"
+            ])
+            .is_err()
+        );
         assert!(
             parse(&[
                 "bts-install",

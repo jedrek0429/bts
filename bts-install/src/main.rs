@@ -136,6 +136,7 @@ async fn run() -> Result<()> {
                 .as_mut()
                 .context("No managed BTS installation exists.")?;
             let selected = select_upgrade_components(current, components)?;
+            require_display_migration_before_upgrade(&cli, &selected)?;
             upgrade(&cli, current, &selected, platform, architecture).await?;
             if !cli.dry_run {
                 current.write_atomic(&state_path)?;
@@ -570,28 +571,20 @@ fn ensure_default_configuration(
     local_core_selected: bool,
 ) -> Result<()> {
     let path = rooted(&cli.root, &format!("/etc/bts/{}", component.config_name()));
-    if path.exists() {
+    if path.exists() && component != Component::Display {
         return Ok(());
     }
+    let existing = if path.exists() {
+        config::parse_environment(&fs::read_to_string(&path)?)?
+    } else {
+        BTreeMap::new()
+    };
     let values = match component {
-        Component::Display => {
-            let core_url = match &cli.core_ws_url {
-                Some(value) => value.clone(),
-                None if local_core_selected => bts_compat::LOCAL_CORE_WEBSOCKET_URL.into(),
-                None if interactive(cli) => prompt("Remote Core WebSocket URL", "")?,
-                None => {
-                    bail!("Display-only installation requires --core-url in non-interactive mode.")
-                }
-            };
-            config::validate_websocket_url(&core_url)?;
-            let cage_args = cli.cage_args.clone().unwrap_or_else(|| "-m last".into());
-            config::validate_cage_args(&cage_args)?;
-            BTreeMap::from([
-                ("BTS_CORE_WS_URL".into(), core_url),
-                ("BTS_CAGE_ARGS".into(), cage_args),
-                ("BTS_DISPLAY_TTY".into(), "1".into()),
-            ])
-        }
+        Component::Display => resolve_display_configuration(
+            cli,
+            existing,
+            local_core_selected.then_some(bts_compat::LOCAL_CORE_TERMINAL_WEBSOCKET_URL),
+        )?,
         Component::Telephony => BTreeMap::from([
             ("BTS_ARI_URL".into(), "http://localhost:8088".into()),
             ("BTS_ARI_USERNAME".into(), "bts".into()),
@@ -615,6 +608,96 @@ fn ensure_default_configuration(
     };
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)
+}
+
+fn resolve_display_configuration(
+    cli: &Cli,
+    mut existing: BTreeMap<String, String>,
+    local_core_default: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
+    let core_default = existing
+        .get("BTS_CORE_WS_URL")
+        .map(String::as_str)
+        .or(local_core_default)
+        .unwrap_or("");
+    let core_url = match &cli.core_ws_url {
+        Some(value) => value.clone(),
+        None if interactive(cli) => prompt("Core terminal WebSocket URL", core_default)?,
+        None => existing
+            .get("BTS_CORE_WS_URL")
+            .cloned()
+            .or_else(|| local_core_default.map(str::to_owned))
+            .context("Display installation requires --core-url in non-interactive mode.")?,
+    };
+    let terminal_id = match &cli.terminal_id {
+        Some(value) => value.clone(),
+        None if interactive(cli) => prompt(
+            "Stable terminal ID",
+            existing
+                .get("BTS_TERMINAL_ID")
+                .map(String::as_str)
+                .unwrap_or(""),
+        )?,
+        None => existing
+            .get("BTS_TERMINAL_ID")
+            .cloned()
+            .context("Display installation requires --terminal-id in non-interactive mode.")?,
+    };
+    let terminal_name = match &cli.terminal_name {
+        Some(value) => value.clone(),
+        None if interactive(cli) => prompt(
+            "Suggested terminal name",
+            existing
+                .get("BTS_TERMINAL_NAME")
+                .map(String::as_str)
+                .unwrap_or(""),
+        )?,
+        None => existing
+            .get("BTS_TERMINAL_NAME")
+            .cloned()
+            .context("Display installation requires --terminal-name in non-interactive mode.")?,
+    };
+    let cage_args = match &cli.cage_args {
+        Some(value) => value.clone(),
+        None if interactive(cli) => prompt(
+            "Cage arguments",
+            existing
+                .get("BTS_CAGE_ARGS")
+                .map(String::as_str)
+                .unwrap_or("-m last"),
+        )?,
+        None => existing
+            .get("BTS_CAGE_ARGS")
+            .cloned()
+            .unwrap_or_else(|| "-m last".into()),
+    };
+
+    existing.insert("BTS_CORE_WS_URL".into(), core_url);
+    existing.insert("BTS_TERMINAL_ID".into(), terminal_id);
+    existing.insert("BTS_TERMINAL_NAME".into(), terminal_name);
+    existing.insert("BTS_CAGE_ARGS".into(), cage_args);
+    existing
+        .entry("BTS_DISPLAY_TTY".into())
+        .or_insert_with(|| "1".into());
+    config::validate_display(&existing)?;
+    config::validate_cage_args(existing.get("BTS_CAGE_ARGS").unwrap())?;
+    Ok(existing)
+}
+
+fn require_display_migration_before_upgrade(
+    cli: &Cli,
+    selected: &BTreeSet<Component>,
+) -> Result<()> {
+    if !selected.contains(&Component::Display) {
+        return Ok(());
+    }
+    let path = rooted(&cli.root, "/etc/bts/display.env");
+    let values = fs::read_to_string(&path)
+        .with_context(|| format!("Could not read {}", path.display()))
+        .and_then(|contents| config::parse_environment(&contents));
+    values.and_then(|values| config::validate_display(&values)).with_context(|| {
+        "Display configuration must be migrated before upgrade. Run 'sudo bts-install configure display' with the terminal endpoint, stable terminal ID and suggested name"
+    })
 }
 
 fn resolve_core_http(cli: &Cli, local_core_selected: bool) -> Result<String> {
@@ -646,45 +729,7 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
         .and_then(|value| config::parse_environment(&value).ok())
         .unwrap_or_default();
     let values = match component {
-        Component::Display => {
-            let url = match &cli.core_ws_url {
-                Some(url) => url.clone(),
-                None if interactive(cli) => prompt(
-                    "Remote Core WebSocket URL",
-                    existing
-                        .get("BTS_CORE_WS_URL")
-                        .map(String::as_str)
-                        .unwrap_or(bts_compat::LOCAL_CORE_WEBSOCKET_URL),
-                )?,
-                None => existing
-                    .get("BTS_CORE_WS_URL")
-                    .cloned()
-                    .context("BTS_CORE_WS_URL is not configured")?,
-            };
-            config::validate_websocket_url(&url)?;
-            let cage_args = match &cli.cage_args {
-                Some(value) => value.clone(),
-                None if interactive(cli) => prompt(
-                    "Cage arguments",
-                    existing
-                        .get("BTS_CAGE_ARGS")
-                        .map(String::as_str)
-                        .unwrap_or("-m last"),
-                )?,
-                None => existing
-                    .get("BTS_CAGE_ARGS")
-                    .cloned()
-                    .unwrap_or_else(|| "-m last".into()),
-            };
-            config::validate_cage_args(&cage_args)?;
-            let mut values = existing;
-            values.insert("BTS_CORE_WS_URL".into(), url);
-            values.insert("BTS_CAGE_ARGS".into(), cage_args);
-            values
-                .entry("BTS_DISPLAY_TTY".into())
-                .or_insert_with(|| "1".into());
-            values
-        }
+        Component::Display => resolve_display_configuration(cli, existing, None)?,
         Component::Telephony => {
             let mut values = if let Some(input) = &cli.secret_input {
                 config::read_secret_input(input)?
@@ -920,11 +965,11 @@ async fn extend_remote_diagnostics(
                 let url = values
                     .get("BTS_CORE_WS_URL")
                     .context("BTS_CORE_WS_URL is not configured")?;
-                config::validate_websocket_url(url)?;
+                config::validate_display(&values)?;
                 Ok(url
                     .replace("ws://", "http://")
                     .replace("wss://", "https://")
-                    .replace(bts_compat::CORE_EVENTS_WEBSOCKET_PATH, "/health"))
+                    .replace(bts_compat::CORE_TERMINALS_WEBSOCKET_PATH, "/health"))
             });
         match result {
             Ok(url) => {
@@ -1367,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    fn display_only_non_interactive_configuration_requires_remote_core() {
+    fn display_configuration_requires_identity_and_uses_terminal_endpoint() {
         let root = tempfile::tempdir().unwrap();
         let cli = Cli::parse([
             "bts-install",
@@ -1379,10 +1424,60 @@ mod tests {
         ])
         .unwrap();
         assert!(ensure_default_configuration(&cli, Component::Display, false).is_err());
+        assert!(ensure_default_configuration(&cli, Component::Display, true).is_err());
+        let cli = Cli::parse([
+            "bts-install",
+            "install",
+            "display",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--yes",
+            "--terminal-id",
+            "bedroom-display",
+            "--terminal-name",
+            "Bedroom",
+        ])
+        .unwrap();
         ensure_default_configuration(&cli, Component::Display, true).unwrap();
         let contents = fs::read_to_string(root.path().join("etc/bts/display.env")).unwrap();
-        assert!(contents.contains("ws://127.0.0.1:3100/api/v1/events/ws"));
+        assert!(contents.contains("ws://127.0.0.1:3100/api/v1/terminals/ws"));
+        assert!(contents.contains("BTS_TERMINAL_ID=\"bedroom-display\""));
+        assert!(contents.contains("BTS_TERMINAL_NAME=\"Bedroom\""));
         assert!(contents.contains("BTS_CAGE_ARGS=\"-m last\""));
+    }
+
+    #[test]
+    fn display_upgrade_requires_explicit_legacy_migration() {
+        let root = tempfile::tempdir().unwrap();
+        let config_directory = root.path().join("etc/bts");
+        fs::create_dir_all(&config_directory).unwrap();
+        fs::write(
+            config_directory.join("display.env"),
+            "BTS_CORE_WS_URL=ws://core:3100/api/v1/events/ws\n",
+        )
+        .unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "upgrade",
+            "display",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .unwrap();
+        let selected = BTreeSet::from([Component::Display]);
+        assert!(require_display_migration_before_upgrade(&cli, &selected).is_err());
+
+        fs::write(
+            config_directory.join("display.env"),
+            concat!(
+                "BTS_CORE_WS_URL=ws://core:3100/api/v1/terminals/ws\n",
+                "BTS_TERMINAL_ID=bedroom-display\n",
+                "BTS_TERMINAL_NAME=Bedroom\n",
+            ),
+        )
+        .unwrap();
+        require_display_migration_before_upgrade(&cli, &selected).unwrap();
     }
 
     #[test]

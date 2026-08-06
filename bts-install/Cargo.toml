@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 bts-compat.workspace = true
+bts-protocol = { path = "../bts-protocol" }
 hex.workspace = true
 libc.workspace = true
 reqwest.workspace = true
