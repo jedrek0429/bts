@@ -300,9 +300,13 @@ name = "bts-core"
 version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "bts-addons",
  "bts-protocol",
+ "bts-telephony",
  "bts-terminal",
+ "bts-terminal-simulator",
  "chrono",
  "futures-util",
  "reqwest",
@@ -395,6 +399,17 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.27.0",
  "uuid",
+]
+
+[[package]]
+name = "bts-terminal-simulator"
+version = "0.3.0-dev.0"
+dependencies = [
+ "anyhow",
+ "bts-protocol",
+ "bts-terminal",
+ "semver",
+ "serde_json",
 ]
 
 [[package]]
