@@ -31,6 +31,24 @@ fn display_unit_expands_installer_managed_cage_arguments() {
 }
 
 #[test]
+fn every_service_uses_only_its_component_environment_after_a_safe_default() {
+    for component in ["core", "display", "telephony", "addons"] {
+        let unit =
+            std::fs::read_to_string(format!("../deploy/systemd/bts-{component}.service")).unwrap();
+        assert!(!unit.contains("/etc/bts/bts.env"));
+        let default = unit.find("Environment=RUST_LOG=info").unwrap();
+        let component_file = unit
+            .find(&format!("EnvironmentFile=-/etc/bts/{component}.env"))
+            .unwrap();
+        assert!(
+            default < component_file,
+            "{component}.env must be able to override RUST_LOG"
+        );
+        assert_eq!(unit.matches("EnvironmentFile=").count(), 1);
+    }
+}
+
+#[test]
 fn local_release_reinstalls_and_reconciles_offline() {
     let temporary = tempdir().unwrap();
     let assets = temporary.path().join("assets");

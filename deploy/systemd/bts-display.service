@@ -11,8 +11,8 @@ After=getty@tty1.service
 Type=simple
 User=bts-display
 Group=bts-display
+Environment=RUST_LOG=info
 Environment="BTS_CAGE_ARGS=-m last"
-EnvironmentFile=-/etc/bts/bts.env
 EnvironmentFile=-/etc/bts/display.env
 Environment=XDG_RUNTIME_DIR=/run/bts-display
 Environment=HOME=/var/lib/bts-display

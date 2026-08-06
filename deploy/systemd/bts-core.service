@@ -7,7 +7,7 @@ After=network.target
 Type=simple
 User=bts
 Group=bts
-EnvironmentFile=-/etc/bts/bts.env
+Environment=RUST_LOG=info
 EnvironmentFile=-/etc/bts/core.env
 ExecStart=/usr/lib/bts/components/core/current/bin/bts-core
 Restart=on-failure
