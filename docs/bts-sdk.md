@@ -37,9 +37,10 @@ before joining the advertised base path with the resource name. The SDK sends
 its crate version and supported API version as request metadata. Its public
 `SdkMetadata` exposes the same versions to embedding applications.
 
-The resource-oriented `CoreApi` can grow terminal and group methods without
-changing construction or transport policy. Those methods are deliberately not
-present until their owning issues implement the matching Core resources.
+The resource-oriented `CoreApi` exposes typed terminal and group list, inspect,
+rename, tag, membership, create, forget and delete operations without changing
+construction or transport policy. Resource references are encoded as individual
+URL path segments and Core remains responsible for resolving IDs and names.
 The SDK re-exports the shared nested status and display-state enums used by its
 resource DTOs. This allows thin integrations such as `btscli state show` to
 inspect those DTOs without bypassing the SDK dependency boundary.

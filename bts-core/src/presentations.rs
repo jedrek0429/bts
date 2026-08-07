@@ -716,6 +716,14 @@ impl PresentationManager {
         self.lock().states.clone()
     }
 
+    /// Removes semantic state when an administrator forgets the definition.
+    pub fn forget_terminal_state(
+        &self,
+        terminal_id: &TerminalId,
+    ) -> Option<TerminalPresentationState> {
+        self.lock().states.remove(terminal_id)
+    }
+
     pub fn retained_delivery_count(&self) -> usize {
         self.lock().deliveries.len()
     }

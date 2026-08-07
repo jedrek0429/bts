@@ -13,5 +13,10 @@ pub use error::SdkError;
 
 pub use bts_protocol::{
     AdministrativeError, AdministrativeErrorCategory, ApiDiscovery, CoreOperationalStatus,
-    CoreStateResource, CoreStatusResource, DisplayState,
+    CoreStateResource, CoreStatusResource, CreateGroupRequest, DeletionResponse, DisplayState,
+    GroupId, GroupListResource, GroupName, GroupReference, GroupResource, MutationResponse,
+    RenameGroupRequest, RenameTerminalRequest, SetTerminalDescriptionRequest, TerminalDescription,
+    TerminalId, TerminalListResource, TerminalName, TerminalPresentationResource,
+    TerminalReference, TerminalResource, TerminalTag, UpdateGroupMembersRequest,
+    UpdateTerminalTagsRequest,
 };

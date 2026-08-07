@@ -11,32 +11,43 @@ use crate::presentations::{
     DEFAULT_ACKNOWLEDGEMENT_EXPIRY_INTERVAL, DEFAULT_ACKNOWLEDGEMENT_TIMEOUT, PresentationManager,
     PresentationOwner,
 };
-use crate::terminals::{DEFAULT_EXPIRY_INTERVAL, DEFAULT_PRESENCE_TIMEOUT, TerminalRegistry};
+use crate::terminals::{
+    DEFAULT_EXPIRY_INTERVAL, DEFAULT_PRESENCE_TIMEOUT, MutationOutcome, TerminalAdminError,
+    TerminalDefinition, TerminalGroup, TerminalPresence, TerminalRegistry,
+};
 use anyhow::Context;
 use axum::{
     Json, Router,
     body::Body,
     extract::{
         ConnectInfo, Path as AxumPath, State,
+        rejection::JsonRejection,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{StatusCode, header},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::core::{
-    CORE_ADDONS_PATH, CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH, CORE_API_DISCOVERY_PATH,
+    CORE_ADDONS_PATH, CORE_ADMIN_GROUP_MEMBERS_PATH, CORE_ADMIN_GROUP_NAME_PATH,
+    CORE_ADMIN_GROUP_PATH, CORE_ADMIN_GROUPS_PATH, CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH,
+    CORE_ADMIN_TERMINAL_DESCRIPTION_PATH, CORE_ADMIN_TERMINAL_NAME_PATH, CORE_ADMIN_TERMINAL_PATH,
+    CORE_ADMIN_TERMINAL_TAGS_PATH, CORE_ADMIN_TERMINALS_PATH, CORE_API_DISCOVERY_PATH,
     CORE_API_VERSION, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
     CORE_EVENTS_WEBSOCKET_PATH, CORE_STATE_PATH, CORE_TELEPHONY_TARGETS_PATH,
     CORE_TERMINAL_EVENTS_WEBSOCKET_PATH, CORE_TERMINALS_WEBSOCKET_PATH,
 };
 use bts_protocol::{
     AdministrativeApiCompatibility, AdministrativeError, AdministrativeErrorCategory,
-    AdministrativeErrorCode, AdministrativeErrorResponse, ApiDiscovery, AssetId, AssetRef,
-    AssetUpload, BtsState, CoreOperationalStatus, CoreStateResource, CoreStatusResource,
-    DisplayCommand, DtmfMenuKey, Event, EventKind, NewEvent, PresentationRequest, ServerMessage,
-    TerminalStateSummary,
+    AdministrativeErrorCode, AdministrativeErrorResponse, AdministrativeResourceKind, ApiDiscovery,
+    AssetId, AssetRef, AssetUpload, BtsState, CoreOperationalStatus, CoreStateResource,
+    CoreStatusResource, CreateGroupRequest, DeletionResponse, DisplayCommand, DtmfMenuKey, Event,
+    EventKind, GroupId, GroupListResource, GroupReference, GroupResource, MutationResponse,
+    NewEvent, PresentationRequest, RenameGroupRequest, RenameTerminalRequest, ResourceCandidate,
+    ServerMessage, SetTerminalDescriptionRequest, TerminalListResource, TerminalPresenceResource,
+    TerminalPresentationResource, TerminalReference, TerminalResource, TerminalStateSummary,
+    UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
 };
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -199,6 +210,30 @@ fn router(state: AppState) -> Router {
         .route(CORE_API_DISCOVERY_PATH, get(api_discovery))
         .route(CORE_ADMIN_STATUS_PATH, get(administrative_status))
         .route(CORE_ADMIN_STATE_PATH, get(administrative_state))
+        .route(CORE_ADMIN_TERMINALS_PATH, get(list_terminals))
+        .route(
+            CORE_ADMIN_TERMINAL_PATH,
+            get(get_terminal).delete(forget_terminal),
+        )
+        .route(
+            CORE_ADMIN_TERMINAL_NAME_PATH,
+            axum::routing::put(rename_terminal),
+        )
+        .route(
+            CORE_ADMIN_TERMINAL_DESCRIPTION_PATH,
+            axum::routing::put(set_terminal_description),
+        )
+        .route(
+            CORE_ADMIN_TERMINAL_TAGS_PATH,
+            axum::routing::patch(update_terminal_tags),
+        )
+        .route(CORE_ADMIN_GROUPS_PATH, get(list_groups).post(create_group))
+        .route(CORE_ADMIN_GROUP_PATH, get(get_group).delete(delete_group))
+        .route(CORE_ADMIN_GROUP_NAME_PATH, axum::routing::put(rename_group))
+        .route(
+            CORE_ADMIN_GROUP_MEMBERS_PATH,
+            axum::routing::patch(update_group_members),
+        )
         .route("/api/v1/admin/{*path}", any(administrative_not_found))
         .route(CORE_STATE_PATH, get(get_state))
         .route(CORE_ADDONS_PATH, get(get_addons))
@@ -302,6 +337,596 @@ async fn administrative_state(State(state): State<AppState>) -> Json<CoreStateRe
             groups: terminals.groups.len(),
         },
     })
+}
+
+async fn list_terminals(State(state): State<AppState>) -> Json<TerminalListResource> {
+    let snapshot = state.terminals.routing_snapshot(std::time::Instant::now());
+    Json(TerminalListResource {
+        terminals: snapshot
+            .definitions
+            .values()
+            .map(|definition| {
+                let presentation = state.presentations.terminal_state(&definition.identity.id);
+                terminal_resource(
+                    definition,
+                    snapshot.presences.get(&definition.identity.id),
+                    presentation.as_ref(),
+                )
+            })
+            .collect(),
+    })
+}
+
+async fn get_terminal(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+) -> Response {
+    let snapshot = state.terminals.routing_snapshot(std::time::Instant::now());
+    let terminal_id = match resolve_terminal(&snapshot.definitions, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    Json(terminal_resource(
+        snapshot
+            .definitions
+            .get(&terminal_id)
+            .expect("resolved terminal must exist"),
+        snapshot.presences.get(&terminal_id),
+        state.presentations.terminal_state(&terminal_id).as_ref(),
+    ))
+    .into_response()
+}
+
+async fn rename_terminal(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+    payload: Result<Json<RenameTerminalRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    let terminal_id = match resolve_terminal_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let outcome = match state.terminals.rename_terminal(&terminal_id, request.name) {
+        Ok(outcome) => outcome,
+        Err(error) => return registry_error(error).into_response(),
+    };
+    terminal_mutation_response(&state, &terminal_id, outcome)
+}
+
+async fn set_terminal_description(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+    payload: Result<Json<SetTerminalDescriptionRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    let terminal_id = match resolve_terminal_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let outcome = match state
+        .terminals
+        .set_terminal_description(&terminal_id, request.description)
+    {
+        Ok(outcome) => outcome,
+        Err(error) => return registry_error(error).into_response(),
+    };
+    terminal_mutation_response(&state, &terminal_id, outcome)
+}
+
+async fn update_terminal_tags(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+    payload: Result<Json<UpdateTerminalTagsRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    if !request.add.is_disjoint(&request.remove) {
+        return invalid_request("A terminal tag cannot be added and removed together")
+            .into_response();
+    }
+    let terminal_id = match resolve_terminal_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let outcome =
+        match state
+            .terminals
+            .update_terminal_tags(&terminal_id, &request.add, &request.remove)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => return registry_error(error).into_response(),
+        };
+    terminal_mutation_response(&state, &terminal_id, outcome)
+}
+
+async fn forget_terminal(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+) -> Response {
+    let terminal_id = match resolve_terminal_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let presentation = state.presentations.terminal_state(&terminal_id);
+    let definition = match state.terminals.forget_terminal(&terminal_id) {
+        Ok(definition) => definition,
+        Err(error) => return registry_error(error).into_response(),
+    };
+    state.presentations.forget_terminal_state(&terminal_id);
+    Json(DeletionResponse {
+        deleted: terminal_resource(&definition, None, presentation.as_ref()),
+    })
+    .into_response()
+}
+
+async fn list_groups(State(state): State<AppState>) -> Json<GroupListResource> {
+    Json(GroupListResource {
+        groups: state
+            .terminals
+            .groups()
+            .iter()
+            .map(group_resource)
+            .collect(),
+    })
+}
+
+async fn create_group(
+    State(state): State<AppState>,
+    payload: Result<Json<CreateGroupRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    let group_id = request.id.clone();
+    if let Err(error) = state.terminals.create_group(bts_protocol::GroupIdentity {
+        id: request.id,
+        name: request.name,
+    }) {
+        return registry_error(error).into_response();
+    }
+    let group = state
+        .terminals
+        .group(&group_id)
+        .expect("created group must exist");
+    (StatusCode::CREATED, Json(group_resource(&group))).into_response()
+}
+
+async fn get_group(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+) -> Response {
+    let snapshot = state.terminals.routing_snapshot(std::time::Instant::now());
+    let group_id = match resolve_group(&snapshot.groups, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    Json(group_resource(
+        snapshot
+            .groups
+            .get(&group_id)
+            .expect("resolved group must exist"),
+    ))
+    .into_response()
+}
+
+async fn rename_group(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+    payload: Result<Json<RenameGroupRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    let group_id = match resolve_group_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let outcome = match state.terminals.rename_group(&group_id, request.name) {
+        Ok(outcome) => outcome,
+        Err(error) => return registry_error(error).into_response(),
+    };
+    group_mutation_response(&state, &group_id, outcome)
+}
+
+async fn update_group_members(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+    payload: Result<Json<UpdateGroupMembersRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    if !request.add.is_disjoint(&request.remove) {
+        return invalid_request("A terminal cannot be added to and removed from a group together")
+            .into_response();
+    }
+    let group_id = match resolve_group_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let definitions = state
+        .terminals
+        .routing_snapshot(std::time::Instant::now())
+        .definitions;
+    let add = match resolve_terminal_set(&definitions, &request.add) {
+        Ok(ids) => ids,
+        Err(error) => return error.into_response(),
+    };
+    let remove = match resolve_terminal_set(&definitions, &request.remove) {
+        Ok(ids) => ids,
+        Err(error) => return error.into_response(),
+    };
+    if !add.is_disjoint(&remove) {
+        return invalid_request("A terminal cannot be added to and removed from a group together")
+            .into_response();
+    }
+    let outcome = match state
+        .terminals
+        .update_group_members(&group_id, &add, &remove)
+    {
+        Ok(outcome) => outcome,
+        Err(error) => return registry_error(error).into_response(),
+    };
+    group_mutation_response(&state, &group_id, outcome)
+}
+
+async fn delete_group(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+) -> Response {
+    let group_id = match resolve_group_reference(&state.terminals, &reference) {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let group = state
+        .terminals
+        .group(&group_id)
+        .expect("resolved group must exist");
+    if let Err(error) = state.terminals.delete_group(&group_id) {
+        return registry_error(error).into_response();
+    }
+    Json(DeletionResponse {
+        deleted: group_resource(&group),
+    })
+    .into_response()
+}
+
+fn terminal_mutation_response(
+    state: &AppState,
+    terminal_id: &bts_protocol::TerminalId,
+    outcome: MutationOutcome,
+) -> Response {
+    let definition = state
+        .terminals
+        .definition(terminal_id)
+        .expect("mutated terminal must exist");
+    let presence = state.terminals.presence(terminal_id);
+    let presentation = state.presentations.terminal_state(terminal_id);
+    Json(MutationResponse {
+        changed: outcome == MutationOutcome::Changed,
+        resource: terminal_resource(&definition, presence.as_ref(), presentation.as_ref()),
+    })
+    .into_response()
+}
+
+fn group_mutation_response(
+    state: &AppState,
+    group_id: &GroupId,
+    outcome: MutationOutcome,
+) -> Response {
+    let group = state
+        .terminals
+        .group(group_id)
+        .expect("mutated group must exist");
+    Json(MutationResponse {
+        changed: outcome == MutationOutcome::Changed,
+        resource: group_resource(&group),
+    })
+    .into_response()
+}
+
+fn terminal_resource(
+    definition: &TerminalDefinition,
+    presence: Option<&TerminalPresence>,
+    presentation: Option<&crate::presentations::TerminalPresentationState>,
+) -> TerminalResource {
+    TerminalResource {
+        id: definition.identity.id.clone(),
+        name: definition.identity.name.clone(),
+        description: definition.description.clone(),
+        implementation: definition.implementation.clone(),
+        approved_capabilities: definition.approved_capabilities.clone(),
+        tags: definition.tags.clone(),
+        groups: definition.groups.clone(),
+        first_seen: definition.first_seen,
+        last_seen: definition.last_seen,
+        presence: presence.map(|presence| {
+            let connected_elapsed = presence
+                .last_seen
+                .saturating_duration_since(presence.connected_at);
+            let connected_at = presence.last_seen_at
+                - chrono::Duration::from_std(connected_elapsed)
+                    .unwrap_or_else(|_| chrono::Duration::zero());
+            TerminalPresenceResource {
+                connected_at,
+                last_seen_at: presence.last_seen_at,
+                protocol_version: presence.protocol_version,
+                declared_capabilities: presence.declared_capabilities.clone(),
+                implementation_version: presence.implementation_version.clone(),
+                runtime_diagnostics: presence.runtime_diagnostics.clone(),
+            }
+        }),
+        presentation: presentation.map(|presentation| TerminalPresentationResource {
+            presentation_id: presentation.presentation_id,
+            generation: presentation.generation,
+            display: presentation.display.clone(),
+            source: presentation.owner.source.clone(),
+        }),
+    }
+}
+
+fn group_resource(group: &TerminalGroup) -> GroupResource {
+    GroupResource {
+        id: group.identity.id.clone(),
+        name: group.identity.name.clone(),
+        members: group.members.clone(),
+    }
+}
+
+fn resolve_terminal_reference(
+    registry: &TerminalRegistry,
+    reference: &str,
+) -> Result<bts_protocol::TerminalId, (StatusCode, Json<AdministrativeErrorResponse>)> {
+    resolve_terminal(
+        &registry
+            .routing_snapshot(std::time::Instant::now())
+            .definitions,
+        reference,
+    )
+}
+
+fn resolve_terminal(
+    definitions: &std::collections::BTreeMap<bts_protocol::TerminalId, TerminalDefinition>,
+    reference: &str,
+) -> Result<bts_protocol::TerminalId, (StatusCode, Json<AdministrativeErrorResponse>)> {
+    if TerminalReference::new(reference).is_err() {
+        return Err(invalid_request("The terminal reference is invalid"));
+    }
+    if let Ok(id) = bts_protocol::TerminalId::new(reference)
+        && definitions.contains_key(&id)
+    {
+        return Ok(id);
+    }
+    let matches = definitions
+        .values()
+        .filter(|definition| definition.identity.name.as_str() == reference)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [definition] => Ok(definition.identity.id.clone()),
+        [] => Err(reference_error(
+            AdministrativeResourceKind::Terminal,
+            reference,
+            Vec::new(),
+        )),
+        _ => Err(reference_error(
+            AdministrativeResourceKind::Terminal,
+            reference,
+            matches
+                .into_iter()
+                .map(|definition| ResourceCandidate {
+                    kind: AdministrativeResourceKind::Terminal,
+                    id: definition.identity.id.to_string(),
+                    name: definition.identity.name.to_string(),
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn resolve_terminal_set(
+    definitions: &std::collections::BTreeMap<bts_protocol::TerminalId, TerminalDefinition>,
+    references: &BTreeSet<TerminalReference>,
+) -> Result<BTreeSet<bts_protocol::TerminalId>, (StatusCode, Json<AdministrativeErrorResponse>)> {
+    references
+        .iter()
+        .map(|reference| resolve_terminal(definitions, reference.as_str()))
+        .collect()
+}
+
+fn resolve_group_reference(
+    registry: &TerminalRegistry,
+    reference: &str,
+) -> Result<GroupId, (StatusCode, Json<AdministrativeErrorResponse>)> {
+    resolve_group(
+        &registry.routing_snapshot(std::time::Instant::now()).groups,
+        reference,
+    )
+}
+
+fn resolve_group(
+    groups: &std::collections::BTreeMap<GroupId, TerminalGroup>,
+    reference: &str,
+) -> Result<GroupId, (StatusCode, Json<AdministrativeErrorResponse>)> {
+    if GroupReference::new(reference).is_err() {
+        return Err(invalid_request("The terminal group reference is invalid"));
+    }
+    if let Ok(id) = GroupId::new(reference)
+        && groups.contains_key(&id)
+    {
+        return Ok(id);
+    }
+    let matches = groups
+        .values()
+        .filter(|group| group.identity.name.as_str() == reference)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [group] => Ok(group.identity.id.clone()),
+        [] => Err(reference_error(
+            AdministrativeResourceKind::Group,
+            reference,
+            Vec::new(),
+        )),
+        _ => Err(reference_error(
+            AdministrativeResourceKind::Group,
+            reference,
+            matches
+                .into_iter()
+                .map(|group| ResourceCandidate {
+                    kind: AdministrativeResourceKind::Group,
+                    id: group.identity.id.to_string(),
+                    name: group.identity.name.to_string(),
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn reference_error(
+    kind: AdministrativeResourceKind,
+    reference: &str,
+    candidates: Vec<ResourceCandidate>,
+) -> (StatusCode, Json<AdministrativeErrorResponse>) {
+    let ambiguous = !candidates.is_empty();
+    let (status, category, code, message) = match (kind, ambiguous) {
+        (AdministrativeResourceKind::Terminal, false) => (
+            StatusCode::NOT_FOUND,
+            AdministrativeErrorCategory::NotFound,
+            AdministrativeErrorCode::TERMINAL_NOT_FOUND,
+            "No terminal matches the supplied reference",
+        ),
+        (AdministrativeResourceKind::Group, false) => (
+            StatusCode::NOT_FOUND,
+            AdministrativeErrorCategory::NotFound,
+            AdministrativeErrorCode::GROUP_NOT_FOUND,
+            "No terminal group matches the supplied reference",
+        ),
+        (AdministrativeResourceKind::Terminal, true) => (
+            StatusCode::CONFLICT,
+            AdministrativeErrorCategory::AmbiguousReference,
+            AdministrativeErrorCode::AMBIGUOUS_TERMINAL_REFERENCE,
+            "The terminal reference matches more than one display name",
+        ),
+        (AdministrativeResourceKind::Group, true) => (
+            StatusCode::CONFLICT,
+            AdministrativeErrorCategory::AmbiguousReference,
+            AdministrativeErrorCode::AMBIGUOUS_GROUP_REFERENCE,
+            "The terminal group reference matches more than one display name",
+        ),
+    };
+    administrative_error(
+        status,
+        category,
+        code,
+        message,
+        Some(kind),
+        Some(reference.to_owned()),
+        candidates,
+    )
+}
+
+fn invalid_json(error: JsonRejection) -> (StatusCode, Json<AdministrativeErrorResponse>) {
+    invalid_request(&format!(
+        "The administrative request body is invalid: {error}"
+    ))
+}
+
+fn invalid_request(message: &str) -> (StatusCode, Json<AdministrativeErrorResponse>) {
+    administrative_error(
+        StatusCode::BAD_REQUEST,
+        AdministrativeErrorCategory::InvalidInput,
+        AdministrativeErrorCode::INVALID_REQUEST,
+        message,
+        None,
+        None,
+        Vec::new(),
+    )
+}
+
+fn registry_error(error: TerminalAdminError) -> (StatusCode, Json<AdministrativeErrorResponse>) {
+    match error {
+        TerminalAdminError::TerminalNotFound(id) => reference_error(
+            AdministrativeResourceKind::Terminal,
+            id.as_str(),
+            Vec::new(),
+        ),
+        TerminalAdminError::GroupNotFound(id) => {
+            reference_error(AdministrativeResourceKind::Group, id.as_str(), Vec::new())
+        }
+        TerminalAdminError::TerminalOnline(id) => administrative_error(
+            StatusCode::CONFLICT,
+            AdministrativeErrorCategory::Conflict,
+            AdministrativeErrorCode::TERMINAL_ONLINE,
+            "An online terminal cannot be forgotten",
+            Some(AdministrativeResourceKind::Terminal),
+            Some(id.to_string()),
+            Vec::new(),
+        ),
+        TerminalAdminError::GroupAlreadyExists(id) => administrative_error(
+            StatusCode::CONFLICT,
+            AdministrativeErrorCategory::Conflict,
+            AdministrativeErrorCode::GROUP_ALREADY_EXISTS,
+            "A terminal group with this stable identifier already exists",
+            Some(AdministrativeResourceKind::Group),
+            Some(id.to_string()),
+            Vec::new(),
+        ),
+        TerminalAdminError::InvalidTag { value, detail } => administrative_error(
+            StatusCode::BAD_REQUEST,
+            AdministrativeErrorCategory::InvalidInput,
+            AdministrativeErrorCode::INVALID_REQUEST,
+            &format!("Invalid terminal tag {value:?}: {detail}"),
+            Some(AdministrativeResourceKind::Terminal),
+            None,
+            Vec::new(),
+        ),
+        TerminalAdminError::Persistence(error) => administrative_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdministrativeErrorCategory::ServerFailure,
+            AdministrativeErrorCode::INTERNAL,
+            &format!("Core could not persist the administrative change: {error}"),
+            None,
+            None,
+            Vec::new(),
+        ),
+    }
+}
+
+fn administrative_error(
+    status: StatusCode,
+    category: AdministrativeErrorCategory,
+    code: &str,
+    message: &str,
+    resource: Option<AdministrativeResourceKind>,
+    reference: Option<String>,
+    mut candidates: Vec<ResourceCandidate>,
+) -> (StatusCode, Json<AdministrativeErrorResponse>) {
+    candidates.sort_by(|left, right| left.id.cmp(&right.id));
+    (
+        status,
+        Json(AdministrativeErrorResponse {
+            error: AdministrativeError {
+                category,
+                code: AdministrativeErrorCode::new(code)
+                    .expect("the static administrative error code is valid"),
+                message: message.to_owned(),
+                resource,
+                reference,
+                candidates,
+            },
+        }),
+    )
 }
 
 async fn administrative_not_found() -> (StatusCode, Json<AdministrativeErrorResponse>) {

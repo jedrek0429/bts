@@ -1,8 +1,15 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{Json, Router, routing::get};
 use bts_cli::{
-    cli::{Cli, Command, StateCommand},
+    cli::{Cli, Command, GroupCommand, StateCommand, TerminalCommand, TerminalTagCommand},
     config::{ColourMode, Environment, OutputMode, ResolvedConfiguration},
     output::OutputStreams,
 };
@@ -21,7 +28,8 @@ fn installed_executable_is_named_btscli_and_help_is_successful() {
     assert!(stdout.contains("Usage: btscli"));
     assert!(stdout.contains("status"));
     assert!(stdout.contains("state"));
-    assert!(!stdout.contains("terminal list"));
+    assert!(stdout.contains("terminal"));
+    assert!(stdout.contains("group"));
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_btscli"))
         .args(["--output", "json", "state", "watch"])
@@ -105,6 +113,82 @@ fn state_resource() -> Value {
     })
 }
 
+fn terminal_resource() -> Value {
+    json!({
+        "id": "bedroom-display",
+        "name": "Bedroom",
+        "description": "Upstairs display",
+        "implementation": "bts-display",
+        "approved_capabilities": ["render_text"],
+        "tags": ["private"],
+        "groups": ["all-displays"],
+        "first_seen": "2026-08-07T08:00:00Z",
+        "last_seen": "2026-08-07T09:00:00Z"
+    })
+}
+
+fn group_resource() -> Value {
+    json!({
+        "id": "all-displays",
+        "name": "All displays",
+        "members": ["bedroom-display"]
+    })
+}
+
+fn administrative_app(deletes: Arc<AtomicUsize>) -> Router {
+    let delete_terminal = deletes.clone();
+    Router::new()
+        .route("/api", get(|| async { Json(discovery(1)) }))
+        .route(
+            "/api/v1/admin/terminals",
+            get(|| async { Json(json!({ "terminals": [terminal_resource()] })) }),
+        )
+        .route(
+            "/api/v1/admin/terminals/{terminal}",
+            get(|| async { Json(terminal_resource()) }).delete(move || {
+                let deletes = delete_terminal.clone();
+                async move {
+                    deletes.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "deleted": terminal_resource() }))
+                }
+            }),
+        )
+        .route(
+            "/api/v1/admin/terminals/{terminal}/name",
+            axum::routing::put(|| async {
+                Json(json!({ "changed": true, "resource": terminal_resource() }))
+            }),
+        )
+        .route(
+            "/api/v1/admin/terminals/{terminal}/tags",
+            axum::routing::patch(|| async {
+                Json(json!({ "changed": false, "resource": terminal_resource() }))
+            }),
+        )
+        .route(
+            "/api/v1/admin/groups",
+            get(|| async { Json(json!({ "groups": [group_resource()] })) })
+                .post(|| async { (axum::http::StatusCode::CREATED, Json(group_resource())) }),
+        )
+        .route(
+            "/api/v1/admin/groups/{group}",
+            get(|| async { Json(group_resource()) })
+                .delete(|| async { Json(json!({ "deleted": group_resource() })) }),
+        )
+        .route(
+            "/api/v1/admin/groups/{group}/name",
+            axum::routing::put(|| async {
+                Json(json!({ "changed": true, "resource": group_resource() }))
+            }),
+        )
+        .route(
+            "/api/v1/admin/groups/{group}/members",
+            axum::routing::patch(|| async {
+                Json(json!({ "changed": false, "resource": group_resource() }))
+            }),
+        )
+}
+
 fn compatible_app() -> Router {
     Router::new()
         .route("/api", get(|| async { Json(discovery(1)) }))
@@ -124,15 +208,37 @@ async fn invoke(
     stdout_is_terminal: bool,
     stderr_is_terminal: bool,
 ) -> (u8, String, String) {
+    invoke_with_input(
+        args,
+        environment,
+        "",
+        false,
+        stdout_is_terminal,
+        stderr_is_terminal,
+    )
+    .await
+}
+
+async fn invoke_with_input(
+    args: &[&str],
+    environment: &Environment,
+    input: &str,
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
+) -> (u8, String, String) {
     let cli = Cli::try_parse_from(args).unwrap();
+    let mut stdin = std::io::Cursor::new(input.as_bytes().to_vec());
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = bts_cli::execute(
         cli,
         environment,
         OutputStreams {
+            stdin: &mut stdin,
             stdout: &mut stdout,
             stderr: &mut stderr,
+            stdin_is_terminal,
             stdout_is_terminal,
             stderr_is_terminal,
         },
@@ -146,7 +252,7 @@ async fn invoke(
 }
 
 #[test]
-fn parsing_exposes_only_the_two_read_only_commands_and_global_options() {
+fn parsing_exposes_the_frozen_administrative_grammar_and_global_options() {
     let status = Cli::try_parse_from([
         "btscli",
         "status",
@@ -173,7 +279,41 @@ fn parsing_exposes_only_the_two_read_only_commands_and_global_options() {
     ));
 
     assert!(Cli::try_parse_from(["btscli", "state", "watch"]).is_err());
-    assert!(Cli::try_parse_from(["btscli", "terminal", "list"]).is_err());
+    assert!(matches!(
+        Cli::try_parse_from(["btscli", "terminal", "list"])
+            .unwrap()
+            .command,
+        Command::Terminal {
+            command: TerminalCommand::List
+        }
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["btscli", "terminal", "tag", "add", "bedroom", "private"])
+            .unwrap()
+            .command,
+        Command::Terminal {
+            command: TerminalCommand::Tag {
+                command: TerminalTagCommand::Add { .. }
+            }
+        }
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "btscli",
+            "group",
+            "create",
+            "all-displays",
+            "--name",
+            "All displays"
+        ])
+        .unwrap()
+        .command,
+        Command::Group {
+            command: GroupCommand::Create { .. }
+        }
+    ));
+    assert!(Cli::try_parse_from(["btscli", "terminal", "tag", "add", "bedroom"]).is_err());
+    assert!(Cli::try_parse_from(["btscli", "group", "add", "all-displays"]).is_err());
     assert!(Cli::try_parse_from(["btscli", "--quiet", "-v", "status"]).is_err());
 }
 
@@ -275,6 +415,121 @@ async fn state_show_human_output_is_useful_and_json_is_exact() {
         serde_json::from_str::<Value>(&stdout).unwrap(),
         state_resource()
     );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn terminal_and_group_commands_have_human_and_exact_json_output() {
+    let fixture = Fixture::spawn(administrative_app(Arc::new(AtomicUsize::new(0)))).await;
+    let environment = Environment::from_pairs([("BTS_CORE_URL", &fixture.core_url)]);
+
+    let (code, stdout, stderr) =
+        invoke(&["btscli", "terminal", "list"], &environment, false, false).await;
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("bedroom-display\tBedroom\toffline\tbts-display"));
+
+    let (code, stdout, stderr) = invoke(
+        &["btscli", "--output", "json", "terminal", "show", "Bedroom"],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap(),
+        terminal_resource()
+    );
+
+    let (code, stdout, _) = invoke(
+        &["btscli", "group", "show", "all-displays"],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Terminal group: All displays (all-displays)"));
+
+    let (code, stdout, _) = invoke(
+        &[
+            "btscli",
+            "--output",
+            "json",
+            "terminal",
+            "tag",
+            "add",
+            "bedroom-display",
+            "private",
+        ],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap()["changed"],
+        false
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn destructive_commands_require_confirmation_and_yes_only_skips_the_prompt() {
+    let deletes = Arc::new(AtomicUsize::new(0));
+    let fixture = Fixture::spawn(administrative_app(deletes.clone())).await;
+    let environment = Environment::from_pairs([("BTS_CORE_URL", &fixture.core_url)]);
+
+    let (code, stdout, stderr) = invoke(
+        &["btscli", "terminal", "forget", "bedroom-display"],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("requires --yes"));
+    assert_eq!(deletes.load(Ordering::SeqCst), 0);
+
+    let (code, stdout, stderr) = invoke(
+        &[
+            "btscli",
+            "--output",
+            "json",
+            "--yes",
+            "terminal",
+            "forget",
+            "bedroom-display",
+        ],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert_eq!(deletes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).unwrap()["deleted"]["id"],
+        "bedroom-display"
+    );
+
+    let (code, _, stderr) = invoke_with_input(
+        &["btscli", "group", "delete", "all-displays"],
+        &environment,
+        "no\n",
+        true,
+        false,
+        true,
+    )
+    .await;
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Delete terminal group All displays (all-displays)?"));
+    assert!(stderr.contains("was not confirmed"));
     fixture.stop().await;
 }
 

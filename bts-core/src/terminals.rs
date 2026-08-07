@@ -164,6 +164,7 @@ pub enum MutationOutcome {
 #[derive(Debug)]
 pub enum TerminalAdminError {
     TerminalNotFound(TerminalId),
+    TerminalOnline(TerminalId),
     GroupNotFound(GroupId),
     GroupAlreadyExists(GroupId),
     InvalidTag { value: String, detail: String },
@@ -174,6 +175,7 @@ impl std::fmt::Display for TerminalAdminError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TerminalNotFound(id) => write!(formatter, "terminal {id} does not exist"),
+            Self::TerminalOnline(id) => write!(formatter, "terminal {id} is online"),
             Self::GroupNotFound(id) => write!(formatter, "terminal group {id} does not exist"),
             Self::GroupAlreadyExists(id) => {
                 write!(formatter, "terminal group {id} already exists")
@@ -673,6 +675,89 @@ impl TerminalRegistry {
         )
     }
 
+    /// Applies a complete tag update after validating it as one atomic change.
+    pub fn update_terminal_tags(
+        &self,
+        terminal_id: &TerminalId,
+        add: &BTreeSet<TerminalTag>,
+        remove: &BTreeSet<TerminalTag>,
+    ) -> Result<MutationOutcome, TerminalAdminError> {
+        let mut state = self.lock();
+        let definition = state
+            .definitions
+            .get(terminal_id)
+            .ok_or_else(|| TerminalAdminError::TerminalNotFound(terminal_id.clone()))?;
+        let mut tags = definition.tags.clone();
+        tags.extend(add.iter().cloned());
+        for tag in remove {
+            tags.remove(tag);
+        }
+        if tags == definition.tags {
+            return Ok(MutationOutcome::Unchanged);
+        }
+        let mut definitions = state.definitions.clone();
+        definitions
+            .get_mut(terminal_id)
+            .expect("existing terminal definition must remain present")
+            .tags = tags;
+        let events = add
+            .iter()
+            .filter(|tag| !definition.tags.contains(*tag))
+            .cloned()
+            .map(|tag| TerminalEventKind::MetadataChanged {
+                terminal_id: terminal_id.clone(),
+                change: TerminalMetadataChange::TagAdded { tag },
+            })
+            .chain(
+                remove
+                    .iter()
+                    .filter(|tag| definition.tags.contains(*tag))
+                    .cloned()
+                    .map(|tag| TerminalEventKind::MetadataChanged {
+                        terminal_id: terminal_id.clone(),
+                        change: TerminalMetadataChange::TagRemoved { tag },
+                    }),
+            )
+            .collect();
+        self.commit_admin_changes(&mut state, definitions, None, events)
+    }
+
+    /// Forgets an offline durable definition and removes all group membership.
+    pub fn forget_terminal(
+        &self,
+        terminal_id: &TerminalId,
+    ) -> Result<TerminalDefinition, TerminalAdminError> {
+        let mut state = self.lock();
+        let definition = state
+            .definitions
+            .get(terminal_id)
+            .cloned()
+            .ok_or_else(|| TerminalAdminError::TerminalNotFound(terminal_id.clone()))?;
+        if state
+            .presences
+            .get(terminal_id)
+            .is_some_and(|presence| !is_stale(presence, Instant::now(), state.stale_after))
+        {
+            return Err(TerminalAdminError::TerminalOnline(terminal_id.clone()));
+        }
+        let mut definitions = state.definitions.clone();
+        definitions.remove(terminal_id);
+        let mut groups = state.groups.clone();
+        for group in groups.values_mut() {
+            group.members.remove(terminal_id);
+        }
+        persist_registry(
+            &state.path,
+            definitions.values().cloned(),
+            groups.values().cloned(),
+        )
+        .map_err(TerminalAdminError::Persistence)?;
+        state.presences.remove(terminal_id);
+        state.definitions = definitions;
+        state.groups = groups;
+        Ok(definition)
+    }
+
     pub fn create_group(
         &self,
         identity: GroupIdentity,
@@ -838,6 +923,73 @@ impl TerminalRegistry {
         )
     }
 
+    /// Applies a complete group membership update as one persisted mutation.
+    pub fn update_group_members(
+        &self,
+        group_id: &GroupId,
+        add: &BTreeSet<TerminalId>,
+        remove: &BTreeSet<TerminalId>,
+    ) -> Result<MutationOutcome, TerminalAdminError> {
+        let mut state = self.lock();
+        let group = state
+            .groups
+            .get(group_id)
+            .ok_or_else(|| TerminalAdminError::GroupNotFound(group_id.clone()))?;
+        for terminal_id in add.iter().chain(remove) {
+            if !state.definitions.contains_key(terminal_id) {
+                return Err(TerminalAdminError::TerminalNotFound(terminal_id.clone()));
+            }
+        }
+        let mut members = group.members.clone();
+        members.extend(add.iter().cloned());
+        for terminal_id in remove {
+            members.remove(terminal_id);
+        }
+        if members == group.members {
+            return Ok(MutationOutcome::Unchanged);
+        }
+        let mut groups = state.groups.clone();
+        groups
+            .get_mut(group_id)
+            .expect("existing terminal group must remain present")
+            .members = members;
+        let mut definitions = state.definitions.clone();
+        for terminal_id in add {
+            definitions
+                .get_mut(terminal_id)
+                .expect("validated terminal definition must remain present")
+                .groups
+                .insert(group_id.clone());
+        }
+        for terminal_id in remove {
+            definitions
+                .get_mut(terminal_id)
+                .expect("validated terminal definition must remain present")
+                .groups
+                .remove(group_id);
+        }
+        let events = add
+            .iter()
+            .filter(|terminal_id| !group.members.contains(*terminal_id))
+            .cloned()
+            .map(|terminal_id| TerminalEventKind::GroupChanged {
+                group_id: group_id.clone(),
+                change: TerminalGroupChange::MemberAdded { terminal_id },
+            })
+            .chain(
+                remove
+                    .iter()
+                    .filter(|terminal_id| group.members.contains(*terminal_id))
+                    .cloned()
+                    .map(|terminal_id| TerminalEventKind::GroupChanged {
+                        group_id: group_id.clone(),
+                        change: TerminalGroupChange::MemberRemoved { terminal_id },
+                    }),
+            )
+            .collect();
+        self.commit_admin_changes(&mut state, definitions, Some(groups), events)
+    }
+
     pub fn definition(&self, terminal_id: &TerminalId) -> Option<TerminalDefinition> {
         self.lock().definitions.get(terminal_id).cloned()
     }
@@ -897,6 +1049,16 @@ impl TerminalRegistry {
         groups: Option<HashMap<GroupId, TerminalGroup>>,
         event: TerminalEventKind,
     ) -> Result<MutationOutcome, TerminalAdminError> {
+        self.commit_admin_changes(state, definitions, groups, vec![event])
+    }
+
+    fn commit_admin_changes(
+        &self,
+        state: &mut RegistryState,
+        definitions: HashMap<TerminalId, TerminalDefinition>,
+        groups: Option<HashMap<GroupId, TerminalGroup>>,
+        events: Vec<TerminalEventKind>,
+    ) -> Result<MutationOutcome, TerminalAdminError> {
         let groups = groups.unwrap_or_else(|| state.groups.clone());
         persist_registry(
             &state.path,
@@ -906,7 +1068,9 @@ impl TerminalRegistry {
         .map_err(TerminalAdminError::Persistence)?;
         state.definitions = definitions;
         state.groups = groups;
-        let _ = self.changes.send(TerminalEvent::new(event));
+        for event in events {
+            let _ = self.changes.send(TerminalEvent::new(event));
+        }
         Ok(MutationOutcome::Changed)
     }
 

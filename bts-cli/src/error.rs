@@ -8,6 +8,7 @@ use crate::config::ConfigurationError;
 #[derive(Debug)]
 pub enum CliError {
     Configuration(ConfigurationError),
+    Confirmation(String),
     Sdk(SdkError),
     Output(io::Error),
 }
@@ -15,7 +16,7 @@ pub enum CliError {
 impl CliError {
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::Configuration(_) | Self::Output(_) => 2,
+            Self::Configuration(_) | Self::Confirmation(_) | Self::Output(_) => 2,
             Self::Sdk(error) => match error {
                 SdkError::Configuration(_) | SdkError::InvalidRequest(_) => 2,
                 SdkError::Transport(_) | SdkError::Timeout { .. } => 3,
@@ -33,6 +34,7 @@ impl CliError {
     pub fn concise_message(&self) -> String {
         match self {
             Self::Configuration(error) => error.to_string(),
+            Self::Confirmation(message) => message.clone(),
             Self::Output(_) => "could not write command output".to_owned(),
             Self::Sdk(error) => match error {
                 SdkError::Configuration(error) => error.to_string(),
@@ -64,6 +66,7 @@ impl CliError {
             Self::Configuration(_) | Self::Sdk(SdkError::Configuration(_)) => {
                 ("invalid_input", "invalid_configuration")
             }
+            Self::Confirmation(_) => ("invalid_input", "invalid_usage"),
             Self::Output(_) => ("invalid_input", "output_failure"),
             Self::Sdk(SdkError::Transport(_)) => ("unavailable", "core_unavailable"),
             Self::Sdk(SdkError::Timeout { .. }) => ("unavailable", "core_timeout"),

@@ -35,11 +35,15 @@ async fn main() -> ExitCode {
     };
     let stdout_is_terminal = std::io::stdout().is_terminal();
     let stderr_is_terminal = std::io::stderr().is_terminal();
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     let mut stderr = std::io::stderr().lock();
     let streams = OutputStreams {
+        stdin: &mut stdin,
         stdout: &mut stdout,
         stderr: &mut stderr,
+        stdin_is_terminal,
         stdout_is_terminal,
         stderr_is_terminal,
     };
