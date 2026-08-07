@@ -16,15 +16,14 @@ bts-protocol
   endpoint constants and structured server-error categories. It contains no
   HTTP client, argument parsing, prompts, output formatting or exit codes.
 - `bts-core` remains authoritative for resource state, validation, reference
-  resolution, persistence, idempotency and mutation safety. It currently serves
-  discovery, process status and current-state resources; later issues add the
-  frozen terminal and group operations.
+  resolution, persistence, idempotency and mutation safety. It serves discovery,
+  process status, current state, and the frozen terminal and group operations.
 - `bts-sdk` owns HTTP transport, timeouts, discovery and compatibility
   negotiation, URL construction, typed operations and decoding server errors.
   It must not contain terminal registration, heartbeat, presentation or
   renderer behaviour.
 - `bts-cli` depends on `bts-sdk`, does not construct paths or duplicate DTOs,
-  and currently exposes read-only status and state inspection. It owns Clap
+  and exposes status, state, terminal and group administration. It owns Clap
   grammar, environment configuration, prompts, human formatting, colour and
   process exit behaviour.
 

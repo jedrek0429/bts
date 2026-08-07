@@ -180,6 +180,14 @@ impl fmt::Display for TerminalName {
     }
 }
 
+impl std::str::FromStr for TerminalName {
+    type Err = NameError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
 impl<'de> Deserialize<'de> for TerminalName {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -267,6 +275,14 @@ impl GroupName {
 impl fmt::Display for GroupName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+impl std::str::FromStr for GroupName {
+    type Err = NameError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value)
     }
 }
 

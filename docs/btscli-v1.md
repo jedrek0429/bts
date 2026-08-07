@@ -1,8 +1,6 @@
 # btscli v1 contract
 
-The `bts-cli` crate currently implements the read-only `status` and `state
-show` workflow. The terminal and group grammar below remains the frozen
-contract for #33 and is not exposed as a placeholder command.
+The `bts-cli` crate implements the administrative grammar below.
 
 ```text
 btscli [--core URL] [--output human|json] [--timeout DURATION]
@@ -10,8 +8,6 @@ btscli [--core URL] [--output human|json] [--timeout DURATION]
 
 btscli status
 btscli state show
-
-# The following commands and --yes are added by #33, not currently implemented
 
 btscli terminal list
 btscli terminal show TERMINAL
