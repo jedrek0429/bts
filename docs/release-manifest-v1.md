@@ -32,7 +32,7 @@ The current manifest and bundle compatibility numbers are defined only in [`comp
 }
 ```
 
-Component keys are `core`, `display`, `telephony` and `addons`. Platform is currently `linux`; architectures are `x86_64` and `aarch64`. Unsupported component/architecture pairs are absent. The installer must not infer filenames. Schema and bundle-format mismatches are hard errors before download activation.
+Component keys are `core`, `display`, `telephony`, `addons` and `cli`. Platform is currently `linux`; architectures are `x86_64` and `aarch64`. Unsupported component/architecture pairs are absent. The installer must not infer filenames. Schema and bundle-format mismatches are hard errors before download activation.
 
 `release_version` is SemVer without build metadata and must match the GitHub tag after its leading `v` is removed. Stable and prerelease versions use the same schema.
 
@@ -56,3 +56,8 @@ bts-display/
 `component.conf` is an environment-style metadata file identifying the component, format, abstract runtime dependencies, service and configuration filename. Distribution package names are not permitted there. `VERSION` contains the release version without a leading `v`. `LICENSE` is the complete GPL version 3 text.
 
 Archives are deterministic: sorted members, epoch timestamps and numeric root ownership. Consumers must verify the asset checksum before extraction and reject absolute paths, `..` traversal, escaping links and special member types.
+
+The `cli` bundle is deliberately service-less: it contains `bin/btscli`,
+metadata, licence and version files but no systemd unit or component environment.
+Activation publishes the executable at `/usr/bin/btscli`. It can therefore be
+installed independently with `bts-install install custom --component cli`.

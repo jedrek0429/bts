@@ -27,7 +27,10 @@ pub fn plan_legacy_environment_migration(
         })?)?;
     let mut migrated = ComponentEnvironments::new();
     for component in installed {
-        let path = root.join("etc/bts").join(component.config_name());
+        let Some(config_name) = component.config_name() else {
+            continue;
+        };
+        let path = root.join("etc/bts").join(config_name);
         let values = if path.exists() {
             parse_environment(&fs::read_to_string(&path)?)?
         } else {
@@ -46,7 +49,9 @@ pub fn plan_legacy_environment_migration(
             ensure!(
                 current == &value,
                 "Legacy setting {key} conflicts with {}. Resolve the values before upgrading.",
-                component.config_name()
+                component
+                    .config_name()
+                    .expect("legacy owners have configuration")
             );
         } else {
             destination.insert(key, value);
@@ -80,10 +85,22 @@ fn legacy_owner(
             )
         }
         "RUST_LOG" if value == "info" => return Ok(None),
-        "RUST_LOG" if installed.len() == 1 => *installed.iter().next().unwrap(),
-        "RUST_LOG" => anyhow::bail!(
-            "Legacy RUST_LOG is shared by multiple components; move it to each intended component file."
-        ),
+        "RUST_LOG" => {
+            let owners = installed
+                .iter()
+                .filter(|component| component.config_name().is_some())
+                .copied()
+                .collect::<Vec<_>>();
+            match owners.as_slice() {
+                [owner] => *owner,
+                [] => anyhow::bail!(
+                    "Legacy RUST_LOG does not belong to the service-less CLI component."
+                ),
+                _ => anyhow::bail!(
+                    "Legacy RUST_LOG is shared by multiple components; move it to each intended component file."
+                ),
+            }
+        }
         _ => anyhow::bail!(
             "Legacy setting {key} has no unambiguous component owner; move it manually before upgrading."
         ),

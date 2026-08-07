@@ -66,6 +66,7 @@ jobs:
               "$stage/usr/lib/bts/components/$component/releases/$version/bin/bts-$component"
             ln -s "releases/$version" "$stage/usr/lib/bts/components/$component/current"
           done
+          install -Dm755 target/release/btscli "$stage/usr/bin/btscli"
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
           install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
           install -m755 "$(command -v install)" "$stage/usr/bin/install"

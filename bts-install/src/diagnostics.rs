@@ -59,22 +59,24 @@ pub fn status<S: SystemAdapter>(
         .map(|component| {
             let installed =
                 state.is_some_and(|value| value.installed_components.contains(&component));
-            let (enabled, active) = if root == Path::new("/") && installed {
-                (
-                    Some(
-                        system
-                            .output("systemctl", &["is-enabled".into(), component.unit().into()])
-                            .is_ok(),
-                    ),
-                    Some(
-                        system
-                            .output("systemctl", &["is-active".into(), component.unit().into()])
-                            .is_ok(),
-                    ),
-                )
-            } else {
-                (None, None)
-            };
+            let (enabled, active) =
+                if root == Path::new("/") && installed && component.unit().is_some() {
+                    let unit = component.unit().expect("checked service component");
+                    (
+                        Some(
+                            system
+                                .output("systemctl", &["is-enabled".into(), unit.into()])
+                                .is_ok(),
+                        ),
+                        Some(
+                            system
+                                .output("systemctl", &["is-active".into(), unit.into()])
+                                .is_ok(),
+                        ),
+                    )
+                } else {
+                    (None, None)
+                };
             let configured_endpoint = read_endpoint(root, component);
             ComponentStatus {
                 component,
@@ -137,37 +139,39 @@ pub fn doctor<S: SystemAdapter>(
         Ok(None) => {}
     }
     for component in &state.installed_components {
-        let config = root.join("etc/bts").join(component.config_name());
-        if !config.is_file() {
-            diagnostics.push(Diagnostic {
-                component: Some(*component),
-                severity: Severity::Error,
-                message: format!("{} configuration is missing.", component),
-                suggested_action: Some(format!("Run: sudo bts-install configure {component}")),
-            });
-        } else if fs::metadata(&config)
-            .is_ok_and(|metadata| metadata.permissions().mode() & 0o007 != 0)
-        {
-            diagnostics.push(Diagnostic {
-                component: Some(*component),
-                severity: Severity::Error,
-                message: format!("{} configuration is accessible to other users.", component),
-                suggested_action: Some(format!("Run: sudo chmod 0640 {}", config.display())),
-            });
-        } else if let Err(error) = validate_component_configuration(&config, *component) {
-            diagnostics.push(Diagnostic {
-                component: Some(*component),
-                severity: Severity::Error,
-                message: format!("{} configuration is invalid: {error}", component),
-                suggested_action: Some(format!("Run: sudo bts-install configure {component}")),
-            });
-        } else {
-            diagnostics.push(Diagnostic {
-                component: Some(*component),
-                severity: Severity::Ok,
-                message: format!("{} configuration is valid.", component),
-                suggested_action: None,
-            });
+        if let Some(config_name) = component.config_name() {
+            let config = root.join("etc/bts").join(config_name);
+            if !config.is_file() {
+                diagnostics.push(Diagnostic {
+                    component: Some(*component),
+                    severity: Severity::Error,
+                    message: format!("{} configuration is missing.", component),
+                    suggested_action: Some(format!("Run: sudo bts-install configure {component}")),
+                });
+            } else if fs::metadata(&config)
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o007 != 0)
+            {
+                diagnostics.push(Diagnostic {
+                    component: Some(*component),
+                    severity: Severity::Error,
+                    message: format!("{} configuration is accessible to other users.", component),
+                    suggested_action: Some(format!("Run: sudo chmod 0640 {}", config.display())),
+                });
+            } else if let Err(error) = validate_component_configuration(&config, *component) {
+                diagnostics.push(Diagnostic {
+                    component: Some(*component),
+                    severity: Severity::Error,
+                    message: format!("{} configuration is invalid: {error}", component),
+                    suggested_action: Some(format!("Run: sudo bts-install configure {component}")),
+                });
+            } else {
+                diagnostics.push(Diagnostic {
+                    component: Some(*component),
+                    severity: Severity::Ok,
+                    message: format!("{} configuration is valid.", component),
+                    suggested_action: None,
+                });
+            }
         }
 
         let binary = root.join(format!(
@@ -182,17 +186,20 @@ pub fn doctor<S: SystemAdapter>(
                 suggested_action: Some(format!("Run: sudo bts-install upgrade {component}")),
             });
         }
-        let unit = root.join("usr/lib/systemd/system").join(component.unit());
-        if !unit.is_file() {
-            diagnostics.push(Diagnostic {
-                component: Some(*component),
-                severity: Severity::Error,
-                message: format!("{} service unit is missing.", component),
-                suggested_action: Some(format!("Run: sudo bts-install upgrade {component}")),
-            });
+        if let Some(unit_name) = component.unit() {
+            let unit = root.join("usr/lib/systemd/system").join(unit_name);
+            if !unit.is_file() {
+                diagnostics.push(Diagnostic {
+                    component: Some(*component),
+                    severity: Severity::Error,
+                    message: format!("{} service unit is missing.", component),
+                    suggested_action: Some(format!("Run: sudo bts-install upgrade {component}")),
+                });
+            }
         }
 
-        if root == Path::new("/") {
+        if root == Path::new("/") && component.unit().is_some() {
+            let unit = component.unit().expect("checked service component");
             let account = if *component == Component::Display {
                 "bts-display"
             } else {
@@ -210,31 +217,25 @@ pub fn doctor<S: SystemAdapter>(
                 });
             }
             if system
-                .output("systemctl", &["is-enabled".into(), component.unit().into()])
+                .output("systemctl", &["is-enabled".into(), unit.into()])
                 .is_err()
             {
                 diagnostics.push(Diagnostic {
                     component: Some(*component),
                     severity: Severity::Error,
                     message: format!("{} service is not enabled.", component),
-                    suggested_action: Some(format!(
-                        "Run: sudo systemctl enable {}",
-                        component.unit()
-                    )),
+                    suggested_action: Some(format!("Run: sudo systemctl enable {}", unit)),
                 });
             }
             if system
-                .output("systemctl", &["is-active".into(), component.unit().into()])
+                .output("systemctl", &["is-active".into(), unit.into()])
                 .is_err()
             {
                 diagnostics.push(Diagnostic {
                     component: Some(*component),
                     severity: Severity::Error,
                     message: format!("{} service is not active.", component),
-                    suggested_action: Some(format!(
-                        "Run: sudo systemctl restart {}",
-                        component.unit()
-                    )),
+                    suggested_action: Some(format!("Run: sudo systemctl restart {}", unit)),
                 });
             }
             if *component == Component::Display {
@@ -324,6 +325,7 @@ fn validate_component_configuration(path: &Path, component: Component) -> anyhow
                     .ok_or_else(|| anyhow::anyhow!("BTS_CORE_WS_URL is missing"))?,
             )?;
         }
+        Component::Cli => {}
     }
     Ok(())
 }
@@ -334,8 +336,16 @@ fn read_endpoint(root: &Path, component: Component) -> Option<String> {
         Component::Display => "BTS_CORE_WS_URL",
         Component::Telephony => "BTS_ARI_URL",
         Component::Addons => "BTS_CORE_HTTP_URL",
+        Component::Cli => return None,
     };
-    let text = fs::read_to_string(root.join("etc/bts").join(component.config_name())).ok()?;
+    let text = fs::read_to_string(
+        root.join("etc/bts").join(
+            component
+                .config_name()
+                .expect("endpoint components have configuration"),
+        ),
+    )
+    .ok()?;
     crate::config::parse_environment(&text).ok()?.remove(key)
 }
 

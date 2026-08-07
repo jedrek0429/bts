@@ -19,6 +19,16 @@ use tokio::sync::oneshot;
 
 #[test]
 fn installed_executable_is_named_btscli_and_help_is_successful() {
+    let version = std::process::Command::new(env!("CARGO_BIN_EXE_btscli"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        format!("btscli {}\n", env!("CARGO_PKG_VERSION"))
+    );
+
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_btscli"))
         .arg("--help")
         .output()

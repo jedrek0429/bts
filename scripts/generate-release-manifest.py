@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 BUNDLE = re.compile(
-    r"^bts-(core|display|telephony|addons)-v([0-9A-Za-z.-]+)-linux-(x86_64|aarch64)\.tar\.zst$"
+    r"^bts-(core|display|telephony|addons|cli)-v([0-9A-Za-z.-]+)-linux-(x86_64|aarch64)\.tar\.zst$"
 )
 
 

@@ -57,9 +57,11 @@ case "$command" in
         require_workspace_version
         cargo build --manifest-path "$repository_root/Cargo.toml" --locked --release --workspace
         architecture=$(native_architecture)
-        for component in core display telephony addons; do
+        for component in core display telephony addons cli; do
+            binary="bts-$component"
+            [[ "$component" == cli ]] && binary=btscli
             "$0" component "$component" "$architecture" \
-                "$repository_root/target/release/bts-$component" "$output_directory"
+                "$repository_root/target/release/$binary" "$output_directory"
         done
         "$0" installer "$repository_root/target/release/bts-install" "$output_directory"
         "$0" assemble "$output_directory"

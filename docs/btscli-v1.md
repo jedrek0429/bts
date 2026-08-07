@@ -2,6 +2,17 @@
 
 The `bts-cli` crate implements the administrative grammar below.
 
+Install it independently on an operator machine with:
+
+```sh
+sudo bts-install install custom --component cli
+```
+
+This installs `/usr/bin/btscli`. The command administers resources owned by
+Core; it does not manage systemd, containers, host configuration, Asterisk,
+Display processes or operating-system users. Use `bts-install` and the host's
+service tools for those responsibilities.
+
 ```text
 btscli [--core URL] [--output human|json] [--timeout DURATION]
        [--quiet | -v...] [--colour auto|always|never] COMMAND
@@ -73,6 +84,36 @@ when the stream receiving the text is a TTY and `NO_COLOR` is absent. `always`
 and `never` override TTY detection for human output. ANSI sequences are never
 included in JSON.
 
+For example, a script can inspect registered terminals without parsing the
+human table:
+
+```sh
+btscli --core http://core.example:3100 --output json terminal list
+```
+
+The result is the compact `TerminalListResource` document. A successful
+idempotent mutation still exits zero and reports `"changed":false`. Scripts
+should branch on exit code plus `error.category` and `error.code`, never on
+English prose.
+
+A human inspection is semantic rather than a JSON pretty-printer:
+
+```text
+$ btscli terminal show bedroom-display
+Terminal: Bedroom (bedroom-display)
+Status: online
+Implementation: bts-display
+Capabilities: render_text
+Tags: private, upstairs
+Groups: all-displays
+```
+
+Machine output retains the API field names and stable identifiers:
+
+```json
+{"terminals":[{"id":"bedroom-display","name":"Bedroom","implementation":"bts-display","approved_capabilities":["render_text"],"tags":["private","upstairs"],"groups":["all-displays"]}]}
+```
+
 ## Confirmation
 
 `terminal forget` and `group delete` are destructive. The CLI first resolves
@@ -84,6 +125,37 @@ If stdin is not a TTY, output is JSON, or `--quiet` is active, a destructive
 command without `--yes` fails before mutation. `--yes` skips only local
 confirmation. It does not bypass ambiguity or Core's online-terminal forgetting
 conflict. Rename, tag and membership operations do not prompt.
+
+## Bedroom and Dining Room example
+
+Stable IDs are preferred for every mutation; display names are convenient for
+interactive reads only because names may be duplicated or changed.
+
+```sh
+btscli terminal rename bedroom-display Bedroom
+btscli terminal tag add bedroom-display private upstairs
+btscli terminal rename dining-display "Dining Room"
+btscli terminal tag add dining-display downstairs
+
+btscli group create all-displays --name "All displays"
+btscli group add all-displays bedroom-display dining-display
+btscli group show all-displays
+```
+
+Adding either terminal or tag again is safe and returns `changed: false`.
+Deleting `all-displays` removes only the group; it does not forget either
+terminal. Forgetting an offline terminal removes its durable definition and
+memberships, and the same stable ID may register again later.
+
+## Compatibility
+
+`btscli --version` reports the packaged BTS component version. On each request,
+the SDK reads Core's unversioned `/api` discovery document and requires an
+administrative API version it supports before using the advertised base path.
+A product-version difference is not guessed into an API path. Incompatible or
+malformed discovery fails with exit code 4. Addon, terminal-runtime and
+telephony protocol versions are separate contracts and are not negotiated by
+the administrative CLI.
 
 ## Exit codes
 
