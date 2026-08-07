@@ -1,14 +1,17 @@
 # btscli v1 contract
 
-Stage 1 defines this grammar and behaviour without creating `bts-cli` or
-placeholder commands.
+The `bts-cli` crate currently implements the read-only `status` and `state
+show` workflow. The terminal and group grammar below remains the frozen
+contract for #33 and is not exposed as a placeholder command.
 
 ```text
 btscli [--core URL] [--output human|json] [--timeout DURATION]
-       [--quiet | -v...] [--colour auto|always|never] [--yes] COMMAND
+       [--quiet | -v...] [--colour auto|always|never] COMMAND
 
 btscli status
 btscli state show
+
+# The following commands and --yes are added by #33, not currently implemented
 
 btscli terminal list
 btscli terminal show TERMINAL
@@ -47,9 +50,10 @@ ignored. There is no configuration file or named connection profile in v1.
 `NO_COLOR` changes the `auto` default to `never`; an explicit `--colour` or
 `BTSCLI_COLOUR` value has higher precedence.
 
-`-v` is repeatable and adds SDK request diagnostics to stderr without changing
-stdout. `--quiet` conflicts with `-v`; it suppresses successful human output,
-not warnings, prompts or errors. `--quiet` with JSON output is invalid because a
+`-v` is repeatable and adds request diagnostics to stderr without changing
+stdout; a second occurrence includes the selected Core origin and timeout.
+`--quiet` conflicts with `-v`; it suppresses successful human output, not
+warnings, prompts or errors. `--quiet` with JSON output is invalid because a
 successful machine-readable document must never disappear.
 
 ## Output
@@ -60,6 +64,13 @@ JSON output writes exactly one administrative DTO as compact JSON followed by a
 newline on stdout; field names, IDs and timestamps are unchanged from the API.
 Errors write exactly one structured error document to stderr. Diagnostics and
 prompts never enter stdout.
+
+Local and transport error documents use `error.category`, `error.code` and
+`error.message`. Structured Core errors preserve those same fields and any
+resource, reference or candidate context supplied by Core. The initial local
+codes are `invalid_usage`, `invalid_configuration`, `output_failure`,
+`core_unavailable`, `core_timeout` and `malformed_response`; incompatibility uses
+`unsupported_administrative_api`.
 
 `--output json` always disables colour. Human `auto` colour is enabled only
 when the stream receiving the text is a TTY and `NO_COLOR` is absent. `always`

@@ -1,0 +1,19 @@
+[package]
+name = "bts-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "btscli"
+path = "src/main.rs"
+
+[dependencies]
+bts-sdk = { path = "../bts-sdk" }
+chrono.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
