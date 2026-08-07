@@ -276,10 +276,18 @@ async fn execute_plan(
             if component == Component::Display {
                 prepare_display_host(cli, &mut system, state)?;
             }
-            ensure_default_configuration(cli, component, plan.after.contains(&Component::Core))?;
-            systemctl(&mut system, &cli.root, "enable", &[component.unit()])?;
-            if !cli.no_start && cli.root == Path::new("/") {
-                systemctl(&mut system, &cli.root, "start", &[component.unit()])?;
+            if component.config_name().is_some() {
+                ensure_default_configuration(
+                    cli,
+                    component,
+                    plan.after.contains(&Component::Core),
+                )?;
+            }
+            if let Some(unit) = component.unit() {
+                systemctl(&mut system, &cli.root, "enable", &[unit])?;
+                if !cli.no_start && cli.root == Path::new("/") {
+                    systemctl(&mut system, &cli.root, "start", &[unit])?;
+                }
             }
         }
         state.installed_version = manifest.release_version;
@@ -360,7 +368,7 @@ async fn install_component(
         .prefix(".stage-")
         .tempdir_in(&base)?;
     extract_tar_zst(Cursor::new(bytes), temporary.path())?;
-    let bundle = temporary.path().join(component.binary());
+    let bundle = temporary.path().join(component.bundle_root());
     ensure!(
         bundle.join("bin").join(component.binary()).is_file(),
         "Bundle '{}' does not contain the expected portable layout.",
@@ -401,23 +409,24 @@ async fn upgrade(
     let actions: Vec<_> = pending
         .keys()
         .flat_map(|component| {
-            [
+            let mut actions = vec![
                 Action::Download {
                     component: *component,
                 },
                 Action::Stage {
                     component: *component,
                 },
-                Action::StopService {
-                    unit: component.unit().into(),
-                },
-                Action::Activate {
-                    component: *component,
-                },
-                Action::StartService {
-                    unit: component.unit().into(),
-                },
-            ]
+            ];
+            if let Some(unit) = component.unit() {
+                actions.push(Action::StopService { unit: unit.into() });
+            }
+            actions.push(Action::Activate {
+                component: *component,
+            });
+            if let Some(unit) = component.unit() {
+                actions.push(Action::StartService { unit: unit.into() });
+            }
+            actions
         })
         .collect();
     let plan = InstallationPlan {
@@ -446,7 +455,7 @@ async fn upgrade(
             .prefix(".stage-")
             .tempdir_in(&base)?;
         extract_tar_zst(Cursor::new(bytes), temporary.path())?;
-        let bundle = temporary.path().join(component.binary());
+        let bundle = temporary.path().join(component.bundle_root());
         validate_bundle_metadata(&bundle, *component, &manifest.release_version)?;
         let destination = base.join(activation_id);
         if destination.exists() {
@@ -462,13 +471,16 @@ async fn upgrade(
         systemctl(&mut system, &cli.root, "daemon-reload", &[])?;
         let mut stopped = Vec::new();
         for (component, _) in &staged {
-            if let Err(error) = systemctl(&mut system, &cli.root, "stop", &[component.unit()]) {
+            let Some(unit) = component.unit() else {
+                continue;
+            };
+            if let Err(error) = systemctl(&mut system, &cli.root, "stop", &[unit]) {
                 for unit in stopped {
                     let _ = systemctl(&mut system, &cli.root, "start", &[unit]);
                 }
                 bail!("Could not stop {} safely: {error}", component);
             }
-            stopped.push(component.unit());
+            stopped.push(unit);
         }
     }
     let mut activations = Vec::new();
@@ -492,8 +504,11 @@ async fn upgrade(
     }
     if !cli.no_start && cli.root == Path::new("/") {
         for (component, _) in &staged {
-            let started = systemctl(&mut system, &cli.root, "start", &[component.unit()])
-                .and_then(|()| systemctl(&mut system, &cli.root, "is-active", &[component.unit()]));
+            let Some(unit) = component.unit() else {
+                continue;
+            };
+            let started = systemctl(&mut system, &cli.root, "start", &[unit])
+                .and_then(|()| systemctl(&mut system, &cli.root, "is-active", &[unit]));
             if started.is_err() {
                 let rollback = activations.iter().rev().try_for_each(activation::rollback);
                 restart_restored_services(cli, &mut system, &activations);
@@ -532,7 +547,9 @@ fn restart_restored_services(
         return;
     }
     for restored in activations {
-        let _ = systemctl(system, &cli.root, "restart", &[restored.component.unit()]);
+        if let Some(unit) = restored.component.unit() {
+            let _ = systemctl(system, &cli.root, "restart", &[unit]);
+        }
     }
 }
 
@@ -567,7 +584,7 @@ fn validate_bundle_metadata(bundle: &Path, component: Component, version: &str) 
 fn install_bundle_integration(cli: &Cli, component: Component, release: &Path) -> Result<()> {
     let units = rooted(&cli.root, "/usr/lib/systemd/system");
     fs::create_dir_all(&units)?;
-    for entry in fs::read_dir(release.join("systemd"))? {
+    for entry in fs::read_dir(release.join("systemd")).into_iter().flatten() {
         let entry = entry?;
         if entry
             .path()
@@ -590,7 +607,10 @@ fn ensure_default_configuration(
     component: Component,
     local_core_selected: bool,
 ) -> Result<()> {
-    let path = rooted(&cli.root, &format!("/etc/bts/{}", component.config_name()));
+    let config_name = component
+        .config_name()
+        .context("This component has no service configuration")?;
+    let path = rooted(&cli.root, &format!("/etc/bts/{config_name}"));
     let existing = if path.exists() {
         config::parse_environment(&fs::read_to_string(&path)?)?
     } else {
@@ -644,6 +664,7 @@ fn ensure_default_configuration(
                 .or_insert_with(|| "/var/lib/bts/addons".into());
             values
         }
+        Component::Cli => unreachable!("CLI has no service configuration"),
     };
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)
@@ -654,7 +675,10 @@ fn migrate_legacy_configuration(cli: &Cli, installed: &BTreeSet<Component>) -> R
         return Ok(());
     };
     for (component, values) in migration {
-        let path = rooted(&cli.root, &format!("/etc/bts/{}", component.config_name()));
+        let config_name = component
+            .config_name()
+            .context("Migrated component must have configuration")?;
+        let path = rooted(&cli.root, &format!("/etc/bts/{config_name}"));
         config::write_secure(&path, &values)?;
         secure_config_ownership(cli, &path, component)?;
     }
@@ -775,7 +799,10 @@ fn resolve_core_websocket(cli: &Cli, local_core_selected: bool) -> Result<String
 }
 
 async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
-    let path = rooted(&cli.root, &format!("/etc/bts/{}", component.config_name()));
+    let config_name = component
+        .config_name()
+        .context("The CLI component has no service configuration")?;
+    let path = rooted(&cli.root, &format!("/etc/bts/{config_name}"));
     let existing = fs::read_to_string(&path)
         .ok()
         .and_then(|value| config::parse_environment(&value).ok())
@@ -903,6 +930,7 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
                 ),
             ])
         }
+        Component::Cli => unreachable!("CLI has no service configuration"),
     };
     if cli.dry_run {
         if !cli.quiet {
@@ -916,12 +944,12 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
     }
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)?;
-    if cli.root == Path::new("/") {
+    if cli.root == Path::new("/") && component.unit().is_some() {
         systemctl(
             &mut RealSystem,
             &cli.root,
             "try-restart",
-            &[component.unit()],
+            &[component.unit().expect("checked service component")],
         )?;
     }
     if !cli.quiet {
@@ -1100,7 +1128,10 @@ fn read_component_configuration(
     root: &Path,
     component: Component,
 ) -> Result<BTreeMap<String, String>> {
-    let path = rooted(root, &format!("/etc/bts/{}", component.config_name()));
+    let config_name = component
+        .config_name()
+        .context("The CLI component has no service configuration")?;
+    let path = rooted(root, &format!("/etc/bts/{config_name}"));
     config::parse_environment(
         &fs::read_to_string(&path).with_context(|| format!("Could not read {}", path.display()))?,
     )
@@ -1164,17 +1195,21 @@ fn remove_component(cli: &Cli, component: Component, purge: bool) -> Result<()> 
         &format!("/usr/lib/bts/components/{component}/current"),
     );
     fs::remove_file(current).ok();
-    fs::remove_file(rooted(
-        &cli.root,
-        &format!("/usr/lib/systemd/system/{}", component.unit()),
-    ))
-    .ok();
-    if purge {
+    if component == Component::Cli {
+        fs::remove_file(rooted(&cli.root, "/usr/bin/btscli")).ok();
+    }
+    if let Some(unit) = component.unit() {
         fs::remove_file(rooted(
             &cli.root,
-            &format!("/etc/bts/{}", component.config_name()),
+            &format!("/usr/lib/systemd/system/{unit}"),
         ))
         .ok();
+    }
+    if purge && component.config_name().is_some() {
+        let config_name = component
+            .config_name()
+            .expect("checked configured component");
+        fs::remove_file(rooted(&cli.root, &format!("/etc/bts/{config_name}"))).ok();
     }
     Ok(())
 }

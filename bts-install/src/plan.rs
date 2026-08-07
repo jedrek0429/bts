@@ -115,7 +115,10 @@ fn reconcile(
             });
         }
     }
-    if added.iter().any(|value| *value != Component::Display) {
+    if added
+        .iter()
+        .any(|value| !matches!(value, Component::Display | Component::Cli))
+    {
         actions.push(Action::CreateAccount {
             account: "bts".into(),
         });
@@ -127,36 +130,32 @@ fn reconcile(
         actions.push(Action::ReserveTty1);
     }
     for component in &added {
-        actions.extend([
-            Action::Download {
+        actions.push(Action::Download {
+            component: *component,
+        });
+        actions.push(Action::Stage {
+            component: *component,
+        });
+        if component.config_name().is_some() {
+            actions.push(Action::WriteConfiguration {
                 component: *component,
-            },
-            Action::Stage {
-                component: *component,
-            },
-            Action::WriteConfiguration {
-                component: *component,
-            },
-            Action::Activate {
-                component: *component,
-            },
-            Action::EnableService {
-                unit: component.unit().into(),
-            },
-        ]);
-        if !no_start {
-            actions.push(Action::StartService {
-                unit: component.unit().into(),
             });
+        }
+        actions.push(Action::Activate {
+            component: *component,
+        });
+        if let Some(unit) = component.unit() {
+            actions.push(Action::EnableService { unit: unit.into() });
+            if !no_start {
+                actions.push(Action::StartService { unit: unit.into() });
+            }
         }
     }
     for component in &removed {
-        actions.push(Action::StopService {
-            unit: component.unit().into(),
-        });
-        actions.push(Action::DisableService {
-            unit: component.unit().into(),
-        });
+        if let Some(unit) = component.unit() {
+            actions.push(Action::StopService { unit: unit.into() });
+            actions.push(Action::DisableService { unit: unit.into() });
+        }
         actions.push(Action::RemoveComponent {
             component: *component,
             purge,
@@ -224,6 +223,32 @@ mod tests {
         )
         .unwrap();
         assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn cli_is_an_independent_service_less_component() {
+        let plan = InstallationPlan::install(
+            None,
+            Some(Role::Custom),
+            &[Component::Cli],
+            Platform::Debian,
+            false,
+        )
+        .unwrap();
+        assert_eq!(plan.after, [Component::Cli].into());
+        assert!(plan.actions.contains(&Action::Download {
+            component: Component::Cli
+        }));
+        assert!(plan.actions.contains(&Action::Activate {
+            component: Component::Cli
+        }));
+        assert!(!plan.actions.iter().any(|action| matches!(
+            action,
+            Action::CreateAccount { .. }
+                | Action::WriteConfiguration { .. }
+                | Action::EnableService { .. }
+                | Action::StartService { .. }
+        )));
     }
 
     #[test]

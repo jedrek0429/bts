@@ -169,6 +169,69 @@ fn local_release_reinstalls_and_reconciles_offline() {
     );
 }
 
+#[test]
+fn local_release_installs_cli_without_runtime_components() {
+    let temporary = tempdir().unwrap();
+    let assets = temporary.path().join("assets");
+    let root = temporary.path().join("root");
+    let fake_bin = temporary.path().join("bin");
+    fs::create_dir_all(root.join("etc")).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::copy("/etc/os-release", root.join("etc/os-release")).unwrap();
+    let systemctl = fake_bin.join("systemctl");
+    fs::write(&systemctl, "#!/bin/sh\nexit 99\n").unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => panic!("unsupported test architecture {other}"),
+    };
+    release_command(&[
+        "component",
+        "cli",
+        architecture,
+        "/usr/bin/true",
+        assets.to_str().unwrap(),
+    ]);
+    release_command(&[
+        "installer",
+        env!("CARGO_BIN_EXE_bts-install"),
+        assets.to_str().unwrap(),
+    ]);
+    release_command(&["assemble", assets.to_str().unwrap()]);
+
+    assert!(
+        installer_command(
+            &[
+                "--root",
+                root.to_str().unwrap(),
+                "--release-dir",
+                assets.to_str().unwrap(),
+                "--yes",
+                "--no-start",
+                "install",
+                "custom",
+                "--component",
+                "cli",
+            ],
+            &fake_bin,
+        )
+        .status()
+        .unwrap()
+        .success()
+    );
+    assert_eq!(
+        fs::read_link(root.join("usr/bin/btscli")).unwrap(),
+        PathBuf::from("../lib/bts/components/cli/current/bin/btscli")
+    );
+    assert!(
+        root.join("usr/lib/bts/components/cli/current/bin/btscli")
+            .is_file()
+    );
+    assert!(!root.join("etc/bts/cli.env").exists());
+    assert!(!root.join("usr/lib/systemd/system/bts-cli.service").exists());
+}
+
 fn release_command(arguments: &[&str]) {
     assert!(
         Command::new("../scripts/build-release")

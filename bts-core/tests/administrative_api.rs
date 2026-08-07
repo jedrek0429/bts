@@ -4,7 +4,7 @@ use std::{
 };
 
 use bts_cli::{
-    cli::{Cli, Command, StateCommand},
+    cli::{Cli, Command, GroupCommand, StateCommand, TerminalCommand, TerminalTagCommand},
     config::{ColourMode, Environment, OutputMode},
     output::OutputStreams,
 };
@@ -21,6 +21,37 @@ use bts_sdk::{
     SdkError, TerminalReference, UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
 };
 use tokio::sync::oneshot;
+
+async fn run_json_cli(base_url: &str, command: Command, yes: bool) -> (u8, serde_json::Value) {
+    let cli = Cli {
+        core: Some(base_url.to_owned()),
+        output: Some(OutputMode::Json),
+        timeout: Some("2s".to_owned()),
+        quiet: false,
+        verbosity: 0,
+        colour: Some(ColourMode::Never),
+        yes,
+        command,
+    };
+    let mut stdin = std::io::Cursor::new(Vec::<u8>::new());
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = bts_cli::execute(
+        cli,
+        &Environment::default(),
+        OutputStreams {
+            stdin: &mut stdin,
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+            stdin_is_terminal: false,
+            stdout_is_terminal: false,
+            stderr_is_terminal: false,
+        },
+    )
+    .await;
+    let bytes = if code == 0 { &stdout } else { &stderr };
+    (code, serde_json::from_slice(bytes).unwrap())
+}
 
 #[tokio::test]
 async fn sdk_and_cli_observe_real_core_without_creating_terminal_presence() {
@@ -207,6 +238,19 @@ async fn terminal_and_group_administration_is_authoritative_and_safe() {
         .unwrap()
         .changed
     );
+    let (code, renamed) = run_json_cli(
+        &format!("http://{address}/"),
+        Command::Terminal {
+            command: TerminalCommand::Rename {
+                terminal: beta.clone(),
+                name: TerminalName::new("Bedroom").unwrap(),
+            },
+        },
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(renamed["changed"], false);
     api.rename_terminal(
         &TerminalReference::new(alpha_id.to_string()).unwrap(),
         &RenameTerminalRequest {
@@ -225,6 +269,18 @@ async fn terminal_and_group_administration_is_authoritative_and_safe() {
             if value.code.as_str() == AdministrativeErrorCode::AMBIGUOUS_TERMINAL_REFERENCE
                 && value.candidates.len() == 2
     ));
+    let (code, error) = run_json_cli(
+        &format!("http://{address}/"),
+        Command::Terminal {
+            command: TerminalCommand::Show {
+                terminal: TerminalReference::new("Bedroom").unwrap(),
+            },
+        },
+        false,
+    )
+    .await;
+    assert_eq!(code, 6);
+    assert_eq!(error["error"]["code"], "ambiguous_terminal_reference");
     assert!(matches!(
         api.terminal(&TerminalReference::new("Missing terminal").unwrap())
             .await
@@ -247,6 +303,21 @@ async fn terminal_and_group_administration_is_authoritative_and_safe() {
             .tags
             .contains(&TerminalTag::new("private").unwrap())
     );
+    let (code, tagged) = run_json_cli(
+        &format!("http://{address}/"),
+        Command::Terminal {
+            command: TerminalCommand::Tag {
+                command: TerminalTagCommand::Add {
+                    terminal: beta.clone(),
+                    tags: vec![TerminalTag::new("private").unwrap()],
+                },
+            },
+        },
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(tagged["changed"], false);
     let invalid_tags = api
         .update_terminal_tags(
             &beta,
@@ -283,6 +354,19 @@ async fn terminal_and_group_administration_is_authoritative_and_safe() {
             .unwrap()
             .changed
     );
+    let (code, membership) = run_json_cli(
+        &format!("http://{address}/"),
+        Command::Group {
+            command: GroupCommand::Add {
+                group: group.clone(),
+                terminals: vec![beta.clone()],
+            },
+        },
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(membership["changed"], false);
 
     let online = TerminalReference::new(alpha_id.to_string()).unwrap();
     let error = api.forget_terminal(&online).await.unwrap_err();
@@ -292,8 +376,30 @@ async fn terminal_and_group_administration_is_authoritative_and_safe() {
             if value.code.as_str() == AdministrativeErrorCode::TERMINAL_ONLINE
     ));
 
-    let deleted = api.forget_terminal(&beta).await.unwrap();
-    assert_eq!(deleted.deleted.id, beta_id);
+    let (code, refusal) = run_json_cli(
+        &format!("http://{address}/"),
+        Command::Terminal {
+            command: TerminalCommand::Forget {
+                terminal: beta.clone(),
+            },
+        },
+        false,
+    )
+    .await;
+    assert_eq!(code, 2);
+    assert_eq!(refusal["error"]["code"], "invalid_usage");
+    let (code, deleted) = run_json_cli(
+        &format!("http://{address}/"),
+        Command::Terminal {
+            command: TerminalCommand::Forget {
+                terminal: beta.clone(),
+            },
+        },
+        true,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(deleted["deleted"]["id"], beta_id.as_str());
     assert!(api.group(&group).await.unwrap().members.contains(&alpha_id));
     assert!(!api.group(&group).await.unwrap().members.contains(&beta_id));
     assert_eq!(api.delete_group(&group).await.unwrap().deleted.id, group_id);
