@@ -16,7 +16,7 @@ repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 "$repository_root/scripts/release-version.py" classify "$version" >/dev/null
 
 case "$component" in
-    core|display|telephony|addons) ;;
+    core|display|telephony|addons|cli) ;;
     *) echo "Unknown component: $component" >&2; exit 2 ;;
 esac
 case "$architecture" in
@@ -30,13 +30,18 @@ command -v zstd >/dev/null
 work_directory=$(mktemp -d)
 trap 'rm -rf "$work_directory"' EXIT
 bundle="$work_directory/bts-$component"
-install -d "$bundle/bin" "$bundle/systemd" "$bundle/config" "$bundle/install"
-install -m755 "$binary" "$bundle/bin/bts-$component"
-install -m644 "$repository_root/deploy/systemd/bts-$component.service" "$bundle/systemd/"
-install -m644 "$repository_root/deploy/systemd/bts.target" "$bundle/systemd/"
-install -m644 "$repository_root/deploy/systemd/bts-server.target" "$bundle/systemd/"
-install -m644 "$repository_root/deploy/systemd/bts-display.target" "$bundle/systemd/"
-install -m644 "$repository_root/deploy/$component.env.example" "$bundle/config/"
+install -d "$bundle/bin" "$bundle/install"
+if [[ "$component" == cli ]]; then
+    install -m755 "$binary" "$bundle/bin/btscli"
+else
+    install -d "$bundle/systemd" "$bundle/config"
+    install -m755 "$binary" "$bundle/bin/bts-$component"
+    install -m644 "$repository_root/deploy/systemd/bts-$component.service" "$bundle/systemd/"
+    install -m644 "$repository_root/deploy/systemd/bts.target" "$bundle/systemd/"
+    install -m644 "$repository_root/deploy/systemd/bts-server.target" "$bundle/systemd/"
+    install -m644 "$repository_root/deploy/systemd/bts-display.target" "$bundle/systemd/"
+    install -m644 "$repository_root/deploy/$component.env.example" "$bundle/config/"
+fi
 install -m644 "$repository_root/deploy/components/$component.conf" "$bundle/install/component.conf"
 install -m644 "$repository_root/LICENSE" "$bundle/LICENSE"
 printf '%s\n' "$version" > "$bundle/VERSION"

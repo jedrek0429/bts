@@ -50,6 +50,12 @@ sudo bts-install install \
   --component addons
 ```
 
+Install only the operator CLI on an administration machine:
+
+```sh
+sudo bts-install install custom --component cli
+```
+
 For a non-interactive Display installation, supply the endpoint, stable identity, suggested name and confirmation:
 
 ```sh
@@ -66,12 +72,17 @@ Roles are shortcuts resolved before planning:
 
 | Role | Components |
 | --- | --- |
-| `full` | Core, Display, Telephony, Addons |
-| `server` | Core, Telephony, Addons |
+| `full` | Core, Display, Telephony, Addons, CLI |
+| `server` | Core, Telephony, Addons, CLI |
 | `display` | Display |
 | `custom` | Explicit `--component` selections |
 
-Core, Display, Telephony and Addons remain independently deployable. Each component has its own bundle, service, account requirements, configuration and activation link. A remote Display reads `BTS_CORE_WS_URL`; it neither requires nor orders itself after a local Core service.
+Core, Display, Telephony, Addons and CLI remain independently deployable. The
+runtime components have their own service, account requirements, configuration
+and activation link. CLI is service-less and publishes `/usr/bin/btscli`; it
+does not install Display, Cage, Asterisk or Telephony dependencies. A remote
+Display reads `BTS_CORE_WS_URL`; it neither requires nor orders itself after a
+local Core service.
 
 ## Commands
 
