@@ -34,11 +34,17 @@ btscli group rename GROUP NAME
 btscli group add GROUP TERMINAL...
 btscli group remove GROUP TERMINAL...
 btscli group delete GROUP
+
+btscli addon list
+btscli addon show ADDON
+btscli addon enable ADDON
+btscli addon disable ADDON
 ```
 
 Every variadic `TAG...` and `TERMINAL...` requires at least one value. Global
-options are accepted before or after a subcommand. Named profiles, addon and
-session commands, raw event submission and host administration are absent.
+options are accepted before or after a subcommand. Named profiles, addon
+installation or removal, session commands, raw event submission and host
+administration are absent.
 
 ## Configuration precedence
 
@@ -95,6 +101,11 @@ The result is the compact `TerminalListResource` document. A successful
 idempotent mutation still exits zero and reports `"changed":false`. Scripts
 should branch on exit code plus `error.category` and `error.code`, never on
 English prose.
+
+Addon output distinguishes Core's persistent `enabled` policy from observed
+host registration. Disabling an addon removes its menus and actions from active
+Core routing; it does not stop a process, service or container. `offline` means
+that no host is currently registered, not that the addon is uninstalled.
 
 A human inspection is semantic rather than a JSON pretty-printer:
 

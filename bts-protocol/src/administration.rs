@@ -13,7 +13,7 @@ use crate::{
     BtsState, DisplayState, GroupId, GroupName, IdentifierError, PresentationGeneration,
     PresentationId, ProtocolVersion, TerminalCapabilities, TerminalDescription, TerminalId,
     TerminalImplementationId, TerminalImplementationVersion, TerminalName,
-    TerminalRuntimeDiagnostics, TerminalTag,
+    TerminalRuntimeDiagnostics, TerminalTag, addons::v1::AddonManifest,
 };
 
 const MAX_RESOURCE_REFERENCE_LENGTH: usize = 100;
@@ -112,6 +112,7 @@ macro_rules! resource_reference {
 
 resource_reference!(TerminalReference, "terminal reference");
 resource_reference!(GroupReference, "group reference");
+resource_reference!(AddonReference, "addon reference");
 
 fn validate_resource_reference(
     kind: &'static str,
@@ -154,6 +155,7 @@ impl Error for ResourceReferenceError {}
 pub enum AdministrativeResourceKind {
     Terminal,
     Group,
+    Addon,
 }
 
 /// A possible resource match returned with an ambiguous-reference error.
@@ -186,8 +188,10 @@ impl AdministrativeErrorCode {
     pub const INVALID_REQUEST: &'static str = "invalid_request";
     pub const TERMINAL_NOT_FOUND: &'static str = "terminal_not_found";
     pub const GROUP_NOT_FOUND: &'static str = "group_not_found";
+    pub const ADDON_NOT_FOUND: &'static str = "addon_not_found";
     pub const AMBIGUOUS_TERMINAL_REFERENCE: &'static str = "ambiguous_terminal_reference";
     pub const AMBIGUOUS_GROUP_REFERENCE: &'static str = "ambiguous_group_reference";
+    pub const AMBIGUOUS_ADDON_REFERENCE: &'static str = "ambiguous_addon_reference";
     pub const TERMINAL_ONLINE: &'static str = "terminal_online";
     pub const GROUP_ALREADY_EXISTS: &'static str = "group_already_exists";
     pub const MUTATION_REJECTED: &'static str = "mutation_rejected";
@@ -301,6 +305,24 @@ pub struct GroupResource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupListResource {
     pub groups: Vec<GroupResource>,
+}
+
+/// Core-owned policy and observed registration for one Addon API v1 addon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddonResource {
+    pub manifest: AddonManifest,
+    pub enabled: bool,
+    pub registered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddonListResource {
+    pub addons: Vec<AddonResource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetAddonEnabledRequest {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,8 +1,8 @@
 use std::io::{self, BufRead, Write};
 
 use bts_sdk::{
-    CoreOperationalStatus, CoreStateResource, CoreStatusResource, DisplayState, GroupResource,
-    TerminalResource,
+    AddonCapability, AddonResource, CoreOperationalStatus, CoreStateResource, CoreStatusResource,
+    DisplayState, GroupResource, ScreenKind, TerminalResource,
 };
 use chrono::Local;
 
@@ -61,6 +61,15 @@ pub fn write_success(
                 serde_json::to_writer(&mut streams.stdout, value).map_err(io::Error::other)?
             }
             CommandResult::GroupDeletion(value) => {
+                serde_json::to_writer(&mut streams.stdout, value).map_err(io::Error::other)?
+            }
+            CommandResult::AddonList(value) => {
+                serde_json::to_writer(&mut streams.stdout, value).map_err(io::Error::other)?
+            }
+            CommandResult::Addon(value) => {
+                serde_json::to_writer(&mut streams.stdout, value).map_err(io::Error::other)?
+            }
+            CommandResult::AddonMutation(value) => {
                 serde_json::to_writer(&mut streams.stdout, value).map_err(io::Error::other)?
             }
         }
@@ -154,6 +163,105 @@ pub fn write_success(
             "Deleted terminal group {} ({})",
             value.deleted.id, value.deleted.name
         ),
+        CommandResult::AddonList(value) => {
+            if value.addons.is_empty() {
+                writeln!(streams.stdout, "No addons are known to Core")
+            } else {
+                for addon in &value.addons {
+                    writeln!(
+                        streams.stdout,
+                        "{}\t{}\t{}.{}.{}\t{}\t{}",
+                        addon.manifest.id,
+                        addon.manifest.name,
+                        addon.manifest.version.major,
+                        addon.manifest.version.minor,
+                        addon.manifest.version.patch,
+                        if addon.enabled { "enabled" } else { "disabled" },
+                        if addon.registered {
+                            "registered"
+                        } else {
+                            "offline"
+                        }
+                    )?;
+                }
+                Ok(())
+            }
+        }
+        CommandResult::Addon(value) => write_human_addon(streams.stdout, value),
+        CommandResult::AddonMutation(value) => {
+            write_human_addon(streams.stdout, &value.resource)?;
+            writeln!(streams.stdout, "Changed: {}", value.changed)
+        }
+    }
+}
+
+fn write_human_addon(output: &mut dyn Write, addon: &AddonResource) -> io::Result<()> {
+    let manifest = &addon.manifest;
+    writeln!(output, "Addon: {} ({})", manifest.name, manifest.id)?;
+    writeln!(
+        output,
+        "Version: {}.{}.{}",
+        manifest.version.major, manifest.version.minor, manifest.version.patch
+    )?;
+    writeln!(output, "Addon API: v{}", manifest.api_version)?;
+    writeln!(
+        output,
+        "Status: {}, {}",
+        if addon.enabled { "enabled" } else { "disabled" },
+        if addon.registered {
+            "registered"
+        } else {
+            "offline"
+        }
+    )?;
+    writeln!(
+        output,
+        "Capabilities: {}",
+        manifest
+            .capabilities
+            .iter()
+            .map(addon_capability_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    writeln!(
+        output,
+        "Actions: {}",
+        manifest
+            .actions
+            .iter()
+            .map(|action| action.id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    writeln!(
+        output,
+        "Screens: {}",
+        manifest
+            .screens
+            .iter()
+            .map(screen_kind_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn addon_capability_name(capability: &AddonCapability) -> &'static str {
+    match capability {
+        AddonCapability::Display => "display",
+        AddonCapability::Assets => "assets",
+        AddonCapability::Configuration => "configuration",
+        AddonCapability::DataDirectory => "data_directory",
+        AddonCapability::ExternalHttp => "external_http",
+    }
+}
+
+fn screen_kind_name(screen: &ScreenKind) -> &'static str {
+    match screen {
+        ScreenKind::Clock => "clock",
+        ScreenKind::Weather => "weather",
+        ScreenKind::Message => "message",
+        ScreenKind::Blank => "blank",
     }
 }
 

@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
 
 use bts_protocol::{
-    AdministrativeApiCompatibility, AdministrativeError, AdministrativeErrorCategory,
-    AdministrativeErrorCode, AdministrativeErrorResponse, AdministrativeResourceKind, ApiDiscovery,
-    GroupId, GroupName, GroupResource, MutationResponse, ResourceCandidate, TerminalCapabilities,
-    TerminalDescription, TerminalId, TerminalImplementationId, TerminalName, TerminalReference,
-    TerminalResource, TerminalTag, UpdateGroupMembersRequest,
+    AddonReference, AddonResource, AdministrativeApiCompatibility, AdministrativeError,
+    AdministrativeErrorCategory, AdministrativeErrorCode, AdministrativeErrorResponse,
+    AdministrativeResourceKind, ApiDiscovery, GroupId, GroupName, GroupResource, MutationResponse,
+    ResourceCandidate, TerminalCapabilities, TerminalDescription, TerminalId,
+    TerminalImplementationId, TerminalName, TerminalReference, TerminalResource, TerminalTag,
+    UpdateGroupMembersRequest,
+    addons::v1::{API_VERSION, AddonId, AddonManifest, AddonVersion},
     core::{
+        CORE_ADMIN_ADDON_ENABLED_PATH, CORE_ADMIN_ADDON_PATH, CORE_ADMIN_ADDONS_PATH,
         CORE_ADMIN_BASE_PATH, CORE_ADMIN_GROUP_MEMBERS_PATH, CORE_ADMIN_GROUP_NAME_PATH,
         CORE_ADMIN_GROUP_PATH, CORE_ADMIN_GROUPS_PATH, CORE_ADMIN_STATE_PATH,
         CORE_ADMIN_STATUS_PATH, CORE_ADMIN_TERMINAL_DESCRIPTION_PATH,
@@ -22,6 +25,12 @@ fn administrative_paths_are_resource_oriented_and_share_the_version_source() {
     assert_eq!(CORE_ADMIN_BASE_PATH, "/api/v1/admin");
     assert_eq!(CORE_ADMIN_STATUS_PATH, "/api/v1/admin/status");
     assert_eq!(CORE_ADMIN_STATE_PATH, "/api/v1/admin/state");
+    assert_eq!(CORE_ADMIN_ADDONS_PATH, "/api/v1/admin/addons");
+    assert_eq!(CORE_ADMIN_ADDON_PATH, "/api/v1/admin/addons/{addon}");
+    assert_eq!(
+        CORE_ADMIN_ADDON_ENABLED_PATH,
+        "/api/v1/admin/addons/{addon}/enabled"
+    );
     assert_eq!(CORE_ADMIN_TERMINALS_PATH, "/api/v1/admin/terminals");
     assert_eq!(
         CORE_ADMIN_TERMINAL_PATH,
@@ -112,6 +121,7 @@ fn references_are_bounded_raw_id_or_name_values_and_members_are_deterministic() 
         TerminalReference::new("Bedroom").unwrap().as_str(),
         "Bedroom"
     );
+    assert_eq!(AddonReference::new("Clock").unwrap().as_str(), "Clock");
     assert_eq!(
         serde_json::to_value(UpdateGroupMembersRequest {
             add: BTreeSet::from([
@@ -125,6 +135,32 @@ fn references_are_bounded_raw_id_or_name_values_and_members_are_deterministic() 
             "add": ["bedroom-display", "dining-display"],
             "remove": []
         })
+    );
+}
+
+#[test]
+fn addon_resource_keeps_policy_and_registration_distinct() {
+    let resource = AddonResource {
+        manifest: AddonManifest {
+            api_version: API_VERSION,
+            id: AddonId::new("clock"),
+            name: "Clock".to_owned(),
+            version: AddonVersion::new(1, 2, 3),
+            actions: Vec::new(),
+            menu: Vec::new(),
+            capabilities: Vec::new(),
+            screens: Vec::new(),
+        },
+        enabled: false,
+        registered: true,
+    };
+    let value = serde_json::to_value(&resource).unwrap();
+    assert_eq!(value["manifest"]["id"], "clock");
+    assert_eq!(value["enabled"], false);
+    assert_eq!(value["registered"], true);
+    assert_eq!(
+        serde_json::from_value::<AddonResource>(value).unwrap(),
+        resource
     );
 }
 
