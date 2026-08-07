@@ -1,6 +1,7 @@
 //! Shared, implementation-independent BTS wire contracts.
 
 pub mod addons;
+pub mod administration;
 pub mod assets;
 pub mod core;
 pub mod display;
@@ -12,6 +13,7 @@ pub mod targeting;
 pub mod telephony;
 pub mod terminal;
 
+pub use administration::*;
 pub use assets::*;
 pub use display::*;
 pub use dtmf::*;

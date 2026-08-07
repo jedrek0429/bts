@@ -3,8 +3,10 @@ members = [
     "bts-compat",
     "bts-install",
     "bts-core",
+    "bts-cli",
     "bts-display",
     "bts-protocol",
+    "bts-sdk",
     "bts-terminal",
     "bts-terminal-simulator",
     "bts-telephony",
@@ -24,6 +26,7 @@ bts-compat = { path = "bts-compat" }
 asterisk-ari = "0.3.0"
 axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 eframe = { version = "0.32", default-features = false, features = [
     "default_fonts",
     "glow",

@@ -78,9 +78,11 @@ jobs:
         run: |
           assets="$RUNNER_TEMP/release-assets"
           install -d "$assets"
-          for component in core display telephony addons; do
+          for component in core display telephony addons cli; do
+            binary="bts-$component"
+            [[ "$component" == cli ]] && binary=btscli
             scripts/build-release component \
-              "$component" x86_64 "target/release/bts-$component" "$assets"
+              "$component" x86_64 "target/release/$binary" "$assets"
           done
           scripts/build-release installer target/release/bts-install "$assets"
           printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
@@ -90,7 +92,7 @@ jobs:
           path: ${{ env.ASSET_DIRECTORY }}
           if-no-files-found: error
 
-  linux-aarch64-display:
+  linux-aarch64-display-and-cli:
     needs: validate-version
     runs-on: ubuntu-22.04-arm
     steps:
@@ -102,22 +104,24 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
             libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
-      - name: Build ARM64 Display
-        run: cargo build --locked --release -p bts-display
-      - name: Build ARM64 Display bundle
+      - name: Build ARM64 Display and CLI
+        run: cargo build --locked --release -p bts-display -p bts-cli
+      - name: Build ARM64 Display and CLI bundles
         run: |
           assets="$RUNNER_TEMP/release-assets"
           scripts/build-release component \
             display aarch64 target/release/bts-display "$assets"
+          scripts/build-release component \
+            cli aarch64 target/release/btscli "$assets"
           printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
-          name: bts-linux-aarch64-display
+          name: bts-linux-aarch64-display-and-cli
           path: ${{ env.ASSET_DIRECTORY }}
           if-no-files-found: error
 
   publish-release:
-    needs: [linux-x86_64, linux-aarch64-display]
+    needs: [linux-x86_64, linux-aarch64-display-and-cli]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

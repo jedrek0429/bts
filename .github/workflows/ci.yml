@@ -40,7 +40,9 @@ jobs:
       - name: Validate shell scripts
         run: shellcheck scripts/build-release scripts/build-component-bundle scripts/bts-dev scripts/bts-tmux scripts/test-bts-tmux.sh scripts/test-support/fake-tmux scripts/test-release-assets.sh scripts/test-release-version.sh scripts/generate-voice-prompts.sh
       - name: Validate Python release tooling
-        run: python3 -m py_compile scripts/generate-release-manifest.py scripts/release-version.py
+        run: python3 -m py_compile scripts/generate-release-manifest.py scripts/release-version.py scripts/test-administrative-boundaries.py
+      - name: Validate administrative crate boundaries
+        run: python3 scripts/test-administrative-boundaries.py
       - name: Validate release versions
         run: scripts/test-release-version.sh
       - name: Validate development launcher
@@ -64,6 +66,7 @@ jobs:
               "$stage/usr/lib/bts/components/$component/releases/$version/bin/bts-$component"
             ln -s "releases/$version" "$stage/usr/lib/bts/components/$component/current"
           done
+          install -Dm755 target/release/btscli "$stage/usr/bin/btscli"
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
           install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
           install -m755 "$(command -v install)" "$stage/usr/bin/install"

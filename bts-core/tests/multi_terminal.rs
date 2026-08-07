@@ -10,12 +10,11 @@ use bts_addons::HttpAddonContext;
 use bts_core::{
     presentations::TerminalPresentationState,
     server::{CoreConfiguration, CoreServer, CoreServices},
-    terminals::TerminalDescription,
 };
 use bts_protocol::{
     DisplayState, DtmfMenuKey, Event, EventKind, GroupId, GroupIdentity, GroupName, NewEvent,
     PresentationDeliveryOutcome, PresentationId, PresentationRequest, ScreenKind, TargetScope,
-    TelephonyTargets, TerminalCapabilities, TerminalCapability, TerminalId,
+    TelephonyTargets, TerminalCapabilities, TerminalCapability, TerminalDescription, TerminalId,
     TerminalImplementationId, TerminalName, TerminalTarget,
     addons::v1::{
         API_VERSION, ActionId, ActionRegistration, ActionRequest, Addon, AddonCapability,

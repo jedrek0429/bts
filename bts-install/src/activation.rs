@@ -46,6 +46,15 @@ pub fn activate(root: &Path, component: Component, version: &str) -> Result<Acti
     let _ = fs::remove_file(&temporary);
     symlink(Path::new("releases").join(version), &temporary)?;
     fs::rename(&temporary, &current).context("Could not atomically activate staged component")?;
+    if component == Component::Cli {
+        let binary_directory = rooted(root, "/usr/bin");
+        fs::create_dir_all(&binary_directory)?;
+        let installed = binary_directory.join("btscli");
+        let temporary = binary_directory.join(format!(".btscli.{}", std::process::id()));
+        let _ = fs::remove_file(&temporary);
+        symlink("../lib/bts/components/cli/current/bin/btscli", &temporary)?;
+        fs::rename(temporary, installed).context("Could not activate /usr/bin/btscli")?;
+    }
     Ok(Activation {
         component,
         previous,
@@ -117,5 +126,20 @@ mod tests {
         )
         .unwrap();
         assert!(activate(root.path(), Component::Core, "0.3.0").is_err());
+    }
+
+    #[test]
+    fn cli_activation_publishes_the_operator_executable() {
+        let root = tempdir().unwrap();
+        let binary = root
+            .path()
+            .join("usr/lib/bts/components/cli/releases/0.3.0/bin");
+        fs::create_dir_all(&binary).unwrap();
+        fs::write(binary.join("btscli"), "binary").unwrap();
+        activate(root.path(), Component::Cli, "0.3.0").unwrap();
+        assert_eq!(
+            fs::read_link(root.path().join("usr/bin/btscli")).unwrap(),
+            PathBuf::from("../lib/bts/components/cli/current/bin/btscli")
+        );
     }
 }
