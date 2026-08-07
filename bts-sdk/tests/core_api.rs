@@ -2,9 +2,11 @@ use std::{collections::BTreeSet, future::pending, sync::Arc, time::Duration};
 
 use axum::{Json, Router, http::HeaderMap, routing::get};
 use bts_protocol::{
-    AdministrativeError, AdministrativeErrorCategory, AdministrativeErrorCode,
-    AdministrativeErrorResponse, ApiDiscovery, CoreOperationalStatus, CoreStateResource,
-    CoreStatusResource,
+    AddonListResource, AddonReference, AddonResource, AdministrativeError,
+    AdministrativeErrorCategory, AdministrativeErrorCode, AdministrativeErrorResponse,
+    ApiDiscovery, CoreOperationalStatus, CoreStateResource, CoreStatusResource, MutationResponse,
+    SetAddonEnabledRequest,
+    addons::v1::{API_VERSION, AddonId, AddonManifest, AddonVersion},
     core::{CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH, CORE_API_DISCOVERY_PATH},
 };
 use bts_sdk::{CoreApi, CoreApiConfiguration, SdkError};
@@ -94,6 +96,23 @@ fn compatible_app() -> Router {
         )
 }
 
+fn addon_resource(enabled: bool) -> AddonResource {
+    AddonResource {
+        manifest: AddonManifest {
+            api_version: API_VERSION,
+            id: AddonId::new("clock"),
+            name: "Clock".to_owned(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: Vec::new(),
+            menu: Vec::new(),
+            capabilities: Vec::new(),
+            screens: Vec::new(),
+        },
+        enabled,
+        registered: true,
+    }
+}
+
 #[test]
 fn configuration_validates_urls_and_timeout_without_global_state() {
     for invalid in [
@@ -135,6 +154,48 @@ async fn discovers_and_decodes_typed_status_and_state() {
     let state = api.state().await.unwrap();
     assert_eq!(state.terminals.registered, 2);
     assert_eq!(state.terminals.online, 1);
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn addon_operations_use_typed_administrative_resources() {
+    let app = Router::new()
+        .route(
+            CORE_API_DISCOVERY_PATH,
+            get(|| async { Json(discovery(1, BTreeSet::from([1]))) }),
+        )
+        .route(
+            "/api/v1/admin/addons",
+            get(|| async {
+                Json(AddonListResource {
+                    addons: vec![addon_resource(true)],
+                })
+            }),
+        )
+        .route(
+            "/api/v1/admin/addons/{addon}",
+            get(|| async { Json(addon_resource(true)) }),
+        )
+        .route(
+            "/api/v1/admin/addons/{addon}/enabled",
+            axum::routing::put(|Json(request): Json<SetAddonEnabledRequest>| async move {
+                Json(MutationResponse {
+                    changed: true,
+                    resource: addon_resource(request.enabled),
+                })
+            }),
+        );
+    let fixture = Fixture::spawn(app).await;
+    let api = fixture.api();
+    let addon = AddonReference::new("clock").unwrap();
+    assert_eq!(api.addons().await.unwrap().addons.len(), 1);
+    assert!(api.addon(&addon).await.unwrap().enabled);
+    let disabled = api
+        .set_addon_enabled(&addon, &SetAddonEnabledRequest { enabled: false })
+        .await
+        .unwrap();
+    assert!(disabled.changed);
+    assert!(!disabled.resource.enabled);
     fixture.stop().await;
 }
 

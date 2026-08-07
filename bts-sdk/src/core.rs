@@ -1,11 +1,11 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use bts_protocol::{
-    AdministrativeErrorResponse, ApiDiscovery, CoreStateResource, CoreStatusResource,
-    CreateGroupRequest, DeletionResponse, GroupListResource, GroupReference, GroupResource,
-    MutationResponse, RenameGroupRequest, RenameTerminalRequest, SetTerminalDescriptionRequest,
-    TerminalListResource, TerminalReference, TerminalResource, UpdateGroupMembersRequest,
-    UpdateTerminalTagsRequest,
+    AddonListResource, AddonReference, AddonResource, AdministrativeErrorResponse, ApiDiscovery,
+    CoreStateResource, CoreStatusResource, CreateGroupRequest, DeletionResponse, GroupListResource,
+    GroupReference, GroupResource, MutationResponse, RenameGroupRequest, RenameTerminalRequest,
+    SetAddonEnabledRequest, SetTerminalDescriptionRequest, TerminalListResource, TerminalReference,
+    TerminalResource, UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
     core::{CORE_API_DISCOVERY_PATH, CORE_API_VERSION},
 };
 use reqwest::{Client, Method, Url, header};
@@ -109,6 +109,23 @@ impl CoreApi {
         let discovery = self.discover_compatible().await?;
         let url = self.join_administrative_path(&discovery, "state")?;
         self.get(url).await
+    }
+
+    pub async fn addons(&self) -> Result<AddonListResource, SdkError> {
+        self.administrative_get(&["addons"]).await
+    }
+
+    pub async fn addon(&self, addon: &AddonReference) -> Result<AddonResource, SdkError> {
+        self.administrative_get(&["addons", addon.as_str()]).await
+    }
+
+    pub async fn set_addon_enabled(
+        &self,
+        addon: &AddonReference,
+        request: &SetAddonEnabledRequest,
+    ) -> Result<MutationResponse<AddonResource>, SdkError> {
+        self.administrative_json(Method::PUT, &["addons", addon.as_str(), "enabled"], request)
+            .await
     }
 
     pub async fn terminals(&self) -> Result<TerminalListResource, SdkError> {

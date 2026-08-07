@@ -1,11 +1,13 @@
+mod addon;
 mod group;
 mod state;
 mod status;
 mod terminal;
 
 use bts_sdk::{
-    CoreApi, CoreStateResource, CoreStatusResource, DeletionResponse, GroupListResource,
-    GroupResource, MutationResponse, SdkError, TerminalListResource, TerminalResource,
+    AddonListResource, AddonResource, CoreApi, CoreStateResource, CoreStatusResource,
+    DeletionResponse, GroupListResource, GroupResource, MutationResponse, SdkError,
+    TerminalListResource, TerminalResource,
 };
 
 use crate::cli::Command;
@@ -21,6 +23,9 @@ pub enum CommandResult {
     Group(GroupResource),
     GroupMutation(MutationResponse<GroupResource>),
     GroupDeletion(DeletionResponse<GroupResource>),
+    AddonList(AddonListResource),
+    Addon(AddonResource),
+    AddonMutation(MutationResponse<AddonResource>),
 }
 
 pub async fn execute(api: &CoreApi, command: &Command) -> Result<CommandResult, SdkError> {
@@ -29,5 +34,6 @@ pub async fn execute(api: &CoreApi, command: &Command) -> Result<CommandResult, 
         Command::State { .. } => state::execute(api).await.map(CommandResult::State),
         Command::Terminal { command } => terminal::execute(api, command).await,
         Command::Group { command } => group::execute(api, command).await,
+        Command::Addon { command } => addon::execute(api, command).await,
     }
 }

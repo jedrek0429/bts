@@ -112,6 +112,13 @@ Configuration and persistent storage are host responsibilities, because local pa
 
 Use `start` to initialise resources, `handle_event` for requests and `stop` to cancel tasks. The host attributes errors to the manifest ID and continues invoking unrelated addons. Background display updates should stop when Core rejects the lease as stale.
 
+Runtime enablement is separate from hosting. `btscli addon disable` records
+Core policy and removes that addon's actions and menus from active routing; it
+does not stop its host process. Registration is ephemeral, while the enabled
+policy survives Core restarts and is reapplied when the host registers again.
+Installation, service supervision and future third-party packaging belong to
+`bts-install` and the reusable addon host, not to the administrative API.
+
 ## Deliberate exclusions
 
 API v1 does not provide dynamic libraries, third-party package installation, process sandboxing, arbitrary renderer code, direct container access or a Spotify integration. Capability declarations are validated at Core API boundaries; operating-system sandboxing remains the responsibility of deployment units.

@@ -9,7 +9,9 @@ use std::{
 
 use axum::{Json, Router, routing::get};
 use bts_cli::{
-    cli::{Cli, Command, GroupCommand, StateCommand, TerminalCommand, TerminalTagCommand},
+    cli::{
+        AddonCommand, Cli, Command, GroupCommand, StateCommand, TerminalCommand, TerminalTagCommand,
+    },
     config::{ColourMode, Environment, OutputMode, ResolvedConfiguration},
     output::OutputStreams,
 };
@@ -40,6 +42,7 @@ fn installed_executable_is_named_btscli_and_help_is_successful() {
     assert!(stdout.contains("state"));
     assert!(stdout.contains("terminal"));
     assert!(stdout.contains("group"));
+    assert!(stdout.contains("addon"));
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_btscli"))
         .args(["--output", "json", "state", "watch"])
@@ -145,6 +148,23 @@ fn group_resource() -> Value {
     })
 }
 
+fn addon_resource(enabled: bool) -> Value {
+    json!({
+        "manifest": {
+            "api_version": 1,
+            "id": "clock",
+            "name": "Clock",
+            "version": { "major": 1, "minor": 2, "patch": 3 },
+            "actions": [{ "id": "clock.show", "description": "Show the clock" }],
+            "menu": [],
+            "capabilities": ["display"],
+            "screens": ["clock"]
+        },
+        "enabled": enabled,
+        "registered": true
+    })
+}
+
 fn administrative_app(deletes: Arc<AtomicUsize>) -> Router {
     let delete_terminal = deletes.clone();
     Router::new()
@@ -195,6 +215,23 @@ fn administrative_app(deletes: Arc<AtomicUsize>) -> Router {
             "/api/v1/admin/groups/{group}/members",
             axum::routing::patch(|| async {
                 Json(json!({ "changed": false, "resource": group_resource() }))
+            }),
+        )
+        .route(
+            "/api/v1/admin/addons",
+            get(|| async { Json(json!({ "addons": [addon_resource(true)] })) }),
+        )
+        .route(
+            "/api/v1/admin/addons/{addon}",
+            get(|| async { Json(addon_resource(true)) }),
+        )
+        .route(
+            "/api/v1/admin/addons/{addon}/enabled",
+            axum::routing::put(|Json(body): Json<Value>| async move {
+                Json(json!({
+                    "changed": true,
+                    "resource": addon_resource(body["enabled"].as_bool().unwrap())
+                }))
             }),
         )
 }
@@ -285,6 +322,14 @@ fn parsing_exposes_the_frozen_administrative_grammar_and_global_options() {
         state.command,
         Command::State {
             command: StateCommand::Show
+        }
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["btscli", "addon", "disable", "clock"])
+            .unwrap()
+            .command,
+        Command::Addon {
+            command: AddonCommand::Disable { .. }
         }
     ));
 
@@ -484,6 +529,45 @@ async fn terminal_and_group_commands_have_human_and_exact_json_output() {
         serde_json::from_str::<Value>(&stdout).unwrap()["changed"],
         false
     );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn addon_commands_have_human_and_exact_json_output() {
+    let fixture = Fixture::spawn(administrative_app(Arc::new(AtomicUsize::new(0)))).await;
+    let environment = Environment::from_pairs([("BTS_CORE_URL", &fixture.core_url)]);
+
+    let (code, stdout, stderr) =
+        invoke(&["btscli", "addon", "list"], &environment, false, false).await;
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("clock\tClock\t1.2.3\tenabled\tregistered"));
+
+    let (code, stdout, stderr) = invoke(
+        &["btscli", "addon", "show", "clock"],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("Addon: Clock (clock)"));
+    assert!(stdout.contains("Capabilities: display"));
+    assert!(stdout.contains("Actions: clock.show"));
+
+    let (code, stdout, stderr) = invoke(
+        &["btscli", "--output", "json", "addon", "disable", "clock"],
+        &environment,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    let result = serde_json::from_str::<Value>(&stdout).unwrap();
+    assert_eq!(result["changed"], true);
+    assert_eq!(result["resource"], addon_resource(false));
     fixture.stop().await;
 }
 

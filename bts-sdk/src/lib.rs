@@ -11,12 +11,16 @@ pub use configuration::{ConfigurationError, CoreApiConfiguration};
 pub use core::{CoreApi, SdkMetadata};
 pub use error::SdkError;
 
+pub use bts_protocol::addons::v1::{
+    ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest, AddonVersion, MenuEntry,
+};
 pub use bts_protocol::{
-    AdministrativeError, AdministrativeErrorCategory, ApiDiscovery, CoreOperationalStatus,
-    CoreStateResource, CoreStatusResource, CreateGroupRequest, DeletionResponse, DisplayState,
-    GroupId, GroupListResource, GroupName, GroupReference, GroupResource, MutationResponse,
-    RenameGroupRequest, RenameTerminalRequest, SetTerminalDescriptionRequest, TerminalDescription,
-    TerminalId, TerminalListResource, TerminalName, TerminalPresentationResource,
-    TerminalReference, TerminalResource, TerminalTag, UpdateGroupMembersRequest,
-    UpdateTerminalTagsRequest,
+    AddonListResource, AddonReference, AddonResource, AdministrativeError,
+    AdministrativeErrorCategory, ApiDiscovery, CoreOperationalStatus, CoreStateResource,
+    CoreStatusResource, CreateGroupRequest, DeletionResponse, DisplayState, GroupId,
+    GroupListResource, GroupName, GroupReference, GroupResource, MutationResponse,
+    RenameGroupRequest, RenameTerminalRequest, ScreenKind, SetAddonEnabledRequest,
+    SetTerminalDescriptionRequest, TerminalDescription, TerminalId, TerminalListResource,
+    TerminalName, TerminalPresentationResource, TerminalReference, TerminalResource, TerminalTag,
+    UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
 };

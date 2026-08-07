@@ -1,7 +1,7 @@
 # Administrative API v1
 
 This document freezes the resource and wire contract. Core serves discovery,
-status, state, and the terminal and group administration paths below.
+status, state, terminal, group and addon administration paths below.
 
 ## Discovery and versioning
 
@@ -18,8 +18,9 @@ not invent such a mapping.
 
 Administrative v1 uses `/api/v1/admin`. Its compatibility number comes from
 `compatibility.json` through `bts-compat`; documentation is not a second
-version source. The existing `/api/v1/state`, event, addon and terminal-runtime
-routes retain their current contracts and are not administrative SDK routes.
+version source. The existing `/api/v1/state`, event, active-addon and
+terminal-runtime routes retain their current contracts and are not
+administrative SDK routes.
 
 ## Resources and methods
 
@@ -28,6 +29,9 @@ routes retain their current contracts and are not administrative SDK routes.
 | `GET` | `/api` | — | `ApiDiscovery` |
 | `GET` | `/api/v1/admin/status` | — | `CoreStatusResource` |
 | `GET` | `/api/v1/admin/state` | — | `CoreStateResource` |
+| `GET` | `/api/v1/admin/addons` | — | `AddonListResource` |
+| `GET` | `/api/v1/admin/addons/{addon}` | — | `AddonResource` |
+| `PUT` | `/api/v1/admin/addons/{addon}/enabled` | `SetAddonEnabledRequest` | `MutationResponse<AddonResource>` |
 | `GET` | `/api/v1/admin/terminals` | — | `TerminalListResource` |
 | `GET` | `/api/v1/admin/terminals/{terminal}` | — | `TerminalResource` |
 | `PUT` | `/api/v1/admin/terminals/{terminal}/name` | `RenameTerminalRequest` | `MutationResponse<TerminalResource>` |
@@ -48,14 +52,24 @@ durable definition fields remain available while offline. State responses are
 snapshots: `captured_at`, legacy `BtsState` and terminal counts describe one
 observation rather than several independently read values.
 
+`AddonResource` contains the last manifest registered during the current Core
+run, persistent Core-owned `enabled` policy and ephemeral `registered` status.
+Core does not persist manifests or registration: an addon host must register
+again after Core restarts. Disabled policy is stored atomically alongside the
+terminal registry as `addons.json` and is applied when that ID registers again.
+Disabling removes the addon's actions and menu entries from active routing but
+does not start, stop, install or remove its host. `/api/v1/addons` continues to
+return only enabled, registered manifests for Telephony.
+
 `TerminalResource::presentation` is the current accepted semantic presentation
 for that terminal when one exists. It remains available while a terminal is
 offline and is removed when the terminal definition is forgotten.
 
 ## References
 
-`{terminal}`, `{group}` and terminal values in `UpdateGroupMembersRequest` are bounded
-raw references, percent-encoded by the SDK when placed in a path. Core resolves
+`{terminal}`, `{group}`, `{addon}` and terminal values in
+`UpdateGroupMembersRequest` are bounded raw references, percent-encoded by the
+SDK when placed in a path. Core resolves
 them using one deterministic rule:
 
 1. an exact stable ID match wins;
@@ -84,6 +98,11 @@ terminal is always HTTP 409 with category `conflict` and code
 CLI cannot override this Core rule. Deleting a group removes memberships but
 never deletes terminals.
 
+Addon enable and disable `PUT`s are idempotent. Enabling an offline addon
+changes policy but cannot make it registered; execution remains the addon's
+host responsibility. Enabling a registered addon is rejected if its actions or
+menu digits conflict with another active addon.
+
 ## Errors
 
 All administrative failures use `AdministrativeErrorResponse`. `category` is
@@ -106,8 +125,9 @@ success/error body are `bts-sdk` errors because no valid server envelope was
 received.
 
 The initial stable codes are `invalid_request`, `terminal_not_found`,
-`group_not_found`, `ambiguous_terminal_reference`,
-`ambiguous_group_reference`, `terminal_online`, `group_already_exists`,
-`mutation_rejected`, `unsupported_administrative_api` and `internal`. Codes are
+`group_not_found`, `addon_not_found`, `ambiguous_terminal_reference`,
+`ambiguous_group_reference`, `ambiguous_addon_reference`, `terminal_online`,
+`group_already_exists`, `mutation_rejected`, `unsupported_administrative_api`
+and `internal`. Codes are
 open validated identifiers: later v1 additions do not require a new category,
 and SDK consumers must retain an unfamiliar code within its known category.
