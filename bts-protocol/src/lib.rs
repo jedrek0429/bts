@@ -4,15 +4,23 @@ pub mod addons;
 pub mod assets;
 pub mod core;
 pub mod display;
+pub mod dtmf;
 pub mod events;
+pub mod presentation;
 pub mod state;
+pub mod targeting;
 pub mod telephony;
+pub mod terminal;
 
 pub use assets::*;
 pub use display::*;
+pub use dtmf::*;
 pub use events::*;
+pub use presentation::*;
 pub use state::*;
+pub use targeting::*;
 pub use telephony::*;
+pub use terminal::*;
 
 #[cfg(test)]
 mod tests {
@@ -31,7 +39,7 @@ mod tests {
                 description: "Run".into(),
             }],
             menu: vec![MenuEntry {
-                digit: '4',
+                digit: DtmfMenuKey::new('4').unwrap(),
                 prompt: "sound:example".into(),
                 action: ActionId::new("example.run"),
                 order: 40,

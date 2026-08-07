@@ -300,11 +300,22 @@ name = "bts-core"
 version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "bts-addons",
  "bts-protocol",
+ "bts-telephony",
+ "bts-terminal",
+ "bts-terminal-simulator",
+ "chrono",
  "futures-util",
+ "reqwest",
+ "semver",
+ "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-tungstenite 0.27.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -315,14 +326,14 @@ name = "bts-display"
 version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
+ "bts-core",
  "bts-protocol",
- "chrono",
+ "bts-terminal",
  "eframe",
- "futures-util",
- "serde_json",
+ "reqwest",
+ "semver",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.27.0",
  "tracing",
  "tracing-subscriber",
 ]
@@ -333,6 +344,7 @@ version = "0.3.0-dev.0"
 dependencies = [
  "anyhow",
  "bts-compat",
+ "bts-protocol",
  "hex",
  "libc",
  "reqwest",
@@ -355,6 +367,7 @@ dependencies = [
  "async-trait",
  "bts-compat",
  "chrono",
+ "semver",
  "serde",
  "serde_json",
  "uuid",
@@ -372,6 +385,31 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bts-terminal"
+version = "0.3.0-dev.0"
+dependencies = [
+ "async-trait",
+ "bts-protocol",
+ "futures-util",
+ "semver",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.27.0",
+ "uuid",
+]
+
+[[package]]
+name = "bts-terminal-simulator"
+version = "0.3.0-dev.0"
+dependencies = [
+ "anyhow",
+ "bts-protocol",
+ "bts-terminal",
+ "semver",
+ "serde_json",
 ]
 
 [[package]]
@@ -2806,6 +2844,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"

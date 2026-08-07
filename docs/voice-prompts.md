@@ -28,3 +28,8 @@ BTS_KOKORO_SPEED=1.05
 ```
 
 The welcome message and each menu option are generated separately and played as one Asterisk playlist.
+
+Session configuration prompts use the same voice. Terminal and group names are
+dynamic, so Telephony asks Asterisk to spell their current Core names after the
+fixed selection prompt. The spelling, timing and interruption behaviour must be
+checked manually with the deployed Asterisk and telephone hardware.

@@ -13,7 +13,8 @@ use bts_protocol::addons::v1::{
 };
 use bts_protocol::{
     AssetRef, AssetUpload, BtsState, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
-    EventKind, NewEvent,
+    DtmfMenuKey, EventKind, NewEvent, PresentationId, PresentationRequest, TerminalCapabilities,
+    TerminalCapability, TerminalTarget,
 };
 use reqwest::Client;
 
@@ -22,6 +23,7 @@ pub struct HttpAddonContext {
     http: Client,
     core_http_url: String,
     addon_id: AddonId,
+    selected_target: Option<TerminalTarget>,
     configuration: HashMap<String, String>,
     data_directory: PathBuf,
 }
@@ -40,12 +42,21 @@ impl HttpAddonContext {
             core_http_url: core_http_url.into(),
             data_directory: data_root.join(addon_id.as_str()),
             addon_id,
+            selected_target: None,
             configuration,
         }
     }
 
+    pub fn with_selected_target(mut self, target: Option<TerminalTarget>) -> Self {
+        self.selected_target = target;
+        self
+    }
+
     pub fn addon_id(&self) -> &AddonId {
         &self.addon_id
+    }
+    pub fn selected_target(&self) -> Option<&TerminalTarget> {
+        self.selected_target.as_ref()
     }
     pub fn configuration(&self, key: &str) -> Option<&str> {
         self.configuration.get(key).map(String::as_str)
@@ -98,12 +109,36 @@ impl HttpAddonContext {
         parameters: serde_json::Value,
     ) -> Result<()> {
         self.publish(EventKind::ActionRequested {
-            request: ActionRequest { action, parameters },
+            request: ActionRequest {
+                action,
+                parameters,
+                target: self.selected_target.clone(),
+            },
         })
         .await
     }
 
+    fn presentation_event(&self, display: DisplayState) -> Option<EventKind> {
+        self.selected_target
+            .clone()
+            .map(|target| EventKind::PresentationRequested {
+                request: PresentationRequest {
+                    id: PresentationId::new(),
+                    target,
+                    required_capabilities: TerminalCapabilities::new([TerminalCapability::new(
+                        TerminalCapability::RENDER_TEXT,
+                    )
+                    .expect("the built-in capability identifier is valid")]),
+                    display,
+                },
+            })
+    }
+
     pub async fn show(&self, display: DisplayState, priority: u8) -> Result<DisplayLeaseId> {
+        if let Some(event) = self.presentation_event(display.clone()) {
+            self.publish(event).await?;
+            return Ok(DisplayLeaseId::new());
+        }
         let lease = DisplayLease {
             id: DisplayLeaseId::new(),
             owner: self.addon_id.clone(),
@@ -118,6 +153,9 @@ impl HttpAddonContext {
     }
 
     pub async fn update(&self, lease_id: DisplayLeaseId, display: DisplayState) -> Result<()> {
+        if let Some(event) = self.presentation_event(display.clone()) {
+            return self.publish(event).await;
+        }
         self.publish(EventKind::DisplayRequested {
             command: DisplayCommand::Update {
                 addon_id: self.addon_id.clone(),
@@ -129,6 +167,11 @@ impl HttpAddonContext {
     }
 
     pub async fn release(&self, lease_id: DisplayLeaseId) -> Result<()> {
+        // Explicit presentations are terminal state rather than leases. They
+        // remain until a later explicit action replaces them.
+        if self.selected_target.is_some() {
+            return Ok(());
+        }
         self.publish(EventKind::DisplayRequested {
             command: DisplayCommand::Release {
                 addon_id: self.addon_id.clone(),
@@ -139,6 +182,9 @@ impl HttpAddonContext {
     }
 
     pub async fn release_all(&self) -> Result<()> {
+        if self.selected_target.is_some() {
+            return Ok(());
+        }
         self.publish(EventKind::DisplayRequested {
             command: DisplayCommand::ReleaseAll {
                 addon_id: self.addon_id.clone(),
@@ -182,6 +228,9 @@ impl AddonContext for HttpAddonContext {
     }
     fn addon_id(&self) -> &AddonId {
         HttpAddonContext::addon_id(self)
+    }
+    fn selected_target(&self) -> Option<&TerminalTarget> {
+        HttpAddonContext::selected_target(self)
     }
     async fn publish(&self, kind: EventKind) -> Result<()> {
         HttpAddonContext::publish(self, kind).await
@@ -230,7 +279,7 @@ impl std::error::Error for AddonFailure {}
 pub struct AddonRegistry {
     addons: HashMap<AddonId, Box<dyn Addon>>,
     actions: HashMap<ActionId, AddonId>,
-    digits: HashMap<char, AddonId>,
+    digits: HashMap<DtmfMenuKey, AddonId>,
 }
 
 impl AddonRegistry {
@@ -270,11 +319,6 @@ impl AddonRegistry {
             );
         }
         for entry in &manifest.menu {
-            anyhow::ensure!(
-                entry.digit.is_ascii_digit(),
-                "invalid menu digit {}",
-                entry.digit
-            );
             anyhow::ensure!(
                 manifest
                     .actions
@@ -320,8 +364,9 @@ impl AddonRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::Event;
     use bts_protocol::addons::v1::{API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
+    use bts_protocol::{DtmfMenuKey, Event};
+    use bts_protocol::{TargetScope, TerminalId};
 
     struct Stub(AddonManifest);
     #[async_trait]
@@ -344,7 +389,7 @@ mod tests {
                 description: "test".into(),
             }],
             menu: vec![MenuEntry {
-                digit,
+                digit: DtmfMenuKey::new(digit).unwrap(),
                 prompt: "sound:test".into(),
                 action: ActionId::new(action),
                 order: 1,
@@ -386,5 +431,44 @@ mod tests {
             .to_string()
             .contains("duplicate menu digit")
         );
+    }
+
+    #[test]
+    fn invocation_target_is_exposed_and_builds_an_explicit_presentation() {
+        let target = TerminalTarget::Terminal {
+            id: TerminalId::new("bedroom-display").unwrap(),
+            scope: TargetScope::Online,
+        };
+        let context = HttpAddonContext::new(
+            "http://127.0.0.1:3100",
+            AddonId::new("message"),
+            Path::new("/tmp"),
+        )
+        .with_selected_target(Some(target.clone()));
+
+        assert_eq!(context.selected_target(), Some(&target));
+        let event = context
+            .presentation_event(DisplayState::Message {
+                title: "Targeted".to_owned(),
+                body: "Only here".to_owned(),
+            })
+            .unwrap();
+        assert!(matches!(
+            event,
+            EventKind::PresentationRequested {
+                request: PresentationRequest { target: actual, .. }
+            } if actual == target
+        ));
+    }
+
+    #[test]
+    fn lifecycle_context_keeps_the_existing_untargeted_lease_path() {
+        let context = HttpAddonContext::new(
+            "http://127.0.0.1:3100",
+            AddonId::new("message"),
+            Path::new("/tmp"),
+        );
+        assert!(context.selected_target().is_none());
+        assert!(context.presentation_event(DisplayState::Blank).is_none());
     }
 }

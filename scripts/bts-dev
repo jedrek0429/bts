@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+config_root=${BTS_DEV_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/bts/dev}
+state_root=${BTS_DEV_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/bts/dev}
+profile_root=${BTS_DEV_PROFILE_DIR:-$root/deploy/dev/profiles}
+legacy_file=${BTS_DEV_LEGACY_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/bts/dev.env}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/bts-dev up SELECTOR...
+  scripts/bts-dev status SELECTOR...
+
+Selectors are core, addons, telephony, terminal:NAME, display:NAME, or a profile
+stored as deploy/dev/profiles/SELECTOR.components. Display remains native;
+terminal:NAME starts the reusable headless simulator.
+EOF
+}
+
+(($# > 0)) || { usage >&2; exit 2; }
+action=$1
+shift
+case "$action" in
+    up|status) ;;
+    -h|--help|help) usage; exit 0 ;;
+    *) printf 'Unknown action: %s\n' "$action" >&2; usage >&2; exit 2 ;;
+esac
+(($# > 0)) || { printf 'Select at least one component or profile.\n' >&2; exit 2; }
+
+declare -a requested=("$@") expanded=() components=()
+expand_selector() {
+    local selector=$1 line
+    case "$selector" in
+        core|addons|telephony) expanded+=("$selector") ;;
+        terminal:*|display:*)
+            [[ $selector =~ ^(terminal|display):[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
+                printf 'Invalid named component selector: %s\n' "$selector" >&2
+                exit 2
+            }
+            expanded+=("$selector")
+            ;;
+        *)
+            local profile=$profile_root/$selector.components
+            [[ -r $profile ]] || {
+                printf 'Unknown component or profile: %s\n' "$selector" >&2
+                exit 2
+            }
+            while IFS= read -r line || [[ -n $line ]]; do
+                line=${line%%#*}
+                line=${line//[[:space:]]/}
+                [[ -z $line ]] || expand_selector "$line"
+            done < "$profile"
+            ;;
+    esac
+}
+for selector in "${requested[@]}"; do
+    expand_selector "$selector"
+done
+
+declare -A selected=()
+for component in "${expanded[@]}"; do
+    selected["$component"]=1
+done
+for component in core addons telephony; do
+    [[ -v selected[$component] ]] && components+=("$component")
+done
+while IFS= read -r component; do
+    [[ -z $component ]] || components+=("$component")
+done < <(printf '%s\n' "${!selected[@]}" | grep '^terminal:' | sort || true)
+while IFS= read -r component; do
+    [[ -z $component ]] || components+=("$component")
+done < <(printf '%s\n' "${!selected[@]}" | grep '^display:' | sort || true)
+((${#components[@]} > 0)) || { printf 'The selection contains no components.\n' >&2; exit 2; }
+
+selection=$(IFS=,; printf '%s' "${components[*]}")
+session=${BTS_DEV_SESSION:-bts-${selection//[:,]/-}}
+session=${session//[^a-zA-Z0-9_-]/-}
+session_state=$state_root/$session
+selection_file=$session_state/selection
+
+show_configuration() {
+    local component file
+    printf 'BTS development session: %s\n' "$session"
+    printf 'Components: %s\n' "$selection"
+    for component in "${components[@]}"; do
+        case "$component" in
+            terminal:*) file=$config_root/terminal-${component#terminal:}.env ;;
+            display:*) file=$config_root/display-${component#display:}.env ;;
+            *) file=$config_root/$component.env ;;
+        esac
+        printf '  %s: %s%s\n' "$component" "$file" "$([[ -r $file ]] && printf ' (active)' || printf ' (defaults only)')"
+    done
+    printf 'State: %s\n' "$session_state"
+}
+
+command -v tmux >/dev/null 2>&1 || {
+    printf 'tmux is required but was not found in PATH.\n' >&2
+    exit 1
+}
+
+if [[ $action == status ]]; then
+    show_configuration
+    if tmux has-session -t "$session" 2>/dev/null; then
+        printf 'Status: running\n'
+        exit 0
+    fi
+    printf 'Status: stopped\n'
+    exit 1
+fi
+
+if [[ -r $legacy_file ]]; then
+    printf 'Legacy development configuration %s is no longer loaded. Split its values into component files under %s; see docs/development.md.\n' "$legacy_file" "$config_root" >&2
+    exit 1
+fi
+
+command -v python3 >/dev/null 2>&1 || {
+    printf 'python3 is required but was not found in PATH.\n' >&2
+    exit 1
+}
+if [[ -v selected[addons] || -v selected[telephony] ]] || printf '%s\n' "${components[@]}" | grep -q '^terminal:'; then
+    command -v curl >/dev/null 2>&1 || { printf 'curl is required for readiness checks.\n' >&2; exit 1; }
+fi
+if [[ -v selected[telephony] ]]; then
+    command -v grep >/dev/null 2>&1 || { printf 'grep is required for Telephony readiness.\n' >&2; exit 1; }
+fi
+
+mkdir -p "$session_state"
+if tmux has-session -t "$session" 2>/dev/null; then
+    if [[ ! -r $selection_file || $(<"$selection_file") != "$selection" ]]; then
+        printf 'Session %s already exists with a different or unknown component selection.\n' "$session" >&2
+        exit 1
+    fi
+    printf 'Session %s already exists; reusing it.\n' "$session"
+    show_configuration
+    printf 'Attach with: tmux attach -t %q\n' "$session"
+    [[ ${BTS_DEV_DETACH:-0} == 1 ]] || exec tmux attach-session -t "$session"
+    exit 0
+fi
+
+api_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["core_api"])' "$root/compatibility.json")
+api_prefix=/api/v$api_version
+printf '%s\n' "$selection" > "$selection_file"
+
+quote() { printf '%q' "$1"; }
+common_command() {
+    local file=$1
+    # Expansion is intentionally deferred to the shell running inside tmux.
+    # shellcheck disable=SC2016
+    printf 'unset RUST_LOG BTS_CORE_BIND BTS_CORE_TERMINAL_STATE_PATH BTS_CORE_HTTP_URL BTS_CORE_WS_URL BTS_ADDON_DATA_ROOT BTS_CORE_URL BTS_ARI_URL BTS_ARI_USERNAME BTS_ARI_PASSWORD BTS_ARI_SSH_HOST BTS_ARI_TUNNEL_PORT BTS_TERMINAL_ID BTS_TERMINAL_NAME BTS_TERMINAL_CAPABILITIES BTS_TERMINAL_SIMULATOR_RESPONSE BTS_CAGE_ARGS BTS_DISPLAY_TTY BTS_CABIN_FONT WLR_DRM_DEVICES; set -a; [[ ! -r %s ]] || source %s; set +a; export RUST_LOG="${RUST_LOG:-info}"; ' "$(quote "$file")" "$(quote "$file")"
+}
+new_window() {
+    local name=$1 command=$2
+    if [[ ${created:-0} == 0 ]]; then
+        tmux new-session -d -s "$session" -n "$name" -c "$root" "$command"
+        created=1
+    else
+        tmux new-window -d -t "$session:" -n "$name" -c "$root" "$command"
+    fi
+}
+
+created=0
+if [[ -v selected[core] ]]; then
+    file=$config_root/core.env
+    command=$(common_command "$file")
+    command+="export BTS_CORE_BIND=\"\${BTS_CORE_BIND:-127.0.0.1:3100}\"; export BTS_CORE_TERMINAL_STATE_PATH=\"\${BTS_CORE_TERMINAL_STATE_PATH:-$(quote "$session_state/terminals.json")}\"; cargo run -p bts-core; exec \"\${SHELL:-/bin/sh}\""
+    new_window core "$command"
+fi
+
+if [[ -v selected[addons] ]]; then
+    file=$config_root/addons.env
+    command=$(common_command "$file")
+    command+="export BTS_CORE_HTTP_URL=\"\${BTS_CORE_HTTP_URL:-http://127.0.0.1:3100}\"; export BTS_CORE_WS_URL=\"\${BTS_CORE_WS_URL:-ws://127.0.0.1:3100$api_prefix/events/ws}\"; export BTS_ADDON_DATA_ROOT=\"\${BTS_ADDON_DATA_ROOT:-$(quote "$session_state/addons")}\"; until curl -fsS \"\$BTS_CORE_HTTP_URL/health\" >/dev/null 2>&1; do sleep 1; done; cargo run -p bts-addons; exec \"\${SHELL:-/bin/sh}\""
+    new_window addons "$command"
+fi
+
+if [[ -v selected[telephony] ]]; then
+    file=$config_root/telephony.env
+    ari_settings=$(bash -c 'set -a; [[ ! -r "$1" ]] || source "$1"; printf "%s\n%s\n" "${BTS_ARI_SSH_HOST:-}" "${BTS_ARI_TUNNEL_PORT:-18088}"' _ "$file")
+    ari_ssh_host=${ari_settings%%$'\n'*}
+    ari_tunnel_port=${ari_settings#*$'\n'}
+    if [[ -n $ari_ssh_host ]]; then
+        command -v ssh >/dev/null 2>&1 || { printf 'ssh is required when BTS_ARI_SSH_HOST is configured.\n' >&2; exit 1; }
+        command=$(common_command "$file")
+        # Expansion is intentionally deferred to the shell running inside tmux.
+        # shellcheck disable=SC2016
+        command+='export BTS_ARI_TUNNEL_PORT="${BTS_ARI_TUNNEL_PORT:-18088}"; while true; do ssh -o BatchMode=yes -o ServerAliveInterval=15 -o ExitOnForwardFailure=yes -N -L "127.0.0.1:${BTS_ARI_TUNNEL_PORT}:127.0.0.1:8088" "$BTS_ARI_SSH_HOST"; sleep 2; done'
+        new_window ari-tunnel "$command"
+    fi
+    command=$(common_command "$file")
+    command+="export BTS_CORE_URL=\"\${BTS_CORE_URL:-http://127.0.0.1:3100}\"; export BTS_ARI_USERNAME=\"\${BTS_ARI_USERNAME:-bts}\"; export BTS_ARI_URL=\"\${BTS_ARI_URL:-http://127.0.0.1:$ari_tunnel_port}\"; until curl -fsS \"\$BTS_CORE_URL$api_prefix/addons\" | grep -q '\"menu\"'; do sleep 1; done; if [[ -z \"\${BTS_ARI_PASSWORD:-}\" ]]; then read -rsp \"ARI password: \" BTS_ARI_PASSWORD; printf '\\n'; export BTS_ARI_PASSWORD; fi; cargo run -p bts-telephony; exec \"\${SHELL:-/bin/sh}\""
+    new_window telephony "$command"
+fi
+
+for component in "${components[@]}"; do
+    [[ $component == terminal:* ]] || continue
+    terminal_name=${component#terminal:}
+    file=$config_root/terminal-$terminal_name.env
+    command=$(common_command "$file")
+    command+="export BTS_CORE_HTTP_URL=\"\${BTS_CORE_HTTP_URL:-http://127.0.0.1:3100}\"; export BTS_CORE_WS_URL=\"\${BTS_CORE_WS_URL:-ws://127.0.0.1:3100$api_prefix/terminals/ws}\"; export BTS_TERMINAL_ID=\"\${BTS_TERMINAL_ID:-$terminal_name}\"; export BTS_TERMINAL_NAME=\"\${BTS_TERMINAL_NAME:-$terminal_name}\"; until curl -fsS \"\$BTS_CORE_HTTP_URL/health\" >/dev/null 2>&1; do sleep 1; done; cargo run -p bts-terminal-simulator; exec \"\${SHELL:-/bin/sh}\""
+    new_window "terminal-$terminal_name" "$command"
+done
+
+for component in "${components[@]}"; do
+    [[ $component == display:* ]] || continue
+    display_name=${component#display:}
+    file=$config_root/display-$display_name.env
+    command=$(common_command "$file")
+    # Expansion is intentionally deferred to the shell running inside tmux.
+    # shellcheck disable=SC2016
+    command+='cargo run -p bts-display; exec "${SHELL:-/bin/sh}"'
+    new_window "display-$display_name" "$command"
+done
+
+tmux select-window -t "$session:${components[0]//:/-}"
+show_configuration
+printf 'Readiness order: core, addons, ARI tunnel, telephony, headless terminals, displays.\n'
+printf 'Attach with: tmux attach -t %q\n' "$session"
+[[ ${BTS_DEV_DETACH:-0} == 1 ]] || exec tmux attach-session -t "$session"

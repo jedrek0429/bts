@@ -34,7 +34,7 @@ use bts_protocol::addons::v1::{
     AddonContext, AddonId, AddonManifest, AddonVersion, MenuEntry,
 };
 use bts_protocol::{
-    DisplayState, Event, EventKind, ScreenKind,
+    DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind,
 };
 
 struct NoticeAddon;
@@ -52,7 +52,7 @@ impl Addon for NoticeAddon {
                 description: "Show the example notice".into(),
             }],
             menu: vec![MenuEntry {
-                digit: '4',
+                digit: DtmfMenuKey::new('4').expect("4 is an addon DTMF key"),
                 prompt: "sound:bts/press-4-notice".into(),
                 action: ActionId::new("example.notice.show"),
                 order: 40,
@@ -86,9 +86,23 @@ An in-process host such as `bts-addons` registers the implementation with its ge
 
 Actions carry an opaque `ActionId` and JSON parameters. Core resolves and validates the registered owner, while the addon host dispatches the request only to that owner. Telephony retrieves manifests from `GET /api/v1/addons`, orders entries by `order` and digit, plays their prompts, and publishes the selected generic action. It has no addon-specific digit mapping.
 
+A telephony action carries its session's unresolved `TerminalTarget`. The addon
+host binds that value to the invocation's `AddonContext`; addons read
+`AddonContext::selected_target` rather than keeping a second current-terminal
+setting. In the built-in HTTP context, `show` and `update` become explicit
+targeted presentations when such a target is present. Cloned contexts retain
+the same immutable invocation target for background updates. Untargeted
+lifecycle and non-telephony contexts continue to use the existing lease path.
+An invocation-scoped `release` is intentionally a no-op because an explicit
+presentation has no restorable lease; it remains until a later presentation
+replaces it.
+
+Changing the telephony target emits no addon or presentation event. Only a
+subsequent action can cause the scoped context to submit a presentation.
+
 ## Displays and ownership
 
-`AddonContext::show` requests a new lease and returns its opaque `DisplayLeaseId`. Store that handle for a long-running screen. Use `update` with the same handle and `release` when finished. Core rejects updates from another addon or a stale lease. A higher numeric priority may replace a lower-priority screen; a lower priority cannot replace a higher one. Addon shutdown releases all its leases and unregisters it.
+`AddonContext::show` requests a new lease and returns its opaque `DisplayLeaseId`. Store that handle for a long-running screen. Use `update` with the same handle and `release` when finished. Core rejects updates from another addon or a stale lease. Lease ownership and priority are evaluated independently on every terminal. A higher numeric priority replaces a lower-priority screen on each affected terminal; updating a hidden lease changes what will later be restored. Releasing a visible lease restores the next terminal-local lease or blank, while release-all and addon shutdown remove only that addon's leases. An explicitly targeted presentation takes direct ownership of its accepted terminals and clears their legacy lease stacks, without changing unrelated terminals.
 
 Display data is declarative. If an existing `DisplayState` variant is sufficient, reuse it. If a genuinely new visual contract is required, add a provider-independent variant and `ScreenKind` to `bts-protocol::display`, document its wire representation, add renderer support in `bts-display`, and test both serialization and rendering selection. Never pass arbitrary filesystem paths to a renderer. Declare `AddonCapability::Assets`, upload bytes with `AddonContext::upload_asset`, and place the returned opaque `AssetRef` in a protocol screen model that supports assets.
 

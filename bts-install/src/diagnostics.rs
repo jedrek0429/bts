@@ -115,6 +115,27 @@ pub fn doctor<S: SystemAdapter>(
             diagnostics,
         };
     };
+    match crate::config::plan_legacy_environment_migration(root, &state.installed_components) {
+        Ok(Some(_)) => diagnostics.push(Diagnostic {
+            component: None,
+            severity: Severity::Error,
+            message: "Legacy shared configuration /etc/bts/bts.env requires migration.".into(),
+            suggested_action: Some(
+                "Run a bts-install upgrade after reviewing the component configuration migration."
+                    .into(),
+            ),
+        }),
+        Err(error) => diagnostics.push(Diagnostic {
+            component: None,
+            severity: Severity::Error,
+            message: format!("Legacy shared configuration cannot be migrated safely: {error}"),
+            suggested_action: Some(
+                "Move ambiguous values into the authoritative component environment files, then remove /etc/bts/bts.env."
+                    .into(),
+            ),
+        }),
+        Ok(None) => {}
+    }
     for component in &state.installed_components {
         let config = root.join("etc/bts").join(component.config_name());
         if !config.is_file() {
@@ -276,11 +297,7 @@ fn validate_component_configuration(path: &Path, component: Component) -> anyhow
                 .parse::<std::net::SocketAddr>()?;
         }
         Component::Display => {
-            crate::config::validate_websocket_url(
-                values
-                    .get("BTS_CORE_WS_URL")
-                    .ok_or_else(|| anyhow::anyhow!("BTS_CORE_WS_URL is missing"))?,
-            )?;
+            crate::config::validate_display(&values)?;
             if let Some(arguments) = values.get("BTS_CAGE_ARGS") {
                 crate::config::validate_cage_args(arguments)?;
             }
@@ -362,5 +379,23 @@ mod tests {
                 .filter(|value| value.severity == Severity::Error)
                 .all(|value| value.suggested_action.is_some())
         );
+    }
+
+    #[test]
+    fn doctor_reports_legacy_shared_configuration() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(
+            root.path().join("etc/bts/bts.env"),
+            "BTS_CORE_BIND=0.0.0.0:3100\n",
+        )
+        .unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Core);
+        let report = doctor(root.path(), Some(&state), &mut RecordingSystem::default());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("requires migration")
+                && diagnostic.severity == Severity::Error
+        }));
     }
 }

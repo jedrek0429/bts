@@ -2,9 +2,11 @@ use anyhow::Context;
 use asterisk_ari::{AriClient, Config, apis::channels};
 use std::{collections::HashMap, sync::Arc};
 
-use bts_protocol::addons::v1::{ActionId, ActionRequest, AddonManifest};
-use bts_protocol::{EventKind, NewEvent};
+use bts_protocol::addons::v1::{ActionId, AddonManifest};
+use bts_protocol::{EventKind, NewEvent, TelephonyTargets};
+use bts_telephony::session::{CallerIdentity, TelephonySession};
 use reqwest::Client;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -16,6 +18,7 @@ const WELCOME_PROMPT: &str = "sound:bts/welcome";
 struct EventPublisher {
     client: Client,
     endpoint: String,
+    targets_endpoint: String,
 }
 
 impl EventPublisher {
@@ -26,6 +29,11 @@ impl EventPublisher {
                 "{}{}",
                 core_url.trim_end_matches('/'),
                 bts_protocol::core::CORE_EVENTS_PATH
+            ),
+            targets_endpoint: format!(
+                "{}{}",
+                core_url.trim_end_matches('/'),
+                bts_protocol::core::CORE_TELEPHONY_TARGETS_PATH
             ),
         }
     }
@@ -46,6 +54,19 @@ impl EventPublisher {
             .context("bts-core rejected event")?;
 
         Ok(())
+    }
+
+    async fn targets(&self) -> anyhow::Result<TelephonyTargets> {
+        self.client
+            .get(&self.targets_endpoint)
+            .send()
+            .await
+            .context("failed to request telephony targets from bts-core")?
+            .error_for_status()
+            .context("bts-core rejected the telephony target request")?
+            .json()
+            .await
+            .context("failed to decode telephony targets")
     }
 }
 
@@ -70,20 +91,28 @@ async fn main() -> anyhow::Result<()> {
     let mut ari = AriClient::with_config(config);
 
     let publisher = EventPublisher::new(&core_url);
+    let sessions = Arc::new(Mutex::new(HashMap::<String, TelephonySession>::new()));
 
     /*
      * A call has entered Stasis(bts).
      */
     let start_publisher = publisher.clone();
     let start_menu_media_uris = menu_media_uris.clone();
+    let start_sessions = sessions.clone();
 
     ari.on_stasis_start(move |client, event| {
         let publisher = start_publisher.clone();
         let menu_media_uris = start_menu_media_uris.clone();
+        let sessions = start_sessions.clone();
 
         async move {
             let channel = event.data.channel;
             let channel_id = channel.id.clone();
+            let caller = CallerIdentity {
+                number: non_empty(channel.caller.number.clone()),
+                name: non_empty(channel.caller.name.clone()),
+            };
+            let caller_event = caller.number.clone().or_else(|| caller.name.clone());
 
             info!(
                 channel_id = %channel_id,
@@ -101,26 +130,30 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            if let Err(error) = client
-                .channels()
-                .play(channels::params::PlayRequest::new(
-                    &channel_id,
-                    &menu_media_uris,
-                ))
-                .await
+            let targets = match publisher.targets().await {
+                Ok(targets) => targets,
+                Err(error) => {
+                    warn!(channel_id = %channel_id, %error, "failed to load initial targets");
+                    TelephonyTargets {
+                        terminals: Vec::new(),
+                        groups: Vec::new(),
+                        all: None,
+                    }
+                }
+            };
+            let (session, outcome) =
+                TelephonySession::new(caller, &targets, menu_media_uris.clone());
+            sessions.lock().await.insert(channel_id.clone(), session);
+            if let Some(media) = outcome.media
+                && let Err(error) = play_media(&client, &channel_id, &media).await
             {
-                warn!(
-                    channel_id = %channel_id,
-                    media_uri = %menu_media_uris,
-                    %error,
-                    "failed to play menu prompts"
-                );
+                warn!(channel_id = %channel_id, media_uri = %media, %error, "failed to play session prompt");
             }
 
             if let Err(error) = publisher
                 .publish(EventKind::PhoneCallStarted {
                     channel_id: channel_id.clone(),
-                    caller: None,
+                    caller: caller_event,
                 })
                 .await
             {
@@ -140,10 +173,12 @@ async fn main() -> anyhow::Result<()> {
      */
     let dtmf_publisher = publisher.clone();
     let dtmf_actions = menu_actions.clone();
+    let dtmf_sessions = sessions.clone();
 
-    ari.on_channel_dtmf_received(move |_, event| {
+    ari.on_channel_dtmf_received(move |client, event| {
         let publisher = dtmf_publisher.clone();
         let actions = dtmf_actions.clone();
+        let sessions = dtmf_sessions.clone();
 
         async move {
             let channel_id = event.data.channel.id.clone();
@@ -159,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
             if let Err(error) = publisher
                 .publish(EventKind::PhoneDtmfReceived {
                     channel_id: channel_id.clone(),
-                    digit,
+                    digit: digit.clone(),
                 })
                 .await
             {
@@ -170,17 +205,37 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
 
-            if let Some(action) = actions.get(&event.data.digit)
+            let targets = match publisher.targets().await {
+                Ok(targets) => targets,
+                Err(error) => {
+                    warn!(channel_id = %channel_id, %error, "failed to refresh telephony targets");
+                    TelephonyTargets {
+                        terminals: Vec::new(),
+                        groups: Vec::new(),
+                        all: None,
+                    }
+                }
+            };
+            let outcome = {
+                let mut sessions = sessions.lock().await;
+                sessions
+                    .get_mut(&channel_id)
+                    .map(|session| session.handle_dtmf(&digit, &targets, &actions))
+            };
+            let Some(outcome) = outcome else {
+                return Ok(());
+            };
+            if let Some(media) = outcome.media
+                && let Err(error) = play_media(&client, &channel_id, &media).await
+            {
+                warn!(channel_id = %channel_id, media_uri = %media, %error, "failed to play session prompt");
+            }
+            if let Some(request) = outcome.action
                 && let Err(error) = publisher
-                    .publish(EventKind::ActionRequested {
-                        request: ActionRequest {
-                            action: action.clone(),
-                            parameters: serde_json::Value::Null,
-                        },
-                    })
+                    .publish(EventKind::ActionRequested { request })
                     .await
             {
-                warn!(channel_id = %channel_id, %error, "failed to publish menu action");
+                warn!(channel_id = %channel_id, %error, "failed to publish targeted menu action");
             }
 
             Ok(())
@@ -191,12 +246,17 @@ async fn main() -> anyhow::Result<()> {
      * The channel has left Stasis, normally because the caller hung up.
      */
     let end_publisher = publisher.clone();
+    let end_sessions = sessions.clone();
 
     ari.on_stasis_end(move |_, event| {
         let publisher = end_publisher.clone();
+        let sessions = end_sessions.clone();
 
         async move {
             let channel_id = event.data.channel.id.clone();
+            if sessions.lock().await.remove(&channel_id).is_none() {
+                return Ok(());
+            }
 
             info!(
                 channel_id = %channel_id,
@@ -243,6 +303,22 @@ async fn main() -> anyhow::Result<()> {
     ari.stop().await.context("could not stop ARI client")?;
 
     Ok(())
+}
+
+async fn play_media(
+    client: &asterisk_ari::apis::client::Client,
+    channel_id: &str,
+    media: &str,
+) -> anyhow::Result<()> {
+    client
+        .channels()
+        .play(channels::params::PlayRequest::new(channel_id, media))
+        .await?;
+    Ok(())
+}
+
+fn non_empty(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
 }
 
 async fn load_menu(core_url: &str) -> anyhow::Result<(String, HashMap<String, ActionId>)> {
@@ -297,6 +373,7 @@ fn initialise_logging() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bts_protocol::DtmfMenuKey;
     use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
 
     fn manifest(id: &str, digit: char, order: u16, prompt: &str) -> AddonManifest {
@@ -307,7 +384,7 @@ mod tests {
             version: AddonVersion::new(1, 0, 0),
             actions: vec![],
             menu: vec![MenuEntry {
-                digit,
+                digit: DtmfMenuKey::new(digit).unwrap(),
                 prompt: prompt.into(),
                 action: ActionId::new(format!("{id}.run")),
                 order,
