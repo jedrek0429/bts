@@ -23,14 +23,16 @@ bts-protocol
   negotiation, URL construction, typed operations and decoding server errors.
   It must not contain terminal registration, heartbeat, presentation or
   renderer behaviour.
-- `bts-cli` will depend on `bts-sdk`, not construct paths or duplicate DTOs. It
-  owns Clap grammar, environment configuration, prompts, human formatting,
-  colour and process exit behaviour.
+- `bts-cli` depends on `bts-sdk`, does not construct paths or duplicate DTOs,
+  and currently exposes read-only status and state inspection. It owns Clap
+  grammar, environment configuration, prompts, human formatting, colour and
+  process exit behaviour.
 
 The workspace dependency graph is enforced by
 `scripts/test-administrative-boundaries.py`: `bts-sdk` depends on
-`bts-protocol` without depending on Core or any runtime component. When
-`bts-cli` is added, it must depend on `bts-sdk` without bypassing it.
+`bts-protocol` without depending on Core or any runtime component. `bts-cli`
+depends on `bts-sdk` without bypassing it and has no Core, protocol, terminal,
+display, telephony or addon dependency.
 
 The administrative surface manages BTS resources only. It does not start or
 stop systemd services or containers, edit host or Asterisk configuration,

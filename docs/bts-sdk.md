@@ -40,6 +40,9 @@ its crate version and supported API version as request metadata. Its public
 The resource-oriented `CoreApi` can grow terminal and group methods without
 changing construction or transport policy. Those methods are deliberately not
 present until their owning issues implement the matching Core resources.
+The SDK re-exports the shared nested status and display-state enums used by its
+resource DTOs. This allows thin integrations such as `btscli state show` to
+inspect those DTOs without bypassing the SDK dependency boundary.
 
 ## Errors
 

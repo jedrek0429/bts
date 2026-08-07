@@ -12,6 +12,6 @@ pub use core::{CoreApi, SdkMetadata};
 pub use error::SdkError;
 
 pub use bts_protocol::{
-    AdministrativeError, AdministrativeErrorCategory, ApiDiscovery, CoreStateResource,
-    CoreStatusResource,
+    AdministrativeError, AdministrativeErrorCategory, ApiDiscovery, CoreOperationalStatus,
+    CoreStateResource, CoreStatusResource, DisplayState,
 };

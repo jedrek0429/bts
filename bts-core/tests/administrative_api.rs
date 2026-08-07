@@ -1,5 +1,10 @@
 use std::time::{Duration, Instant};
 
+use bts_cli::{
+    cli::{Cli, Command, StateCommand},
+    config::{ColourMode, Environment, OutputMode},
+    output::OutputStreams,
+};
 use bts_core::server::{CoreConfiguration, CoreServer};
 use bts_protocol::{
     AdministrativeErrorCategory, AdministrativeErrorResponse, CoreOperationalStatus,
@@ -9,7 +14,7 @@ use bts_sdk::{CoreApi, CoreApiConfiguration};
 use tokio::sync::oneshot;
 
 #[tokio::test]
-async fn sdk_observes_real_core_without_creating_terminal_presence() {
+async fn sdk_and_cli_observe_real_core_without_creating_terminal_presence() {
     let directory = tempfile::tempdir().unwrap();
     let configuration = CoreConfiguration {
         terminal_state_path: directory.path().join("terminals.json"),
@@ -52,6 +57,40 @@ async fn sdk_observes_real_core_without_creating_terminal_presence() {
     assert_eq!(state.terminals.registered, 0);
     assert_eq!(state.terminals.online, 0);
     assert_eq!(state.terminals.groups, 0);
+
+    for command in [
+        Command::Status,
+        Command::State {
+            command: StateCommand::Show,
+        },
+    ] {
+        let cli = Cli {
+            core: Some(base_url.clone()),
+            output: Some(OutputMode::Json),
+            timeout: Some("2s".to_owned()),
+            quiet: false,
+            verbosity: 0,
+            colour: Some(ColourMode::Always),
+            command,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = bts_cli::execute(
+            cli,
+            &Environment::default(),
+            OutputStreams {
+                stdout: &mut stdout,
+                stderr: &mut stderr,
+                stdout_is_terminal: false,
+                stderr_is_terminal: false,
+            },
+        )
+        .await;
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(serde_json::from_slice::<serde_json::Value>(&stdout).is_ok());
+        assert!(!stdout.windows(2).any(|window| window == b"\x1b["));
+    }
 
     let after = services.terminals.routing_snapshot(Instant::now());
     assert!(after.definitions.is_empty());
