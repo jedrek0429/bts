@@ -10,9 +10,10 @@ use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    BtsState, GroupId, GroupName, IdentifierError, ProtocolVersion, TerminalCapabilities,
-    TerminalDescription, TerminalId, TerminalImplementationId, TerminalImplementationVersion,
-    TerminalName, TerminalRuntimeDiagnostics, TerminalTag,
+    BtsState, DisplayState, GroupId, GroupName, IdentifierError, PresentationGeneration,
+    PresentationId, ProtocolVersion, TerminalCapabilities, TerminalDescription, TerminalId,
+    TerminalImplementationId, TerminalImplementationVersion, TerminalName,
+    TerminalRuntimeDiagnostics, TerminalTag,
 };
 
 const MAX_RESOURCE_REFERENCE_LENGTH: usize = 100;
@@ -86,6 +87,14 @@ macro_rules! resource_reference {
         impl fmt::Display for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.0.fmt(formatter)
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = ResourceReferenceError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::new(value)
             }
         }
 
@@ -244,6 +253,15 @@ pub struct TerminalPresenceResource {
     pub runtime_diagnostics: TerminalRuntimeDiagnostics,
 }
 
+/// Core's current accepted semantic presentation for one terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalPresentationResource {
+    pub presentation_id: PresentationId,
+    pub generation: PresentationGeneration,
+    pub display: DisplayState,
+    pub source: String,
+}
+
 /// Administrative projection of one durable terminal definition and presence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalResource {
@@ -263,6 +281,8 @@ pub struct TerminalResource {
     pub last_seen: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<TerminalPresenceResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<TerminalPresentationResource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

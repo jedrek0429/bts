@@ -2,11 +2,15 @@ use std::{collections::BTreeSet, time::Duration};
 
 use bts_protocol::{
     AdministrativeErrorResponse, ApiDiscovery, CoreStateResource, CoreStatusResource,
+    CreateGroupRequest, DeletionResponse, GroupListResource, GroupReference, GroupResource,
+    MutationResponse, RenameGroupRequest, RenameTerminalRequest, SetTerminalDescriptionRequest,
+    TerminalListResource, TerminalReference, TerminalResource, UpdateGroupMembersRequest,
+    UpdateTerminalTagsRequest,
     core::{CORE_API_DISCOVERY_PATH, CORE_API_VERSION},
 };
-use reqwest::{Client, Url, header};
+use reqwest::{Client, Method, Url, header};
 use semver::Version;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{CoreApiConfiguration, SdkError};
 
@@ -107,6 +111,111 @@ impl CoreApi {
         self.get(url).await
     }
 
+    pub async fn terminals(&self) -> Result<TerminalListResource, SdkError> {
+        self.administrative_get(&["terminals"]).await
+    }
+
+    pub async fn terminal(
+        &self,
+        terminal: &TerminalReference,
+    ) -> Result<TerminalResource, SdkError> {
+        self.administrative_get(&["terminals", terminal.as_str()])
+            .await
+    }
+
+    pub async fn rename_terminal(
+        &self,
+        terminal: &TerminalReference,
+        request: &RenameTerminalRequest,
+    ) -> Result<MutationResponse<TerminalResource>, SdkError> {
+        self.administrative_json(
+            Method::PUT,
+            &["terminals", terminal.as_str(), "name"],
+            request,
+        )
+        .await
+    }
+
+    pub async fn set_terminal_description(
+        &self,
+        terminal: &TerminalReference,
+        request: &SetTerminalDescriptionRequest,
+    ) -> Result<MutationResponse<TerminalResource>, SdkError> {
+        self.administrative_json(
+            Method::PUT,
+            &["terminals", terminal.as_str(), "description"],
+            request,
+        )
+        .await
+    }
+
+    pub async fn update_terminal_tags(
+        &self,
+        terminal: &TerminalReference,
+        request: &UpdateTerminalTagsRequest,
+    ) -> Result<MutationResponse<TerminalResource>, SdkError> {
+        self.administrative_json(
+            Method::PATCH,
+            &["terminals", terminal.as_str(), "tags"],
+            request,
+        )
+        .await
+    }
+
+    pub async fn forget_terminal(
+        &self,
+        terminal: &TerminalReference,
+    ) -> Result<DeletionResponse<TerminalResource>, SdkError> {
+        self.administrative_without_body(Method::DELETE, &["terminals", terminal.as_str()])
+            .await
+    }
+
+    pub async fn groups(&self) -> Result<GroupListResource, SdkError> {
+        self.administrative_get(&["groups"]).await
+    }
+
+    pub async fn group(&self, group: &GroupReference) -> Result<GroupResource, SdkError> {
+        self.administrative_get(&["groups", group.as_str()]).await
+    }
+
+    pub async fn create_group(
+        &self,
+        request: &CreateGroupRequest,
+    ) -> Result<GroupResource, SdkError> {
+        self.administrative_json(Method::POST, &["groups"], request)
+            .await
+    }
+
+    pub async fn rename_group(
+        &self,
+        group: &GroupReference,
+        request: &RenameGroupRequest,
+    ) -> Result<MutationResponse<GroupResource>, SdkError> {
+        self.administrative_json(Method::PUT, &["groups", group.as_str(), "name"], request)
+            .await
+    }
+
+    pub async fn update_group_members(
+        &self,
+        group: &GroupReference,
+        request: &UpdateGroupMembersRequest,
+    ) -> Result<MutationResponse<GroupResource>, SdkError> {
+        self.administrative_json(
+            Method::PATCH,
+            &["groups", group.as_str(), "members"],
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_group(
+        &self,
+        group: &GroupReference,
+    ) -> Result<DeletionResponse<GroupResource>, SdkError> {
+        self.administrative_without_body(Method::DELETE, &["groups", group.as_str()])
+            .await
+    }
+
     /// Discovers Core and verifies that its advertised current API can be used.
     pub async fn discover_compatible(&self) -> Result<ApiDiscovery, SdkError> {
         let discovery = self.discover().await?;
@@ -156,10 +265,73 @@ impl CoreApi {
         self.join_root_path(&format!("{base_path}/{resource}"))
     }
 
+    fn join_administrative_segments(
+        &self,
+        discovery: &ApiDiscovery,
+        segments: &[&str],
+    ) -> Result<Url, SdkError> {
+        let base_path = discovery.administrative_api.base_path.trim_end_matches('/');
+        if !base_path.starts_with('/')
+            || base_path.starts_with("//")
+            || base_path.contains('?')
+            || base_path.contains('#')
+        {
+            return Err(SdkError::MalformedResponse {
+                status: None,
+                detail: "discovery contains an invalid administrative base path".to_owned(),
+            });
+        }
+        let mut url = self.join_root_path(&format!("{base_path}/"))?;
+        url.path_segments_mut()
+            .map_err(|_| SdkError::MalformedResponse {
+                status: None,
+                detail: "administrative base URL cannot contain resource paths".to_owned(),
+            })?
+            .pop_if_empty()
+            .extend(segments);
+        Ok(url)
+    }
+
+    async fn administrative_get<T: DeserializeOwned>(
+        &self,
+        segments: &[&str],
+    ) -> Result<T, SdkError> {
+        let discovery = self.discover_compatible().await?;
+        let url = self.join_administrative_segments(&discovery, segments)?;
+        self.request(self.http.get(url)).await
+    }
+
+    async fn administrative_without_body<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        segments: &[&str],
+    ) -> Result<T, SdkError> {
+        let discovery = self.discover_compatible().await?;
+        let url = self.join_administrative_segments(&discovery, segments)?;
+        self.request(self.http.request(method, url)).await
+    }
+
+    async fn administrative_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        segments: &[&str],
+        body: &B,
+    ) -> Result<T, SdkError> {
+        let discovery = self.discover_compatible().await?;
+        let url = self.join_administrative_segments(&discovery, segments)?;
+        self.request(self.http.request(method, url).json(body))
+            .await
+    }
+
     async fn get<T: DeserializeOwned>(&self, url: Url) -> Result<T, SdkError> {
-        let response = self
-            .http
-            .get(url)
+        self.request(self.http.get(url)).await
+    }
+
+    async fn request<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T, SdkError> {
+        let response = request
             .timeout(self.request_timeout)
             .send()
             .await

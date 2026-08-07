@@ -1,8 +1,7 @@
 # Administrative API v1
 
-This document freezes the resource and wire contract. Core currently serves
-discovery, status and state; the remaining terminal and group paths are
-reserved for their owning implementation issues.
+This document freezes the resource and wire contract. Core serves discovery,
+status, state, and the terminal and group administration paths below.
 
 ## Discovery and versioning
 
@@ -48,6 +47,10 @@ offline; presence is ephemeral and excludes remote network addresses. The
 durable definition fields remain available while offline. State responses are
 snapshots: `captured_at`, legacy `BtsState` and terminal counts describe one
 observation rather than several independently read values.
+
+`TerminalResource::presentation` is the current accepted semantic presentation
+for that terminal when one exists. It remains available while a terminal is
+offline and is removed when the terminal definition is forgotten.
 
 ## References
 

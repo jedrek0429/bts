@@ -141,6 +141,7 @@ fn terminal_and_group_resources_keep_durable_and_ephemeral_state_distinct() {
         first_seen: None,
         last_seen: None,
         presence: None,
+        presentation: None,
     };
     let value = serde_json::to_value(MutationResponse {
         changed: false,
