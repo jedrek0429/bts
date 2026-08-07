@@ -4,21 +4,28 @@ use std::{
 };
 
 use bts_cli::{
-    cli::{Cli, Command, GroupCommand, StateCommand, TerminalCommand, TerminalTagCommand},
+    cli::{
+        AddonCommand, Cli, Command, GroupCommand, StateCommand, TerminalCommand, TerminalTagCommand,
+    },
     config::{ColourMode, Environment, OutputMode},
     output::OutputStreams,
 };
 use bts_core::server::{CoreConfiguration, CoreServer};
 use bts_protocol::{
     AdministrativeErrorCategory, AdministrativeErrorCode, AdministrativeErrorResponse,
-    CoreOperationalStatus, GroupId, GroupName, ProtocolVersion, TerminalCapabilities,
-    TerminalCapability, TerminalConnectionId, TerminalId, TerminalIdentity,
+    CoreOperationalStatus, EventKind, GroupId, GroupName, NewEvent, ProtocolVersion,
+    TerminalCapabilities, TerminalCapability, TerminalConnectionId, TerminalId, TerminalIdentity,
     TerminalImplementationId, TerminalName, TerminalRegistration, TerminalTag,
+    addons::v1::{
+        API_VERSION, ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest,
+        AddonVersion,
+    },
     core::CORE_API_VERSION,
 };
 use bts_sdk::{
-    CoreApi, CoreApiConfiguration, CreateGroupRequest, GroupReference, RenameTerminalRequest,
-    SdkError, TerminalReference, UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
+    AddonReference, CoreApi, CoreApiConfiguration, CreateGroupRequest, GroupReference,
+    RenameTerminalRequest, SdkError, SetAddonEnabledRequest, TerminalReference,
+    UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
 };
 use tokio::sync::oneshot;
 
@@ -51,6 +58,34 @@ async fn run_json_cli(base_url: &str, command: Command, yes: bool) -> (u8, serde
     .await;
     let bytes = if code == 0 { &stdout } else { &stderr };
     (code, serde_json::from_slice(bytes).unwrap())
+}
+
+fn addon_manifest(id: &str, name: &str, action: &str) -> AddonManifest {
+    AddonManifest {
+        api_version: API_VERSION,
+        id: AddonId::new(id),
+        name: name.to_owned(),
+        version: AddonVersion::new(1, 2, 3),
+        actions: vec![ActionRegistration {
+            id: ActionId::new(action),
+            description: "Run the fixture".to_owned(),
+        }],
+        menu: Vec::new(),
+        capabilities: vec![AddonCapability::Display],
+        screens: Vec::new(),
+    }
+}
+
+async fn publish_event(base_url: &str, kind: EventKind) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{base_url}api/v1/events"))
+        .json(&NewEvent {
+            source: "integration-test".to_owned(),
+            kind,
+        })
+        .send()
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -404,6 +439,138 @@ async fn terminal_and_group_administration_is_authoritative_and_safe() {
     assert!(!api.group(&group).await.unwrap().members.contains(&beta_id));
     assert_eq!(api.delete_group(&group).await.unwrap().deleted.id, group_id);
 
+    shutdown_sender.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn addon_administration_separates_policy_from_host_registration() {
+    let directory = tempfile::tempdir().unwrap();
+    let configuration = CoreConfiguration {
+        terminal_state_path: directory.path().join("terminals.json"),
+        presence_timeout: Duration::from_secs(60),
+        acknowledgement_timeout: Duration::from_secs(30),
+        presence_expiry_interval: Duration::from_secs(3600),
+        acknowledgement_expiry_interval: Duration::from_secs(3600),
+    };
+    let server = CoreServer::new(configuration).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (ready_sender, ready_receiver) = oneshot::channel();
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let task = tokio::spawn(server.serve(listener, Some(ready_sender), async move {
+        let _ = shutdown_receiver.await;
+    }));
+    let address = ready_receiver.await.unwrap();
+    let base_url = format!("http://{address}/");
+    let clock = addon_manifest("clock", "Shared name", "clock.show");
+    let weather = addon_manifest("weather", "Shared name", "weather.show");
+    for manifest in [clock.clone(), weather] {
+        assert_eq!(
+            publish_event(&base_url, EventKind::AddonRegistered { manifest })
+                .await
+                .status(),
+            reqwest::StatusCode::ACCEPTED
+        );
+    }
+
+    let api = CoreApi::new(CoreApiConfiguration::new(&base_url).unwrap()).unwrap();
+    let addons = api.addons().await.unwrap().addons;
+    assert_eq!(addons.len(), 2);
+    assert_eq!(addons[0].manifest.id, AddonId::new("clock"));
+    assert!(addons.iter().all(|addon| addon.enabled && addon.registered));
+    let reference = AddonReference::new("clock").unwrap();
+    assert_eq!(
+        api.addon(&reference).await.unwrap().manifest.version.patch,
+        3
+    );
+    assert!(matches!(
+        api.addon(&AddonReference::new("Shared name").unwrap())
+            .await
+            .unwrap_err(),
+        SdkError::AmbiguousReference(_)
+    ));
+
+    let (code, disabled) = run_json_cli(
+        &base_url,
+        Command::Addon {
+            command: AddonCommand::Disable {
+                addon: reference.clone(),
+            },
+        },
+        false,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(disabled["changed"], true);
+    assert_eq!(disabled["resource"]["enabled"], false);
+    assert_eq!(disabled["resource"]["registered"], true);
+    assert_eq!(
+        reqwest::get(format!("{base_url}api/v1/addons"))
+            .await
+            .unwrap()
+            .json::<Vec<AddonManifest>>()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|manifest| manifest.id)
+            .collect::<Vec<_>>(),
+        vec![AddonId::new("weather")]
+    );
+
+    assert_eq!(
+        publish_event(
+            &base_url,
+            EventKind::AddonStopped {
+                addon_id: clock.id.clone(),
+            },
+        )
+        .await
+        .status(),
+        reqwest::StatusCode::ACCEPTED
+    );
+    let offline = api.addon(&reference).await.unwrap();
+    assert!(!offline.enabled);
+    assert!(!offline.registered);
+    let enabled = api
+        .set_addon_enabled(&reference, &SetAddonEnabledRequest { enabled: true })
+        .await
+        .unwrap();
+    assert!(enabled.changed);
+    assert!(enabled.resource.enabled);
+    assert!(!enabled.resource.registered);
+
+    shutdown_sender.send(()).unwrap();
+    task.await.unwrap().unwrap();
+
+    let restarted = CoreServer::new(CoreConfiguration::production(
+        directory.path().join("terminals.json"),
+    ))
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (ready_sender, ready_receiver) = oneshot::channel();
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+    let task = tokio::spawn(restarted.serve(listener, Some(ready_sender), async move {
+        let _ = shutdown_receiver.await;
+    }));
+    let address = ready_receiver.await.unwrap();
+    let base_url = format!("http://{address}/");
+    assert!(
+        CoreApi::new(CoreApiConfiguration::new(&base_url).unwrap())
+            .unwrap()
+            .addons()
+            .await
+            .unwrap()
+            .addons
+            .is_empty()
+    );
+    publish_event(&base_url, EventKind::AddonRegistered { manifest: clock }).await;
+    let restored = CoreApi::new(CoreApiConfiguration::new(&base_url).unwrap())
+        .unwrap()
+        .addon(&reference)
+        .await
+        .unwrap();
+    assert!(restored.enabled);
+    assert!(restored.registered);
     shutdown_sender.send(()).unwrap();
     task.await.unwrap().unwrap();
 }

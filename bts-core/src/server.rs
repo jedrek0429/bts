@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    fs,
     future::Future,
     net::SocketAddr,
     path::PathBuf,
@@ -30,8 +31,9 @@ use axum::{
 };
 use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::core::{
-    CORE_ADDONS_PATH, CORE_ADMIN_GROUP_MEMBERS_PATH, CORE_ADMIN_GROUP_NAME_PATH,
-    CORE_ADMIN_GROUP_PATH, CORE_ADMIN_GROUPS_PATH, CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH,
+    CORE_ADDONS_PATH, CORE_ADMIN_ADDON_ENABLED_PATH, CORE_ADMIN_ADDON_PATH, CORE_ADMIN_ADDONS_PATH,
+    CORE_ADMIN_GROUP_MEMBERS_PATH, CORE_ADMIN_GROUP_NAME_PATH, CORE_ADMIN_GROUP_PATH,
+    CORE_ADMIN_GROUPS_PATH, CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH,
     CORE_ADMIN_TERMINAL_DESCRIPTION_PATH, CORE_ADMIN_TERMINAL_NAME_PATH, CORE_ADMIN_TERMINAL_PATH,
     CORE_ADMIN_TERMINAL_TAGS_PATH, CORE_ADMIN_TERMINALS_PATH, CORE_API_DISCOVERY_PATH,
     CORE_API_VERSION, CORE_ASSET_PATH, CORE_ASSETS_PATH, CORE_EVENTS_PATH,
@@ -39,18 +41,20 @@ use bts_protocol::core::{
     CORE_TERMINAL_EVENTS_WEBSOCKET_PATH, CORE_TERMINALS_WEBSOCKET_PATH,
 };
 use bts_protocol::{
-    AdministrativeApiCompatibility, AdministrativeError, AdministrativeErrorCategory,
-    AdministrativeErrorCode, AdministrativeErrorResponse, AdministrativeResourceKind, ApiDiscovery,
-    AssetId, AssetRef, AssetUpload, BtsState, CoreOperationalStatus, CoreStateResource,
-    CoreStatusResource, CreateGroupRequest, DeletionResponse, DisplayCommand, DtmfMenuKey, Event,
-    EventKind, GroupId, GroupListResource, GroupReference, GroupResource, MutationResponse,
-    NewEvent, PresentationRequest, RenameGroupRequest, RenameTerminalRequest, ResourceCandidate,
-    ServerMessage, SetTerminalDescriptionRequest, TerminalListResource, TerminalPresenceResource,
-    TerminalPresentationResource, TerminalReference, TerminalResource, TerminalStateSummary,
-    UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
+    AddonListResource, AddonReference, AddonResource, AdministrativeApiCompatibility,
+    AdministrativeError, AdministrativeErrorCategory, AdministrativeErrorCode,
+    AdministrativeErrorResponse, AdministrativeResourceKind, ApiDiscovery, AssetId, AssetRef,
+    AssetUpload, BtsState, CoreOperationalStatus, CoreStateResource, CoreStatusResource,
+    CreateGroupRequest, DeletionResponse, DisplayCommand, DtmfMenuKey, Event, EventKind, GroupId,
+    GroupListResource, GroupReference, GroupResource, MutationResponse, NewEvent,
+    PresentationRequest, RenameGroupRequest, RenameTerminalRequest, ResourceCandidate,
+    ServerMessage, SetAddonEnabledRequest, SetTerminalDescriptionRequest, TerminalListResource,
+    TerminalPresenceResource, TerminalPresentationResource, TerminalReference, TerminalResource,
+    TerminalStateSummary, UpdateGroupMembersRequest, UpdateTerminalTagsRequest,
 };
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast, oneshot, watch};
 use tracing::{error, info, warn};
 
@@ -77,9 +81,26 @@ struct StoredAsset {
 
 #[derive(Default)]
 struct AddonRegistry {
+    state_path: Option<PathBuf>,
+    policies: BTreeMap<String, bool>,
+    definitions: HashMap<AddonId, AddonRecord>,
     manifests: HashMap<AddonId, AddonManifest>,
     actions: HashMap<ActionId, AddonId>,
     digits: HashMap<DtmfMenuKey, AddonId>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedAddonPolicies {
+    schema_version: u16,
+    #[serde(default)]
+    addons: BTreeMap<String, bool>,
+}
+
+#[derive(Clone)]
+struct AddonRecord {
+    manifest: AddonManifest,
+    enabled: bool,
+    registered: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +133,7 @@ pub struct CoreServices {
 pub struct CoreServer {
     configuration: CoreConfiguration,
     services: CoreServices,
+    addons: AddonRegistry,
 }
 
 impl CoreServer {
@@ -123,12 +145,18 @@ impl CoreServer {
         .context("failed to load the terminal registry")?;
         let presentations =
             PresentationManager::new(terminals.clone(), configuration.acknowledgement_timeout);
+        let addon_state_path = configuration
+            .terminal_state_path
+            .with_file_name("addons.json");
+        let addons = AddonRegistry::load(addon_state_path)
+            .context("failed to load the addon administration state")?;
         Ok(Self {
             configuration,
             services: CoreServices {
                 terminals,
                 presentations,
             },
+            addons,
         })
     }
 
@@ -159,7 +187,7 @@ impl CoreServer {
         let state = AppState {
             started_at: Utc::now(),
             current: Arc::new(RwLock::new(BtsState::default())),
-            registry: Arc::new(RwLock::new(AddonRegistry::default())),
+            registry: Arc::new(RwLock::new(self.addons)),
             terminals: self.services.terminals,
             presentations: self.services.presentations,
             assets: Arc::new(RwLock::new(HashMap::new())),
@@ -210,6 +238,12 @@ fn router(state: AppState) -> Router {
         .route(CORE_API_DISCOVERY_PATH, get(api_discovery))
         .route(CORE_ADMIN_STATUS_PATH, get(administrative_status))
         .route(CORE_ADMIN_STATE_PATH, get(administrative_state))
+        .route(CORE_ADMIN_ADDONS_PATH, get(list_administrative_addons))
+        .route(CORE_ADMIN_ADDON_PATH, get(get_administrative_addon))
+        .route(
+            CORE_ADMIN_ADDON_ENABLED_PATH,
+            axum::routing::put(set_addon_enabled),
+        )
         .route(CORE_ADMIN_TERMINALS_PATH, get(list_terminals))
         .route(
             CORE_ADMIN_TERMINAL_PATH,
@@ -337,6 +371,134 @@ async fn administrative_state(State(state): State<AppState>) -> Json<CoreStateRe
             groups: terminals.groups.len(),
         },
     })
+}
+
+async fn list_administrative_addons(State(state): State<AppState>) -> Json<AddonListResource> {
+    let registry = state.registry.read().await;
+    let mut addons = registry
+        .definitions
+        .values()
+        .map(addon_resource)
+        .collect::<Vec<_>>();
+    addons.sort_by(|left, right| left.manifest.id.as_str().cmp(right.manifest.id.as_str()));
+    Json(AddonListResource { addons })
+}
+
+async fn get_administrative_addon(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+) -> Response {
+    let registry = state.registry.read().await;
+    let addon_id = match resolve_addon(&registry, &reference) {
+        Ok(addon_id) => addon_id,
+        Err(error) => return error.into_response(),
+    };
+    Json(addon_resource(
+        registry
+            .definitions
+            .get(&addon_id)
+            .expect("resolved addon must exist"),
+    ))
+    .into_response()
+}
+
+async fn set_addon_enabled(
+    State(state): State<AppState>,
+    AxumPath(reference): AxumPath<String>,
+    payload: Result<Json<SetAddonEnabledRequest>, JsonRejection>,
+) -> Response {
+    let Json(request) = match payload {
+        Ok(payload) => payload,
+        Err(error) => return invalid_json(error).into_response(),
+    };
+    let mut registry = state.registry.write().await;
+    let addon_id = match resolve_addon(&registry, &reference) {
+        Ok(addon_id) => addon_id,
+        Err(error) => return error.into_response(),
+    };
+    let changed = match registry.set_enabled(&addon_id, request.enabled) {
+        Ok(changed) => changed,
+        Err((status, message)) => {
+            let (category, code) = if status.is_server_error() {
+                (
+                    AdministrativeErrorCategory::ServerFailure,
+                    AdministrativeErrorCode::INTERNAL,
+                )
+            } else {
+                (
+                    AdministrativeErrorCategory::Conflict,
+                    AdministrativeErrorCode::MUTATION_REJECTED,
+                )
+            };
+            return administrative_error(
+                status,
+                category,
+                code,
+                &message,
+                Some(AdministrativeResourceKind::Addon),
+                Some(addon_id.to_string()),
+                Vec::new(),
+            )
+            .into_response();
+        }
+    };
+    Json(MutationResponse {
+        changed,
+        resource: addon_resource(
+            registry
+                .definitions
+                .get(&addon_id)
+                .expect("mutated addon must exist"),
+        ),
+    })
+    .into_response()
+}
+
+fn addon_resource(record: &AddonRecord) -> AddonResource {
+    AddonResource {
+        manifest: record.manifest.clone(),
+        enabled: record.enabled,
+        registered: record.registered,
+    }
+}
+
+fn resolve_addon(
+    registry: &AddonRegistry,
+    reference: &str,
+) -> Result<AddonId, (StatusCode, Json<AdministrativeErrorResponse>)> {
+    if AddonReference::new(reference).is_err() {
+        return Err(invalid_request("The addon reference is invalid"));
+    }
+    let id = AddonId::new(reference);
+    if registry.definitions.contains_key(&id) {
+        return Ok(id);
+    }
+    let mut matches = registry
+        .definitions
+        .values()
+        .filter(|record| record.manifest.name == reference)
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.manifest.id.as_str().cmp(right.manifest.id.as_str()));
+    match matches.as_slice() {
+        [record] => Ok(record.manifest.id.clone()),
+        [] => Err(reference_error(
+            AdministrativeResourceKind::Addon,
+            reference,
+            Vec::new(),
+        )),
+        _ => Err(reference_error(
+            AdministrativeResourceKind::Addon,
+            reference,
+            matches
+                .into_iter()
+                .map(|record| ResourceCandidate {
+                    kind: AdministrativeResourceKind::Addon,
+                    id: record.manifest.id.to_string(),
+                    name: record.manifest.name.clone(),
+                })
+                .collect(),
+        )),
+    }
 }
 
 async fn list_terminals(State(state): State<AppState>) -> Json<TerminalListResource> {
@@ -812,6 +974,12 @@ fn reference_error(
             AdministrativeErrorCode::GROUP_NOT_FOUND,
             "No terminal group matches the supplied reference",
         ),
+        (AdministrativeResourceKind::Addon, false) => (
+            StatusCode::NOT_FOUND,
+            AdministrativeErrorCategory::NotFound,
+            AdministrativeErrorCode::ADDON_NOT_FOUND,
+            "No addon matches the supplied reference",
+        ),
         (AdministrativeResourceKind::Terminal, true) => (
             StatusCode::CONFLICT,
             AdministrativeErrorCategory::AmbiguousReference,
@@ -823,6 +991,12 @@ fn reference_error(
             AdministrativeErrorCategory::AmbiguousReference,
             AdministrativeErrorCode::AMBIGUOUS_GROUP_REFERENCE,
             "The terminal group reference matches more than one display name",
+        ),
+        (AdministrativeResourceKind::Addon, true) => (
+            StatusCode::CONFLICT,
+            AdministrativeErrorCategory::AmbiguousReference,
+            AdministrativeErrorCode::AMBIGUOUS_ADDON_REFERENCE,
+            "The addon reference matches more than one display name",
         ),
     };
     administrative_error(
@@ -1182,14 +1356,69 @@ fn apply_display_command(
 }
 
 impl AddonRegistry {
+    fn load(state_path: PathBuf) -> anyhow::Result<Self> {
+        let policies = match fs::read(&state_path) {
+            Ok(bytes) => {
+                let persisted: PersistedAddonPolicies = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("could not parse {}", state_path.display()))?;
+                anyhow::ensure!(
+                    persisted.schema_version == 1,
+                    "unsupported addon state schema version {}",
+                    persisted.schema_version
+                );
+                persisted.addons
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not read {}", state_path.display()));
+            }
+        };
+        Ok(Self {
+            state_path: Some(state_path),
+            policies,
+            ..Self::default()
+        })
+    }
+
     fn register(&mut self, manifest: AddonManifest) -> Result<(), (StatusCode, String)> {
         validate_manifest(&manifest)?;
-        if self.manifests.contains_key(&manifest.id) {
+        if self
+            .definitions
+            .get(&manifest.id)
+            .is_some_and(|record| record.registered)
+        {
             return Err((
                 StatusCode::CONFLICT,
                 format!("addon {} is already registered", manifest.id),
             ));
         }
+        let enabled = self
+            .policies
+            .get(manifest.id.as_str())
+            .copied()
+            .or_else(|| {
+                self.definitions
+                    .get(&manifest.id)
+                    .map(|record| record.enabled)
+            })
+            .unwrap_or(true);
+        if enabled {
+            self.validate_activation(&manifest)?;
+            self.activate(manifest.clone());
+        }
+        self.definitions.insert(
+            manifest.id.clone(),
+            AddonRecord {
+                manifest,
+                enabled,
+                registered: true,
+            },
+        );
+        Ok(())
+    }
+
+    fn validate_activation(&self, manifest: &AddonManifest) -> Result<(), (StatusCode, String)> {
         for action in &manifest.actions {
             if let Some(owner) = self.actions.get(&action.id) {
                 return Err((
@@ -1209,6 +1438,10 @@ impl AddonRegistry {
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn activate(&mut self, manifest: AddonManifest) {
         for action in &manifest.actions {
             self.actions.insert(action.id.clone(), manifest.id.clone());
         }
@@ -1216,10 +1449,16 @@ impl AddonRegistry {
             self.digits.insert(entry.digit, manifest.id.clone());
         }
         self.manifests.insert(manifest.id.clone(), manifest);
-        Ok(())
     }
 
     fn unregister(&mut self, addon_id: &AddonId) {
+        if let Some(record) = self.definitions.get_mut(addon_id) {
+            record.registered = false;
+        }
+        self.deactivate(addon_id);
+    }
+
+    fn deactivate(&mut self, addon_id: &AddonId) {
         if let Some(manifest) = self.manifests.remove(addon_id) {
             for action in manifest.actions {
                 self.actions.remove(&action.id);
@@ -1228,6 +1467,73 @@ impl AddonRegistry {
                 self.digits.remove(&entry.digit);
             }
         }
+    }
+
+    fn set_enabled(
+        &mut self,
+        addon_id: &AddonId,
+        enabled: bool,
+    ) -> Result<bool, (StatusCode, String)> {
+        let record = self.definitions.get(addon_id).cloned().ok_or((
+            StatusCode::NOT_FOUND,
+            format!("addon {addon_id} is not known to Core"),
+        ))?;
+        if record.enabled == enabled {
+            return Ok(false);
+        }
+        if enabled && record.registered {
+            self.validate_activation(&record.manifest)?;
+        }
+        let mut policies = self.policies.clone();
+        policies.insert(addon_id.to_string(), enabled);
+        self.persist_policies(&policies).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("could not persist addon policy: {error}"),
+            )
+        })?;
+        self.policies = policies;
+        if enabled && record.registered {
+            self.activate(record.manifest.clone());
+        } else if !enabled {
+            self.deactivate(addon_id);
+        }
+        self.definitions
+            .get_mut(addon_id)
+            .expect("known addon must remain present")
+            .enabled = enabled;
+        Ok(true)
+    }
+
+    fn persist_policies(&self, policies: &BTreeMap<String, bool>) -> anyhow::Result<()> {
+        let Some(path) = &self.state_path else {
+            return Ok(());
+        };
+        let parent = path
+            .parent()
+            .context("addon state path must have a parent directory")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+            format!("could not create a temporary file in {}", parent.display())
+        })?;
+        serde_json::to_writer_pretty(
+            temporary.as_file_mut(),
+            &PersistedAddonPolicies {
+                schema_version: 1,
+                addons: policies.clone(),
+            },
+        )
+        .context("could not serialise addon policies")?;
+        temporary
+            .as_file_mut()
+            .sync_all()
+            .context("could not flush addon policies")?;
+        temporary
+            .persist(path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("could not replace {}", path.display()))?;
+        Ok(())
     }
 
     fn validate_display(&self, command: &DisplayCommand) -> Result<(), (StatusCode, String)> {
@@ -1532,6 +1838,30 @@ mod tests {
                 .1
                 .contains("digit")
         );
+    }
+
+    #[test]
+    fn disabled_policy_survives_restart_without_persisting_presence() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("addons.json");
+        let addon = manifest("one", "one.run", '1');
+        let addon_id = addon.id.clone();
+
+        let mut registry = AddonRegistry::load(path.clone()).unwrap();
+        registry.register(addon.clone()).unwrap();
+        assert!(registry.set_enabled(&addon_id, false).unwrap());
+        assert!(registry.manifests.is_empty());
+        assert!(registry.actions.is_empty());
+        assert!(registry.definitions[&addon_id].registered);
+
+        let mut restarted = AddonRegistry::load(path).unwrap();
+        assert!(restarted.definitions.is_empty());
+        restarted.register(addon).unwrap();
+        assert!(!restarted.definitions[&addon_id].enabled);
+        assert!(restarted.definitions[&addon_id].registered);
+        assert!(restarted.manifests.is_empty());
+        restarted.unregister(&addon_id);
+        assert!(!restarted.definitions[&addon_id].registered);
     }
 
     #[test]

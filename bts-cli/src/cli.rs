@@ -1,4 +1,7 @@
-use bts_sdk::{GroupId, GroupName, GroupReference, TerminalName, TerminalReference, TerminalTag};
+use bts_sdk::{
+    AddonReference, GroupId, GroupName, GroupReference, TerminalName, TerminalReference,
+    TerminalTag,
+};
 use clap::{ArgAction, Parser, Subcommand};
 
 use crate::config::{ColourMode, OutputMode};
@@ -61,6 +64,11 @@ pub enum Command {
         #[command(subcommand)]
         command: GroupCommand,
     },
+    /// Inspect or administer addons.
+    Addon {
+        #[command(subcommand)]
+        command: AddonCommand,
+    },
 }
 
 impl Command {
@@ -72,8 +80,21 @@ impl Command {
             } => "state",
             Self::Terminal { .. } => "terminal",
             Self::Group { .. } => "group",
+            Self::Addon { .. } => "addon",
         }
     }
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AddonCommand {
+    /// List addons known to Core.
+    List,
+    /// Show one addon known to Core.
+    Show { addon: AddonReference },
+    /// Allow a registered addon to provide actions and menus.
+    Enable { addon: AddonReference },
+    /// Prevent an addon from providing actions and menus.
+    Disable { addon: AddonReference },
 }
 
 #[derive(Debug, Clone, Subcommand)]
