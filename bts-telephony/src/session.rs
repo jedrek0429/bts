@@ -141,12 +141,23 @@ impl TelephonySession {
                     ))
                 }
             }
-            MenuContext::TargetSelection { input, .. } => {
+            MenuContext::TargetSelection { choices, input } => {
                 if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() && digit != "0" {
-                    input.push_str(digit);
-                    SessionOutcome {
-                        media: None,
-                        action: None,
+                    let candidate = format!("{input}{digit}");
+                    if choices
+                        .iter()
+                        .any(|choice| choice.code.starts_with(&candidate))
+                    {
+                        *input = candidate;
+                        SessionOutcome {
+                            media: None,
+                            action: None,
+                        }
+                    } else {
+                        SessionOutcome::media(format!(
+                            "{INVALID_SELECTION_PROMPT},{}",
+                            self.current_prompt()
+                        ))
                     }
                 } else {
                     SessionOutcome::media(format!(
@@ -554,6 +565,27 @@ mod tests {
                 .handle_dtmf("#", &catalogue, &reserved)
                 .action
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn target_selection_rejects_non_matching_prefix_digits() {
+        let catalogue = targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]);
+        let (mut session, _) = TelephonySession::new(caller(), &catalogue, MAIN.to_owned());
+
+        let outcome = session.handle_dtmf("9", &catalogue, &actions());
+        assert!(
+            outcome
+                .media
+                .as_deref()
+                .is_some_and(|media| media.starts_with(INVALID_SELECTION_PROMPT))
+        );
+        assert_eq!(
+            session.current_context,
+            MenuContext::TargetSelection {
+                choices: target_choices(&catalogue),
+                input: String::new(),
+            }
         );
     }
 }

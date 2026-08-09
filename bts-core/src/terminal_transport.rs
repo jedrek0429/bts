@@ -61,11 +61,12 @@ impl TerminalTransport {
                 presentation: Box::new(dispatch),
             };
             for recipient in plan.recipients {
-                let send_result = self
+                let sender = self
                     .lock_connections()
                     .get(&recipient.connection_id)
                     .filter(|connection| connection.terminal_id == recipient.terminal_id)
-                    .map(|connection| connection.sender.try_send(message.clone()));
+                    .map(|connection| connection.sender.clone());
+                let send_result = sender.map(|sender| sender.try_send(message.clone()));
                 if !matches!(send_result, Some(Ok(()))) {
                     self.remove_connection(&recipient.terminal_id, recipient.connection_id);
                 }

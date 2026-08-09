@@ -34,8 +34,15 @@ expand_selector() {
     local selector=$1 line
     case "$selector" in
         core|addons|telephony) expanded+=("$selector") ;;
-        terminal:*|display:*)
-            [[ $selector =~ ^(terminal|display):[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
+        terminal:*)
+            [[ $selector =~ ^terminal:[a-z0-9]([a-z0-9._-]*[a-z0-9])?$ ]] || {
+                printf 'Invalid named component selector: %s\n' "$selector" >&2
+                exit 2
+            }
+            expanded+=("$selector")
+            ;;
+        display:*)
+            [[ $selector =~ ^display:[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || {
                 printf 'Invalid named component selector: %s\n' "$selector" >&2
                 exit 2
             }
