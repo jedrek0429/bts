@@ -91,6 +91,20 @@ BTS_DEV_SESSION=voice-test run_dev up voice > "$test_root/voice-output"
 grep -q 'Components: core,addons,telephony' "$test_root/voice-output"
 grep -q 'Readiness order: core, addons, ARI tunnel, telephony, headless terminals, displays.' "$test_root/voice-output"
 
+# terminal: selectors enforce TerminalId-compatible naming.
+if run_dev status terminal:Bedroom > "$test_root/terminal-selector-invalid-output" 2>&1; then
+    echo "The launcher accepted an uppercase terminal selector." >&2
+    exit 1
+fi
+grep -q 'Invalid named component selector: terminal:Bedroom' "$test_root/terminal-selector-invalid-output"
+if run_dev status terminal:bedroom.display > "$test_root/terminal-selector-dot-output" 2>&1; then
+    :
+fi
+if grep -q 'Invalid named component selector' "$test_root/terminal-selector-dot-output"; then
+    echo "The launcher rejected a valid dotted terminal selector." >&2
+    exit 1
+fi
+
 # The #34 profile uses the reusable headless runtime with two stable identities.
 : > "$log"
 BTS_DEV_SESSION=two-terminal-test run_dev up two-terminals > "$test_root/two-terminal-output"
