@@ -166,5 +166,5 @@ jobs:
           assets="$RUNNER_TEMP/release-assets"
           scripts/build-release component display aarch64 target/release/bts-display "$assets"
           scripts/build-release component cli aarch64 target/release/btscli "$assets"
-          test -s "$assets/bts-display-linux-aarch64.tar.zst"
-          test -s "$assets/bts-cli-linux-aarch64.tar.zst"
+          compgen -G "$assets/bts-display-v*-linux-aarch64.tar.zst" >/dev/null
+          compgen -G "$assets/bts-cli-v*-linux-aarch64.tar.zst" >/dev/null
