@@ -2,6 +2,10 @@ name: CI
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
   push:
     branches: [main, 'release/**']
   pull_request:
@@ -14,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -31,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install deployment dependencies
@@ -47,7 +55,7 @@ jobs:
         run: scripts/test-release-version.sh
       - name: Validate development launcher
         run: scripts/test-bts-tmux.sh
-      - name: Validate portable release assets
+      - name: Validate release assets
         run: scripts/test-release-assets.sh
       - name: Build release binaries
         run: cargo build --workspace --release --locked
@@ -55,15 +63,9 @@ jobs:
         run: |
           stage="$RUNNER_TEMP/bts-root"
           version=$(scripts/release-version.py workspace-version)
-
-          install -d \
-            "$stage/etc/bts" \
-            "$stage/usr/bin" \
-            "$stage/usr/lib/systemd/system"
-
+          install -d "$stage/etc/bts" "$stage/usr/bin" "$stage/usr/lib/systemd/system"
           for component in core addons telephony display; do
-            install -Dm755 "target/release/bts-$component" \
-              "$stage/usr/lib/bts/components/$component/releases/$version/bin/bts-$component"
+            install -Dm755 "target/release/bts-$component" "$stage/usr/lib/bts/components/$component/releases/$version/bin/bts-$component"
             ln -s "releases/$version" "$stage/usr/lib/bts/components/$component/current"
           done
           install -Dm755 target/release/btscli "$stage/usr/bin/btscli"
@@ -73,11 +75,9 @@ jobs:
           install -m755 "$(command -v env)" "$stage/usr/bin/env"
           install -m755 "$(command -v sh)" "$stage/usr/bin/sh"
           install -m755 /usr/bin/true "$stage/usr/bin/true"
-
           install -m640 deploy/*.env.example "$stage/etc/bts/"
           install -m644 deploy/systemd/*.service "$stage/usr/lib/systemd/system/"
           install -m644 deploy/systemd/*.target "$stage/usr/lib/systemd/system/"
-
           cat <<'EOF' > "$stage/etc/passwd"
           root:x:0:0:root:/root:/usr/bin/nologin
           bts:x:973:973:bts:/var/lib/bts:/usr/bin/nologin
@@ -92,30 +92,15 @@ jobs:
           input:x:995:
           seat:x:996:
           EOF
-
           cp -a /usr/lib/systemd/system/. "$stage/usr/lib/systemd/system/"
-
           cat <<'EOF' > "$stage/usr/lib/systemd/system/asterisk.service"
           [Unit]
           Description=CI stub for Asterisk
-
           [Service]
           Type=oneshot
           ExecStart=/usr/bin/true
           RemainAfterExit=yes
           EOF
-
           printf 'BTS_STAGE_ROOT=%s\n' "$stage" >> "$GITHUB_ENV"
       - name: Validate staged systemd deployment
-        run: |
-          systemd-analyze \
-            --root="$BTS_STAGE_ROOT" \
-            --man=no \
-            verify \
-            bts-core.service \
-            bts-addons.service \
-            bts-telephony.service \
-            bts-display.service \
-            bts.target \
-            bts-server.target \
-            bts-display.target
+        run: systemd-analyze --root="$BTS_STAGE_ROOT" --man=no verify bts-core.service bts-addons.service bts-telephony.service bts-display.service bts.target bts-server.target bts-display.target

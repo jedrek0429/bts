@@ -1,0 +1,94 @@
+name: Publish release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_BRANCH: ${{ github.ref_name }}
+
+concurrency:
+  group: publish-candidate-${{ github.ref_name }}
+
+jobs:
+  prepare:
+    if: startsWith(github.ref_name, 'release/')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      commit: ${{ steps.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - id: prepare
+        name: Prepare next candidate
+        run: |
+          scripts/release-version.py check-workspace
+          current=$(scripts/release-version.py workspace-version)
+          scripts/release-version.py check-branch "$RELEASE_BRANCH" "$current"
+          mapfile -t tags < <(git tag --list)
+          version=$(scripts/release-version.py next-candidate "$current" "${tags[@]}")
+          scripts/release-version.py check-candidate "$version" "${tags[@]}"
+          scripts/release-version.py set-version "$version"
+          cargo update --workspace
+          scripts/release-version.py check-workspace
+          cargo check --workspace --locked
+          unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
+          [[ -z "$unexpected" ]] || { echo "Release preparation changed unexpected files:" >&2; printf '%s\n' "$unexpected" >&2; exit 1; }
+          if git diff --quiet -- Cargo.toml Cargo.lock; then
+            commit=$(git rev-parse HEAD)
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore(release): bump version to $version"
+            git push origin "HEAD:$RELEASE_BRANCH"
+            commit=$(git rev-parse HEAD)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  validation:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+
+  tag:
+    needs: [prepare, validation]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - name: Create immutable candidate tag
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+            target=$(git rev-parse "refs/tags/$tag^{commit}")
+            [[ "$target" == "$(git rev-parse HEAD)" ]] || { echo "Tag $tag identifies another commit." >&2; exit 1; }
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$tag" -m "BTS $VERSION"
+          git push origin "refs/tags/$tag"
+
+  publish:
+    needs: [prepare, validation, tag]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      prerelease: true
+      ref: ${{ needs.prepare.outputs.commit }}
