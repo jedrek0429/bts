@@ -121,8 +121,8 @@ jobs:
           EOF
           cat <<'EOF' > "$stage/etc/group"
           root:x:0:
-          bts:x:973:973:
-          bts-display:x:974:974:
+          bts:x:973:
+          bts-display:x:974:
           video:x:39:
           render:x:9730:
           input:x:995:
