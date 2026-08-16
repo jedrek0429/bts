@@ -27,29 +27,72 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - id: prepare
-        name: Prepare stable version
+        name: Prepare and merge stable version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           scripts/release-version.py check-workspace
           current=$(scripts/release-version.py workspace-version)
           scripts/release-version.py check-branch "$RELEASE_BRANCH" "$current"
-          [[ $(scripts/release-version.py classify "$current") == candidate ]] || { echo "Stable promotion requires a release candidate." >&2; exit 1; }
+          [[ $(scripts/release-version.py classify "$current") == candidate ]] || {
+            echo "Stable promotion requires a release candidate." >&2
+            exit 1
+          }
+
           tag="v$current"
           git rev-parse --verify "refs/tags/$tag^{commit}" >/dev/null
-          [[ $(git rev-parse "refs/tags/$tag^{commit}") == $(git rev-parse HEAD) ]] || { echo "Stable promotion requires HEAD to be the exact published candidate $tag." >&2; exit 1; }
+          [[ $(git rev-parse "refs/tags/$tag^{commit}") == $(git rev-parse HEAD) ]] || {
+            echo "Stable promotion requires HEAD to be the exact published candidate $tag." >&2
+            exit 1
+          }
+
           version=$(scripts/release-version.py stable-version "$current")
           scripts/release-version.py set-version "$version"
           cargo update --workspace
           scripts/release-version.py check-workspace
           cargo check --workspace --locked
+
           unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
-          [[ -z "$unexpected" ]] || { echo "Stable preparation changed unexpected files:" >&2; printf '%s\n' "$unexpected" >&2; exit 1; }
+          [[ -z "$unexpected" ]] || {
+            echo "Stable preparation changed unexpected files:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          }
+
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): prepare $version"
-          git push origin "HEAD:$RELEASE_BRANCH"
+
+          stable_branch="stable/$version-$GITHUB_RUN_ID"
+          git push origin "HEAD:refs/heads/$stable_branch"
+
+          pr_url=$(gh pr create \
+            --base "$RELEASE_BRANCH" \
+            --head "$stable_branch" \
+            --title "chore(release): prepare $version" \
+            --body "Automated stable-version preparation for BTS $version. This PR contains only the workspace version and lockfile update.")
+          pr_number=${pr_url##*/}
+
+          echo "Waiting for required checks on stable preparation PR #$pr_number."
+          gh pr checks "$pr_number" --required --watch --interval 10
+
+          merge_result=$(gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/pulls/$pr_number/merge" \
+            -f merge_method=merge \
+            -f commit_title="chore(release): prepare $version" \
+            -f commit_message="Automated stable-version preparation for BTS $version.")
+          [[ $(jq -r '.merged' <<< "$merge_result") == true ]] || {
+            echo "GitHub did not merge stable preparation PR #$pr_number." >&2
+            jq -r '.message // empty' <<< "$merge_result" >&2
+            exit 1
+          }
+          commit=$(jq -r '.sha' <<< "$merge_result")
+
+          git push origin --delete "$stable_branch" || true
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
   validation:
     needs: prepare
