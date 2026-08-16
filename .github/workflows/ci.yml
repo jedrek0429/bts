@@ -207,6 +207,12 @@ jobs:
         run: systemd-analyze --root="$BTS_STAGE_ROOT" --man=no verify bts-core.service bts-addons.service bts-telephony.service bts-display.service bts.target bts-server.target bts-display.target
 
   release-assets-aarch64:
+    if: >-
+      github.event_name == 'workflow_call' ||
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/heads/release/') ||
+      startsWith(github.base_ref, 'release/') ||
+      startsWith(github.head_ref, 'release/')
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
