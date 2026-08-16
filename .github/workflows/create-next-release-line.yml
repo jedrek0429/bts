@@ -1,0 +1,57 @@
+name: Create next release line
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: create-next-release-line
+
+jobs:
+  create:
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Create next minor release line
+        run: |
+          scripts/release-version.py check-workspace
+          current=$(scripts/release-version.py workspace-version)
+          [[ $(scripts/release-version.py classify "$current") == stable ]] || {
+            echo "Create next release line must run from a stable main version." >&2
+            exit 1
+          }
+
+          next_minor=$(scripts/release-version.py next-minor-development "$current")
+          next_branch=$(scripts/release-version.py release-branch "$next_minor")
+
+          if git ls-remote --exit-code --heads origin "$next_branch" >/dev/null 2>&1; then
+            echo "$next_branch already exists." >&2
+            exit 1
+          fi
+
+          scripts/release-version.py set-version "$next_minor"
+          cargo update --workspace
+          scripts/release-version.py check-workspace
+          cargo check --workspace --locked
+
+          unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
+          [[ -z "$unexpected" ]] || {
+            echo "Release-line creation changed unexpected files:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          }
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): begin $next_minor"
+          git push origin "HEAD:refs/heads/$next_branch"
+
+          echo "Created $next_branch at $next_minor."
