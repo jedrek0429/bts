@@ -57,7 +57,7 @@ jobs:
             git add Cargo.toml Cargo.lock
             git commit -m "chore(release): bump version to $version"
 
-            candidate_branch="rc/$version-$GITHUB_RUN_ID"
+            candidate_branch="rc/$version-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
             git push origin "HEAD:refs/heads/$candidate_branch"
 
             pr_url=$(gh pr create \
