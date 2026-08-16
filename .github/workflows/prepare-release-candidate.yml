@@ -1,0 +1,69 @@
+name: Prepare release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+env:
+  RELEASE_BRANCH: ${{ github.ref_name }}
+
+concurrency:
+  group: prepare-candidate-${{ github.ref_name }}
+
+jobs:
+  prepare:
+    if: startsWith(github.ref_name, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Open release candidate PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/release-version.py check-workspace
+          current=$(scripts/release-version.py workspace-version)
+          scripts/release-version.py check-branch "$RELEASE_BRANCH" "$current"
+          mapfile -t tags < <(git tag --list)
+          version=$(scripts/release-version.py next-candidate "$current" "${tags[@]}")
+          scripts/release-version.py check-candidate "$version" "${tags[@]}"
+
+          base_commit=$(git rev-parse HEAD)
+          scripts/release-version.py set-version "$version"
+          cargo update --workspace
+          scripts/release-version.py check-workspace
+
+          unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
+          [[ -z "$unexpected" ]] || {
+            echo "Release preparation changed unexpected files:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          }
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): bump version to $version"
+
+          candidate_branch="release-prep/$version-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git push origin "HEAD:refs/heads/$candidate_branch"
+
+          pr_url=$(gh pr create \
+            --base "$RELEASE_BRANCH" \
+            --head "$candidate_branch" \
+            --title "chore(release): prepare $version" \
+            --body "Prepares BTS $version. Merge this PR after CI passes; publication starts automatically after the resulting release-branch CI succeeds.")
+
+          gh workflow run ci.yml \
+            --ref "$candidate_branch" \
+            -f ref="$candidate_branch" \
+            -f base="$base_commit"
+
+          echo "Created $pr_url"
