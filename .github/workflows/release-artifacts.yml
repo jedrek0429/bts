@@ -27,6 +27,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Validate release identity
         env:
           VERSION: ${{ inputs.version }}
@@ -39,10 +42,6 @@ jobs:
           kind=$(scripts/release-version.py classify "$version")
           [[ "$kind" != development ]] || { echo "Development versions cannot be published." >&2; exit 1; }
           if [[ "$kind" == stable ]]; then [[ "$PRERELEASE" == false ]]; else [[ "$PRERELEASE" == true ]]; fi
-          tag="v$version"
-          tag_target=$(git rev-parse "refs/tags/$tag^{commit}")
-          ref_target=$(git rev-parse HEAD)
-          [[ "$tag_target" == "$ref_target" ]] || { echo "Tag $tag does not identify the requested release ref." >&2; exit 1; }
 
   linux-x86_64:
     needs: validate-version
@@ -52,6 +51,9 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
       - name: Install native build and bundle dependencies
         run: |
@@ -83,6 +85,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
       - name: Install native build and bundle dependencies
         run: |
@@ -105,17 +110,36 @@ jobs:
   publish-release:
     needs: [linux-x86_64, linux-aarch64-display-and-cli]
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
       - name: Generate final manifest and checksums
         run: scripts/build-release assemble release-assets
+      - name: Create immutable release tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          tag="v${VERSION#v}"
+          ref_target=$(git rev-parse HEAD)
+          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+            tag_target=$(git rev-parse "refs/tags/$tag^{commit}")
+            [[ "$tag_target" == "$ref_target" ]] || { echo "Tag $tag identifies another commit." >&2; exit 1; }
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$tag" -m "BTS ${VERSION#v}"
+            git push origin "refs/tags/$tag"
+          fi
       - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
