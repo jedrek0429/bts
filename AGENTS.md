@@ -23,6 +23,10 @@ Examples:
 - `fix(display): restore packaged Cabin font discovery`
 - `ci(release): enforce immutable release tags`
 
+When a commit fully resolves a GitHub issue, include a GitHub closing keyword and issue reference in the commit body, for example `Closes #123`, `Fixes #123`, or `Resolves #123`. Use a closing keyword only when the commit actually completes the issue; otherwise use a plain issue reference such as `Refs #123`.
+
+This requirement ensures that completed issues are closed automatically when the resolving commit reaches the repository's default branch, including commits first merged through a `release/**` branch.
+
 CI validates all non-merge commits introduced by a pull request or direct push to `main` or `release/**`.
 
 ## Development rules
