@@ -12,11 +12,41 @@ SUBJECT = re.compile(
     r"(?:\([a-z0-9][a-z0-9._/-]*\))?!?: .+"
 )
 ZERO_SHA = re.compile(r"^0+$")
+SCRIPT_PATH = "scripts/check-commit-messages.py"
+
+
+def is_ancestor(ancestor: str, descendant: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
+
+
+def enforcement_base(base: str, head: str) -> str:
+    """Keep commits predating this validator outside the enforcement range."""
+    introductions = subprocess.check_output(
+        ["git", "log", "--diff-filter=A", "--format=%H", "--reverse", head, "--", SCRIPT_PATH],
+        text=True,
+    ).splitlines()
+    if not introductions:
+        return base
+
+    introduction = introductions[0]
+    if is_ancestor(introduction, base):
+        return base
+
+    return f"{introduction}^"
 
 
 def commits(base: str, head: str) -> list[tuple[str, str]]:
     if ZERO_SHA.fullmatch(base):
         base = f"{head}^"
+    base = enforcement_base(base, head)
     output = subprocess.check_output(
         ["git", "log", "--no-merges", "--format=%H%x00%s", f"{base}..{head}"],
         text=True,
