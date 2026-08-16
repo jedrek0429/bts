@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 env:
   RELEASE_BRANCH: ${{ github.ref_name }}
@@ -26,7 +27,9 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - id: prepare
-        name: Prepare next candidate
+        name: Prepare and merge next candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           scripts/release-version.py check-workspace
           current=$(scripts/release-version.py workspace-version)
@@ -38,8 +41,14 @@ jobs:
           cargo update --workspace
           scripts/release-version.py check-workspace
           cargo check --workspace --locked
+
           unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
-          [[ -z "$unexpected" ]] || { echo "Release preparation changed unexpected files:" >&2; printf '%s\n' "$unexpected" >&2; exit 1; }
+          [[ -z "$unexpected" ]] || {
+            echo "Release preparation changed unexpected files:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          }
+
           if git diff --quiet -- Cargo.toml Cargo.lock; then
             commit=$(git rev-parse HEAD)
           else
@@ -47,9 +56,35 @@ jobs:
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
             git add Cargo.toml Cargo.lock
             git commit -m "chore(release): bump version to $version"
-            git push origin "HEAD:$RELEASE_BRANCH"
-            commit=$(git rev-parse HEAD)
+
+            candidate_branch="rc/$version-$GITHUB_RUN_ID"
+            git push origin "HEAD:refs/heads/$candidate_branch"
+
+            pr_url=$(gh pr create \
+              --base "$RELEASE_BRANCH" \
+              --head "$candidate_branch" \
+              --title "chore(release): prepare $version" \
+              --body "Automated release-candidate preparation for BTS $version. This PR contains only the workspace version and lockfile update.")
+            pr_number=${pr_url##*/}
+
+            echo "Waiting for required checks on release preparation PR #$pr_number."
+            gh pr checks "$pr_number" --required --watch --interval 10
+
+            merge_result=$(gh api --method PUT \
+              "repos/$GITHUB_REPOSITORY/pulls/$pr_number/merge" \
+              -f merge_method=merge \
+              -f commit_title="chore(release): prepare $version" \
+              -f commit_message="Automated release-candidate preparation for BTS $version.")
+            [[ $(jq -r '.merged' <<< "$merge_result") == true ]] || {
+              echo "GitHub did not merge release preparation PR #$pr_number." >&2
+              jq -r '.message // empty' <<< "$merge_result" >&2
+              exit 1
+            }
+            commit=$(jq -r '.sha' <<< "$merge_result")
+
+            git push origin --delete "$candidate_branch" || true
           fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
