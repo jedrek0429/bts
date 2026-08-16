@@ -9,6 +9,22 @@ cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
+## Commit messages
+
+Use Conventional Commits for every authored commit subject:
+
+`<type>[optional scope][!]: <description>`
+
+Allowed types: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`.
+
+Examples:
+
+- `feat(terminal): add group targeting`
+- `fix(display): restore packaged Cabin font discovery`
+- `ci(release): enforce immutable release tags`
+
+CI validates all non-merge commits introduced by a pull request or direct push to `main` or `release/**`.
+
 ## Development rules
 
 - Implement only the assigned GitHub issue.
