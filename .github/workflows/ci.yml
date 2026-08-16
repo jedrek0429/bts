@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   commit-messages:
+    if: github.event_name != 'workflow_call'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +108,7 @@ jobs:
           cat <<'EOF' > "$stage/etc/group"
           root:x:0:
           bts:x:973:
-          bts-display:x:974:bts-display:/var/lib/bts-display:/usr/bin/nologin
+          bts-display:x:974:
           video:x:39:
           render:x:9730:
           input:x:995:
