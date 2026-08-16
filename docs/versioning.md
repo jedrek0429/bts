@@ -19,7 +19,8 @@ The Actions interface exposes release operations by intent:
 
 - **Publish release candidate** runs manually on `release/X.Y.x`. It derives the next `rc.N`, updates `Cargo.toml` and `Cargo.lock`, runs the canonical CI workflow, creates an immutable tag, builds release artifacts and publishes a GitHub prerelease.
 - **Create stable release PR** runs manually on `release/X.Y.x`. The branch HEAD must be exactly a published RC. It changes the workspace to the stable version, validates that commit, and opens `release/X.Y.x -> main`. It publishes nothing.
-- **Publish stable release** runs automatically when a release-line PR is merged into `main`. It validates the merge commit, creates the immutable stable tag, builds release artifacts and publishes the stable GitHub Release.
+- **Publish stable release** runs automatically when a release-line PR is merged into `main`. It validates the merge commit, creates the immutable stable tag, builds release artifacts, publishes the stable GitHub Release, then advances the existing maintenance line to the next patch development version.
+- **Create next release line** runs manually on `main` when development of the next minor version should begin. It derives the next minor version, creates `release/X.Y.x`, updates `Cargo.toml` and `Cargo.lock`, and validates the new development state before pushing it.
 
 `Build release artifacts` is reusable implementation machinery and has no manual trigger. `CI` is read-only and keeps Cargo's `--locked` checks so inconsistent version metadata fails immediately.
 
@@ -55,14 +56,23 @@ Merging that PR is the explicit stable-publication action.
 
 ## After a stable release
 
-After the stable GitHub Release is published, automation advances both development paths:
+After the stable GitHub Release is published, automation advances only the release line that was just published:
 
 ```text
 release/0.4.x -> 0.4.1-dev.0
-release/0.5.x -> 0.5.0-dev.0   (created from the stable main commit if absent)
 ```
 
-The existing release line therefore remains available for patch maintenance while the next minor release line is ready for feature work. An already-existing next release line is left unchanged.
+This keeps the current minor line ready for patch maintenance without creating speculative future branches.
+
+When feature development for the next minor version is actually planned, run **Create next release line** from `main`:
+
+```text
+main at 0.4.0
+        -> Create next release line
+release/0.5.x -> 0.5.0-dev.0
+```
+
+The workflow refuses to overwrite an existing next release line. Creating the branch is therefore an explicit project decision rather than an automatic consequence of publishing the previous minor release.
 
 ## Cargo lockfile policy
 
