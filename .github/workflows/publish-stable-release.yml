@@ -22,6 +22,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - id: inspect
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,32 +49,8 @@ jobs:
     with:
       ref: ${{ github.sha }}
 
-  tag:
-    needs: [inspect, validation]
-    if: needs.inspect.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Create immutable stable tag
-        env:
-          VERSION: ${{ needs.inspect.outputs.version }}
-        run: |
-          tag="v$VERSION"
-          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
-            target=$(git rev-parse "refs/tags/$tag^{commit}")
-            [[ "$target" == "$GITHUB_SHA" ]] || { echo "Tag $tag identifies another commit." >&2; exit 1; }
-            exit 0
-          fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git tag -a "$tag" -m "BTS $VERSION"
-          git push origin "refs/tags/$tag"
-
   publish:
-    needs: [inspect, validation, tag]
+    needs: [inspect, validation]
     if: needs.inspect.outputs.publish == 'true'
     permissions:
       contents: write
@@ -90,6 +69,9 @@ jobs:
         with:
           ref: ${{ needs.inspect.outputs.release_branch }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
       - name: Advance maintenance line through protected branch
         env:
