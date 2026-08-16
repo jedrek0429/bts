@@ -9,24 +9,68 @@
 | Release manifest and component bundle | `compatibility.json` | Their structure or layout breaks compatibility |
 | Installer state and JSON output | `compatibility.json` | Persisted or machine-readable data breaks compatibility |
 
-`Cargo.toml` and `compatibility.json` are the only version sources. Every BTS crate inherits the product version. `bts-compat` generates Rust constants and versioned Core paths from the compatibility file; release tooling reads the same file. Documentation must not define a competing value.
+`Cargo.toml` and `compatibility.json` are the version sources. Every BTS crate inherits the product version. `bts-compat` generates Rust constants and versioned Core paths from the compatibility file; release tooling reads the same file. Documentation describes the lifecycle without defining a competing version.
 
 Compatibility versions are independent of product releases. Additive contract changes retain the current API/schema version. Breaking network contracts add a new route/module version alongside the old one during migration. Persisted state changes require a migration before its schema number changes. Built-in addon versions use SemVer.
 
-## Release flow
+## Operator workflows
 
-`release/X.Y.x` must contain an `X.Y.*` workspace version:
+The Actions interface exposes release operations by intent:
+
+- **Publish release candidate** runs manually on `release/X.Y.x`. It derives the next `rc.N`, updates `Cargo.toml` and `Cargo.lock`, runs the canonical CI workflow, creates an immutable tag, builds release artifacts and publishes a GitHub prerelease.
+- **Create stable release PR** runs manually on `release/X.Y.x`. The branch HEAD must be exactly a published RC. It changes the workspace to the stable version, validates that commit, and opens `release/X.Y.x -> main`. It publishes nothing.
+- **Publish stable release** runs automatically when a release-line PR is merged into `main`. It validates the merge commit, creates the immutable stable tag, builds release artifacts and publishes the stable GitHub Release.
+
+`Build release artifacts` is reusable implementation machinery and has no manual trigger. `CI` is read-only and keeps Cargo's `--locked` checks so inconsistent version metadata fails immediately.
+
+## Candidate flow
+
+A release line starts in development, for example:
 
 ```text
-0.4.0-dev.0  development; CI artefacts only
-0.4.0-rc.1   automatically tagged v0.4.0-rc.1 and published as a prerelease
-0.4.0-rc.2   next immutable candidate
-0.4.0        merge to main; the merge commit is tagged v0.4.0 and published stable
+release/0.4.x
+0.4.0-dev.0
 ```
 
-Change the workspace version in a reviewed commit and update `Cargo.lock`. A tag must equal the workspace version with a leading `v`; tags are never moved. Further work after an RC must use a new `dev.N` or `rc.N` version.
+Run **Publish release candidate** on that branch. The workflow derives `0.4.0-rc.1` when no candidate tags exist. After fixes, running it again derives `0.4.0-rc.2`, then `rc.3`, and so on. Candidate numbering is sequential and tags never move.
 
-Every push runs CI. Candidate and stable promotion rerun CI before tagging and packaging. Configure required reviewers on the GitHub `release` environment if human approval is desired.
+If validation fails after the candidate commit is pushed, the version remains an unpublished `rc.N`. Fix the branch and rerun the same workflow; it retries that candidate number until it is successfully tagged.
+
+## Stable flow
+
+When a published candidate is accepted, run **Create stable release PR** on its release branch. Stable preparation requires the branch HEAD to equal the published candidate tag exactly, which prevents untested post-candidate changes from entering the stable release.
+
+For example:
+
+```text
+v0.4.0-rc.2 at release/0.4.x HEAD
+        -> Create stable release PR
+0.4.0 commit on release/0.4.x
+        -> validated PR to main
+        -> maintainer merges PR
+v0.4.0 on the resulting main commit
+```
+
+Merging that PR is the explicit stable-publication action.
+
+## After a stable release
+
+After the stable GitHub Release is published, automation advances both development paths:
+
+```text
+release/0.4.x -> 0.4.1-dev.0
+release/0.5.x -> 0.5.0-dev.0   (created from the stable main commit if absent)
+```
+
+The existing release line therefore remains available for patch maintenance while the next minor release line is ready for feature work. An already-existing next release line is left unchanged.
+
+## Cargo lockfile policy
+
+Release workflows change the workspace version with `scripts/release-version.py` and run `cargo update --workspace` so workspace package entries in `Cargo.lock` follow the new product version. CI and release builds then use `--locked`.
+
+Release preparation is allowed to modify only `Cargo.toml` and `Cargo.lock`; unexpected file changes abort the workflow.
+
+## Installation
 
 Install stable by omitting `--channel`; install a candidate explicitly:
 
@@ -35,6 +79,6 @@ sudo bts-install install full
 sudo bts-install install full --channel v0.4.0-rc.1
 ```
 
-Branches and Actions artefacts are not installation sources. `stable` excludes drafts, prereleases and legacy releases without an Installer v2 manifest.
+Branches and Actions artifacts are development inputs rather than installation channels. `stable` excludes drafts, prereleases and legacy releases without an Installer v2 manifest.
 
-For an unpublished `dev.N` build, run `scripts/build-release all` and install its directory with `--release-dir`; see the [development guide](development.md).
+For an unpublished development build, run `scripts/build-release all` and install its directory with `--release-dir`; see the [development guide](development.md).

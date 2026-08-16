@@ -1,0 +1,125 @@
+name: Publish stable release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: publish-stable-${{ github.sha }}
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.inspect.outputs.publish }}
+      version: ${{ steps.inspect.outputs.version }}
+      release_branch: ${{ steps.inspect.outputs.release_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/release-version.py check-workspace
+          version=$(scripts/release-version.py workspace-version)
+          publish=false
+          release_branch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "main" and (.head.ref | startswith("release/")))] | first | .head.ref // ""')
+          if [[ -n "$release_branch" ]]; then
+            scripts/release-version.py check-branch "$release_branch" "$version"
+            [[ $(scripts/release-version.py classify "$version") == stable ]] || { echo "Merged release branch must contain a stable version." >&2; exit 1; }
+            publish=true
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_branch=$release_branch" >> "$GITHUB_OUTPUT"
+
+  validation:
+    needs: inspect
+    if: needs.inspect.outputs.publish == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.sha }}
+
+  tag:
+    needs: [inspect, validation]
+    if: needs.inspect.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create immutable stable tag
+        env:
+          VERSION: ${{ needs.inspect.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
+            target=$(git rev-parse "refs/tags/$tag^{commit}")
+            [[ "$target" == "$GITHUB_SHA" ]] || { echo "Tag $tag identifies another commit." >&2; exit 1; }
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$tag" -m "BTS $VERSION"
+          git push origin "refs/tags/$tag"
+
+  publish:
+    needs: [inspect, validation, tag]
+    if: needs.inspect.outputs.publish == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      version: ${{ needs.inspect.outputs.version }}
+      prerelease: false
+      ref: ${{ github.sha }}
+
+  advance-release-lines:
+    needs: [inspect, publish]
+    if: needs.inspect.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.inspect.outputs.release_branch }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Advance maintenance line
+        env:
+          VERSION: ${{ needs.inspect.outputs.version }}
+          RELEASE_BRANCH: ${{ needs.inspect.outputs.release_branch }}
+        run: |
+          next_patch=$(scripts/release-version.py next-patch-development "$VERSION")
+          scripts/release-version.py set-version "$next_patch"
+          cargo update --workspace
+          cargo check --workspace --locked
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): begin $next_patch"
+          git push origin "HEAD:$RELEASE_BRANCH"
+      - name: Create next feature release line
+        env:
+          VERSION: ${{ needs.inspect.outputs.version }}
+        run: |
+          next_minor=$(scripts/release-version.py next-minor-development "$VERSION")
+          next_branch=$(scripts/release-version.py release-branch "$next_minor")
+          if git ls-remote --exit-code --heads origin "$next_branch" >/dev/null 2>&1; then
+            echo "$next_branch already exists; leaving it unchanged."
+            exit 0
+          fi
+          git fetch origin "$GITHUB_SHA"
+          git checkout --detach "$GITHUB_SHA"
+          scripts/release-version.py set-version "$next_minor"
+          cargo update --workspace
+          cargo check --workspace --locked
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): begin $next_minor"
+          git push origin "HEAD:refs/heads/$next_branch"
