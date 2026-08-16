@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: publish-stable-${{ github.sha }}
@@ -91,17 +91,52 @@ jobs:
           ref: ${{ needs.inspect.outputs.release_branch }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Advance maintenance line
+      - name: Advance maintenance line through protected branch
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.inspect.outputs.version }}
           RELEASE_BRANCH: ${{ needs.inspect.outputs.release_branch }}
         run: |
           next_patch=$(scripts/release-version.py next-patch-development "$VERSION")
           scripts/release-version.py set-version "$next_patch"
           cargo update --workspace
+          scripts/release-version.py check-workspace
           cargo check --workspace --locked
+
+          unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
+          [[ -z "$unexpected" ]] || {
+            echo "Maintenance advancement changed unexpected files:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          }
+
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): begin $next_patch"
-          git push origin "HEAD:$RELEASE_BRANCH"
+
+          maintenance_branch="maintenance/$next_patch-$GITHUB_RUN_ID"
+          git push origin "HEAD:refs/heads/$maintenance_branch"
+
+          pr_url=$(gh pr create \
+            --base "$RELEASE_BRANCH" \
+            --head "$maintenance_branch" \
+            --title "chore(release): begin $next_patch" \
+            --body "Automated maintenance-line advancement after publishing BTS $VERSION. This PR contains only the workspace version and lockfile update.")
+          pr_number=${pr_url##*/}
+
+          echo "Waiting for required checks on maintenance PR #$pr_number."
+          gh pr checks "$pr_number" --required --watch --interval 10
+
+          merge_result=$(gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/pulls/$pr_number/merge" \
+            -f merge_method=merge \
+            -f commit_title="chore(release): begin $next_patch" \
+            -f commit_message="Automated maintenance-line advancement after BTS $VERSION.")
+          [[ $(jq -r '.merged' <<< "$merge_result") == true ]] || {
+            echo "GitHub did not merge maintenance PR #$pr_number." >&2
+            jq -r '.message // empty' <<< "$merge_result" >&2
+            exit 1
+          }
+
+          git push origin --delete "$maintenance_branch" || true
