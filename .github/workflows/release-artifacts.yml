@@ -1,0 +1,133 @@
+name: Build release artifacts
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      prerelease:
+        required: true
+        type: boolean
+      ref:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-artifacts-${{ inputs.version }}
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Validate release identity
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          version=${VERSION#v}
+          scripts/release-version.py check-workspace
+          workspace_version=$(scripts/release-version.py workspace-version)
+          [[ "$version" == "$workspace_version" ]] || { echo "Release $version does not match workspace version $workspace_version." >&2; exit 1; }
+          kind=$(scripts/release-version.py classify "$version")
+          [[ "$kind" != development ]] || { echo "Development versions cannot be published." >&2; exit 1; }
+          if [[ "$kind" == stable ]]; then [[ "$PRERELEASE" == false ]]; else [[ "$PRERELEASE" == true ]]; fi
+          tag="v$version"
+          tag_target=$(git rev-parse "refs/tags/$tag^{commit}")
+          ref_target=$(git rev-parse HEAD)
+          [[ "$tag_target" == "$ref_target" ]] || { echo "Tag $tag does not identify the requested release ref." >&2; exit 1; }
+
+  linux-x86_64:
+    needs: validate-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build and bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
+      - name: Build installer and components
+        run: cargo build --locked --release --workspace
+      - name: Build release assets
+        run: |
+          assets="$RUNNER_TEMP/release-assets"
+          install -d "$assets"
+          for component in core display telephony addons cli; do
+            binary="bts-$component"
+            [[ "$component" == cli ]] && binary=btscli
+            scripts/build-release component "$component" x86_64 "target/release/$binary" "$assets"
+          done
+          scripts/build-release installer target/release/bts-install "$assets"
+          printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bts-linux-x86_64
+          path: ${{ env.ASSET_DIRECTORY }}
+          if-no-files-found: error
+
+  linux-aarch64-display-and-cli:
+    needs: validate-version
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build and bundle dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
+      - name: Build ARM64 Display and CLI
+        run: cargo build --locked --release -p bts-display -p bts-cli
+      - name: Build ARM64 Display and CLI bundles
+        run: |
+          assets="$RUNNER_TEMP/release-assets"
+          scripts/build-release component display aarch64 target/release/bts-display "$assets"
+          scripts/build-release component cli aarch64 target/release/btscli "$assets"
+          printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bts-linux-aarch64-display-and-cli
+          path: ${{ env.ASSET_DIRECTORY }}
+          if-no-files-found: error
+
+  publish-release:
+    needs: [linux-x86_64, linux-aarch64-display-and-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Generate final manifest and checksums
+        run: scripts/build-release assemble release-assets
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          tag="v${VERSION#v}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --draft=false
+          else
+            arguments=("$tag" --verify-tag --generate-notes)
+            [[ "$PRERELEASE" == true ]] && arguments+=(--prerelease)
+            gh release create "${arguments[@]}"
+          fi
+          gh release upload "$tag" release-assets/* --clobber

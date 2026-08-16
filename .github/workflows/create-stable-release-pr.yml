@@ -1,0 +1,82 @@
+name: Create stable release PR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  RELEASE_BRANCH: ${{ github.ref_name }}
+
+concurrency:
+  group: stable-pr-${{ github.ref_name }}
+
+jobs:
+  prepare:
+    if: startsWith(github.ref_name, 'release/')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      commit: ${{ steps.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - id: prepare
+        name: Prepare stable version
+        run: |
+          scripts/release-version.py check-workspace
+          current=$(scripts/release-version.py workspace-version)
+          scripts/release-version.py check-branch "$RELEASE_BRANCH" "$current"
+          [[ $(scripts/release-version.py classify "$current") == candidate ]] || { echo "Stable promotion requires a release candidate." >&2; exit 1; }
+          tag="v$current"
+          git rev-parse --verify "refs/tags/$tag^{commit}" >/dev/null
+          [[ $(git rev-parse "refs/tags/$tag^{commit}") == $(git rev-parse HEAD) ]] || { echo "Stable promotion requires HEAD to be the exact published candidate $tag." >&2; exit 1; }
+          version=$(scripts/release-version.py stable-version "$current")
+          scripts/release-version.py set-version "$version"
+          cargo update --workspace
+          scripts/release-version.py check-workspace
+          cargo check --workspace --locked
+          unexpected=$(git diff --name-only | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)
+          [[ -z "$unexpected" ]] || { echo "Stable preparation changed unexpected files:" >&2; printf '%s\n' "$unexpected" >&2; exit 1; }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): prepare $version"
+          git push origin "HEAD:$RELEASE_BRANCH"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  validation:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.commit }}
+
+  pull-request:
+    needs: [prepare, validation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - name: Open stable release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          existing=$(gh pr list --base main --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            echo "Stable release PR #$existing already exists."
+            exit 0
+          fi
+          gh pr create \
+            --base main \
+            --head "$RELEASE_BRANCH" \
+            --title "Release BTS $VERSION" \
+            --body "Promotes the validated $RELEASE_BRANCH release line to stable BTS $VERSION. Merging this PR is the explicit stable-publication action."
