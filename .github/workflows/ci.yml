@@ -14,6 +14,27 @@ permissions:
   contents: read
 
 jobs:
+  commit-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - name: Validate Conventional Commit subjects
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          HEAD: ${{ inputs.ref || github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE"
+          else
+            base="$BEFORE"
+          fi
+          python3 scripts/check-commit-messages.py "$base" "$HEAD"
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +69,7 @@ jobs:
       - name: Validate shell scripts
         run: shellcheck scripts/build-release scripts/build-component-bundle scripts/bts-dev scripts/bts-tmux scripts/test-bts-tmux.sh scripts/test-support/fake-tmux scripts/test-release-assets.sh scripts/test-release-version.sh scripts/generate-voice-prompts.sh
       - name: Validate Python release tooling
-        run: python3 -m py_compile scripts/generate-release-manifest.py scripts/release-version.py scripts/test-administrative-boundaries.py
+        run: python3 -m py_compile scripts/generate-release-manifest.py scripts/release-version.py scripts/check-commit-messages.py scripts/test-administrative-boundaries.py
       - name: Validate administrative crate boundaries
         run: python3 scripts/test-administrative-boundaries.py
       - name: Validate release versions
@@ -86,7 +107,7 @@ jobs:
           cat <<'EOF' > "$stage/etc/group"
           root:x:0:
           bts:x:973:
-          bts-display:x:974:
+          bts-display:x:974:bts-display:/var/lib/bts-display:/usr/bin/nologin
           video:x:39:
           render:x:9730:
           input:x:995:
