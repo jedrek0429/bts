@@ -27,8 +27,13 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - id: inspect
         name: Inspect release candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           scripts/release-version.py check-workspace
           version=$(scripts/release-version.py workspace-version)
@@ -40,10 +45,17 @@ jobs:
             tag="v$version"
             if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null; then
               target=$(git rev-parse "refs/tags/$tag^{commit}")
-              [[ "$target" == "$commit" ]] || {
-                echo "Tag $tag identifies another commit." >&2
-                exit 1
-              }
+              if ! gh release view "$tag" >/dev/null 2>&1; then
+                git checkout --detach "$target"
+                scripts/release-version.py check-workspace
+                tagged_version=$(scripts/release-version.py workspace-version)
+                [[ "$tagged_version" == "$version" ]] || {
+                  echo "Tag $tag contains workspace version $tagged_version." >&2
+                  exit 1
+                }
+                commit=$target
+                publish=true
+              fi
             else
               publish=true
             fi
@@ -53,28 +65,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
-  tag:
-    needs: inspect
-    if: needs.inspect.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.inspect.outputs.commit }}
-          fetch-depth: 0
-      - name: Create immutable candidate tag
-        env:
-          VERSION: ${{ needs.inspect.outputs.version }}
-        run: |
-          tag="v$VERSION"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git tag -a "$tag" -m "BTS $VERSION"
-          git push origin "refs/tags/$tag"
-
   publish:
-    needs: [inspect, tag]
+    needs: inspect
     if: needs.inspect.outputs.publish == 'true'
     permissions:
       contents: write
