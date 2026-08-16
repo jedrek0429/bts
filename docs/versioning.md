@@ -56,7 +56,7 @@ Merging that PR is the explicit stable-publication action.
 
 ## After a stable release
 
-After the stable GitHub Release is published, automation advances only the release line that was just published:
+After the stable GitHub Release is published, automation advances the release line that was just published:
 
 ```text
 release/0.4.x -> 0.4.1-dev.0
