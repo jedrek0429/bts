@@ -108,8 +108,8 @@ jobs:
           EOF
           cat <<'EOF' > "$stage/etc/group"
           root:x:0:
-          bts:x:973:
-          bts-display:x:974:
+          bts:x:973:973:
+          bts-display:x:974:974:
           video:x:39:
           render:x:9730:
           input:x:995:
@@ -167,7 +167,9 @@ jobs:
             install -Dm755 "target/release/bts-$component" "$stage/usr/lib/bts/components/$component/releases/$version/bin/bts-$component"
             ln -s "releases/$version" "$stage/usr/lib/bts/components/$component/current"
           done
-          install -Dm755 target/release/btscli "$stage/usr/bin/btscli"
+          if [[ -x target/release/btscli ]]; then
+            install -Dm755 target/release/btscli "$stage/usr/bin/btscli"
+          fi
           install -m755 "$(command -v cage)" "$stage/usr/bin/cage"
           install -m755 "$(command -v rm)" "$stage/usr/bin/rm"
           install -m755 "$(command -v install)" "$stage/usr/bin/install"
@@ -184,8 +186,8 @@ jobs:
           EOF
           cat <<'EOF' > "$stage/etc/group"
           root:x:0:
-          bts:x:973:
-          bts-display:x:974:
+          bts:x:973:973:
+          bts-display:x:974:974:
           video:x:39:
           render:x:9730:
           input:x:995:
@@ -220,11 +222,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
       - name: Build ARM64 release binaries
-        run: cargo build --locked --release -p bts-display -p bts-cli
+        run: |
+          packages=(-p bts-display)
+          [[ -f bts-cli/Cargo.toml ]] && packages+=(-p bts-cli)
+          cargo build --locked --release "${packages[@]}"
       - name: Validate ARM64 release bundles
         run: |
           assets="$RUNNER_TEMP/release-assets"
           scripts/build-release component display aarch64 target/release/bts-display "$assets"
-          scripts/build-release component cli aarch64 target/release/btscli "$assets"
           compgen -G "$assets/bts-display-v*-linux-aarch64.tar.zst" >/dev/null
-          compgen -G "$assets/bts-cli-v*-linux-aarch64.tar.zst" >/dev/null
+          if [[ -f bts-cli/Cargo.toml ]]; then
+            scripts/build-release component cli aarch64 target/release/btscli "$assets"
+            compgen -G "$assets/bts-cli-v*-linux-aarch64.tar.zst" >/dev/null
+          fi
