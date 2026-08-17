@@ -392,10 +392,7 @@ async fn execute_plan(
         }
         if desired_services.contains(&Component::Telephony) {
             let values = read_component_configuration(&cli.root, Component::Telephony)?;
-            let ari_ready = probe_ari(&values).await == AriProbe::Accepted;
-            let core_ready = plan.after.contains(&Component::Core)
-                || probe_core(&values["BTS_CORE_URL"]).await == CoreProbe::Reachable;
-            if !ari_ready || !core_ready {
+            if !telephony_startup_ready(&values, plan.after.contains(&Component::Core)).await {
                 desired_services.remove(&Component::Telephony);
             }
         }
@@ -1242,6 +1239,17 @@ fn component_configuration_is_valid(root: &Path, component: Component) -> bool {
         }
         _ => true,
     }
+}
+
+async fn telephony_startup_ready(
+    values: &BTreeMap<String, String>,
+    local_core_selected: bool,
+) -> bool {
+    let ari_ready = probe_ari(values).await == AriProbe::Accepted;
+    let core_ready =
+        local_core_selected || probe_core(&values["BTS_CORE_URL"]).await == CoreProbe::Reachable;
+    let tts_ready = probe_tts(values).await == TtsProbe::Rendered;
+    ari_ready && core_ready && tts_ready
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2314,6 +2322,22 @@ mod tests {
     }
 
     #[test]
+    fn telephony_install_requires_non_empty_ari_password() {
+        let root = tempfile::tempdir().unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "install",
+            "telephony",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .unwrap();
+        let error = ensure_default_configuration(&cli, Component::Telephony, true).unwrap_err();
+        assert!(error.to_string().contains("BTS_ARI_PASSWORD is not configured"));
+    }
+
+    #[test]
     fn telephony_install_persists_remote_services_without_requiring_reachability() {
         let root = tempfile::tempdir().unwrap();
         let secret = root.path().join("telephony-secret.env");
@@ -2400,6 +2424,17 @@ mod tests {
 
         assert_eq!(probe_ari(&values).await, AriProbe::Unreachable);
         assert_eq!(probe_tts(&values).await, TtsProbe::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn telephony_startup_readiness_requires_rendered_tts() {
+        let ari_url = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").await;
+        let kokoro_url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot audio",
+        )
+        .await;
+        let values = telephony_values(ari_url, kokoro_url);
+        assert!(!telephony_startup_ready(&values, true).await);
     }
 
     #[tokio::test]
