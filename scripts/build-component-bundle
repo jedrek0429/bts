@@ -44,19 +44,32 @@ else
 fi
 
 if [[ "$component" == display ]]; then
-    if ! command -v curl >/dev/null; then
-        echo "curl is required to bundle the Display Cabin font asset" >&2
-        exit 1
-    fi
-    google_fonts_commit=352f6b7d9d6cc4fa9e242b931291d31b21a6dc84
-    cabin_base="https://raw.githubusercontent.com/google/fonts/$google_fonts_commit/ofl/cabin"
     install -d "$bundle/share/fonts/bts" "$bundle/share/licenses/bts-cabin"
-    curl --fail --location --retry 3 \
-        "$cabin_base/Cabin%5Bwdth%2Cwght%5D.ttf" \
-        -o "$bundle/share/fonts/bts/Cabin.ttf"
-    curl --fail --location --retry 3 \
-        "$cabin_base/OFL.txt" \
-        -o "$bundle/share/licenses/bts-cabin/OFL.txt"
+    if [[ -n "${BTS_CABIN_SOURCE_DIR:-}" ]]; then
+        [[ -f "$BTS_CABIN_SOURCE_DIR/Cabin.ttf" ]] || {
+            echo "BTS_CABIN_SOURCE_DIR does not contain Cabin.ttf" >&2
+            exit 1
+        }
+        [[ -f "$BTS_CABIN_SOURCE_DIR/OFL.txt" ]] || {
+            echo "BTS_CABIN_SOURCE_DIR does not contain OFL.txt" >&2
+            exit 1
+        }
+        install -m644 "$BTS_CABIN_SOURCE_DIR/Cabin.ttf" "$bundle/share/fonts/bts/Cabin.ttf"
+        install -m644 "$BTS_CABIN_SOURCE_DIR/OFL.txt" "$bundle/share/licenses/bts-cabin/OFL.txt"
+    else
+        if ! command -v curl >/dev/null; then
+            echo "curl is required to bundle the Display Cabin font asset" >&2
+            exit 1
+        fi
+        google_fonts_commit=352f6b7d9d6cc4fa9e242b931291d31b21a6dc84
+        cabin_base="https://raw.githubusercontent.com/google/fonts/$google_fonts_commit/ofl/cabin"
+        curl --fail --location --retry 3 \
+            "$cabin_base/Cabin%5Bwdth%2Cwght%5D.ttf" \
+            -o "$bundle/share/fonts/bts/Cabin.ttf"
+        curl --fail --location --retry 3 \
+            "$cabin_base/OFL.txt" \
+            -o "$bundle/share/licenses/bts-cabin/OFL.txt"
+    fi
     [[ -s "$bundle/share/fonts/bts/Cabin.ttf" ]] || { echo "Cabin font download is empty" >&2; exit 1; }
     [[ -s "$bundle/share/licenses/bts-cabin/OFL.txt" ]] || { echo "Cabin licence download is empty" >&2; exit 1; }
 fi
