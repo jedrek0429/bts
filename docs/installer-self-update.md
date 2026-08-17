@@ -24,7 +24,7 @@ Releases created before self-update support still require the documented checksu
 
 ## Compatibility preflight
 
-Local-only mutating operations continue to work offline. Reading installer state validates its schema before `remove`, `configure`, or `uninstall` can make changes.
+Local-only mutating operations continue to work offline. Every command that can change installation state validates the local state schema before release lookup, self-update or host mutation. An incompatible state therefore stops `install`, `add`, `remove`, `upgrade`, `configure` and `uninstall` without rewriting the state or contacting GitHub.
 
 Operations that consume a release (`install`, `add`, and `upgrade`) fetch and validate the selected release manifest before package installation, account creation, service changes, tty takeover, staging, or activation. This verifies the release manifest and component bundle format before host mutation begins.
 

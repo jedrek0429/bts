@@ -24,6 +24,10 @@ fn main() {
 fn bootstrap() -> Result<()> {
     let cli = Cli::parse(std::env::args())?;
 
+    if requires_local_preflight(&cli.command) {
+        preflight_local_state(&cli)?;
+    }
+
     if matches!(cli.command, Command::Upgrade(_)) && cli.release_dir.is_none() {
         normalise_upgrade_source(&cli)?;
     }
@@ -40,6 +44,25 @@ fn bootstrap() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn requires_local_preflight(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Install { .. }
+            | Command::Add(_)
+            | Command::Remove(_)
+            | Command::Upgrade(_)
+            | Command::Configure(_)
+            | Command::Uninstall(_)
+    )
+}
+
+fn preflight_local_state(cli: &Cli) -> Result<()> {
+    let state_path = rooted(&cli.root, "/var/lib/bts-install/state.json");
+    InstallerState::load(&state_path)
+        .context("The local installation state is incompatible with this installer")?;
+    Ok(())
 }
 
 fn run_self_update(cli: &Cli) -> Result<()> {
@@ -158,6 +181,61 @@ fn require_root() -> Result<()> {
 
 fn rooted(root: &Path, absolute: &str) -> PathBuf {
     root.join(absolute.trim_start_matches('/'))
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn every_installation_mutation_requires_local_preflight() {
+        let commands = [
+            Cli::parse(["bts-install", "install", "server"])
+                .unwrap()
+                .command,
+            Cli::parse(["bts-install", "add", "core"]).unwrap().command,
+            Cli::parse(["bts-install", "remove", "core"])
+                .unwrap()
+                .command,
+            Cli::parse(["bts-install", "upgrade"]).unwrap().command,
+            Cli::parse(["bts-install", "configure", "core"])
+                .unwrap()
+                .command,
+            Cli::parse(["bts-install", "uninstall", "core"])
+                .unwrap()
+                .command,
+        ];
+
+        assert!(commands.iter().all(requires_local_preflight));
+        assert!(!requires_local_preflight(&Command::SelfUpdate));
+        assert!(!requires_local_preflight(&Command::Status));
+    }
+
+    #[test]
+    fn incompatible_local_state_stops_before_it_can_be_rewritten() {
+        let directory = tempdir().unwrap();
+        let state_path = rooted(directory.path(), "/var/lib/bts-install/state.json");
+        fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        let original = br#"{"schema_version":99}"#;
+        fs::write(&state_path, original).unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "--root",
+            directory.path().to_str().unwrap(),
+            "install",
+            "server",
+        ])
+        .unwrap();
+
+        let error = preflight_local_state(&cli).unwrap_err();
+
+        assert!(format!("{error:#}").contains("schema 99"));
+        assert_eq!(fs::read(state_path).unwrap(), original);
+    }
 }
 
 mod legacy {
