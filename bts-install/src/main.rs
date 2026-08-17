@@ -904,6 +904,10 @@ fn resolve_telephony_configuration(
         } else {
             rpassword::prompt_password("ARI password: ")?
         };
+        ensure!(
+            !password.is_empty() || values.contains_key("BTS_ARI_PASSWORD"),
+            "ARI password is required."
+        );
         if !password.is_empty() {
             let confirmation = rpassword::prompt_password("Confirm ARI password: ")?;
             ensure!(password == confirmation, "ARI passwords did not match.");
@@ -927,21 +931,19 @@ fn resolve_telephony_configuration(
         values.insert("BTS_ARI_USERNAME".into(), username);
         values.insert("BTS_KOKORO_URL".into(), kokoro_url);
         values.insert("BTS_CORE_URL".into(), core_url);
-    } else if force_input {
+    } else {
         bail!(
             "Non-interactive Telephony configuration requires --secret-file or --secret-fd."
         );
     }
 
-    if values.contains_key("BTS_ARI_PASSWORD") {
-        config::validate_telephony(&values)?;
-        config::validate_http_url(
-            values
-                .get("BTS_CORE_URL")
-                .context("BTS_CORE_URL is not configured")?,
-            "BTS_CORE_URL",
-        )?;
-    }
+    config::validate_telephony(&values)?;
+    config::validate_http_url(
+        values
+            .get("BTS_CORE_URL")
+            .context("BTS_CORE_URL is not configured")?,
+        "BTS_CORE_URL",
+    )?;
     Ok(values)
 }
 
@@ -2351,6 +2353,27 @@ mod tests {
         );
         assert_eq!(values["BTS_ARI_PASSWORD"], "remote-secret");
         assert!(!config::redact(&contents).contains("remote-secret"));
+    }
+
+    #[test]
+    fn non_interactive_telephony_install_rejects_missing_protected_input() {
+        let root = tempfile::tempdir().unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "install",
+            "telephony",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--core-http-url",
+            "http://core.lan:3100",
+            "--yes",
+        ])
+        .unwrap();
+
+        let error = ensure_default_configuration(&cli, Component::Telephony, false).unwrap_err();
+
+        assert!(error.to_string().contains("--secret-file or --secret-fd"));
+        assert!(!root.path().join("etc/bts/telephony.env").exists());
     }
 
     #[tokio::test]
