@@ -36,7 +36,6 @@ Options:
   --repository OWNER/REPO  Release repository (default: jedrek0429/bts)
   --track TRACK          Follow stable, stable/X.Y, rc or rc/X.Y (default: stable)
   --release vVERSION     Pin one exact stable or prerelease version
-  --channel CHANNEL      Compatibility alias; candidate tags become bounded rc tracks
   --release-dir PATH     Install verified release assets from a local directory
   --root PATH            Alternate installation root (testing/recovery only)
   --yes                  Confirm planned host changes non-interactively
@@ -150,16 +149,9 @@ impl Cli {
                     repository = take_value("--repository")?;
                     repository_selected = true;
                 }
-                "--channel" => {
-                    if channel_selected {
-                        bail!("Use only one of --track, --release or --channel.");
-                    }
-                    channel = crate::release::normalise_legacy_channel(&take_value("--channel")?)?;
-                    channel_selected = true;
-                }
                 "--track" => {
                     if channel_selected {
-                        bail!("Use only one of --track, --release or --channel.");
+                        bail!("Use only one of --track or --release.");
                     }
                     channel = take_value("--track")?;
                     let selection = crate::release::ReleaseSelection::parse(&channel)?;
@@ -170,7 +162,7 @@ impl Cli {
                 }
                 "--release" => {
                     if channel_selected {
-                        bail!("Use only one of --track, --release or --channel.");
+                        bail!("Use only one of --track or --release.");
                     }
                     channel = take_value("--release")?;
                     if !matches!(
@@ -261,9 +253,7 @@ impl Cli {
             bail!("--release-dir is only valid for install, add and upgrade.");
         }
         if release_dir.is_some() && (repository_selected || channel_selected) {
-            bail!(
-                "--release-dir cannot be combined with --repository, --track, --release or --channel."
-            );
+            bail!("--release-dir cannot be combined with --repository, --track or --release.");
         }
         if matches!(command, Command::SelfUpdate) && root != std::path::Path::new("/") {
             bail!("self-update cannot be used with --root.");
@@ -587,17 +577,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_tracks_pins_and_legacy_candidate_channels() {
+    fn accepts_tracks_and_pins() {
         for track in ["stable", "stable/0.4", "rc", "rc/0.4"] {
             assert!(parse(&["bts-install", "status", "--track", track]).is_ok());
         }
-        assert_eq!(
-            parse(&["bts-install", "status", "--channel", "v0.4.0-rc.1"])
-                .unwrap()
-                .channel,
-            "rc/0.4"
-        );
         assert!(parse(&["bts-install", "status", "--release", "v0.4.0"]).is_ok());
+        assert!(parse(&["bts-install", "status", "--channel", "stable"]).is_err());
         assert!(parse(&["bts-install", "status", "--track", "rc/0.4.0"]).is_err());
         assert!(parse(&["bts-install", "status", "--track", "main"]).is_err());
         assert!(

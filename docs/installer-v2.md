@@ -118,7 +118,6 @@ Common options:
 | `--track rc` | Select the newest candidate line and persist it as `rc/X.Y` |
 | `--track rc/X.Y` | Follow candidates only on one release line |
 | `--release vVERSION` | Pin one exact stable or prerelease tag |
-| `--channel CHANNEL` | Compatibility alias; candidate tags migrate to bounded RC tracks |
 | `--release-dir PATH` | Use a locally built, verified release directory |
 | `--dry-run` | Print the plan without changing the machine |
 | `--yes` | Confirm changes without a prompt |
