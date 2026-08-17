@@ -212,7 +212,7 @@ impl ReleaseSelection {
     }
 }
 
-pub fn normalise_legacy_channel(value: &str) -> Result<String> {
+pub fn normalise_legacy_selection(value: &str) -> Result<String> {
     if value == crate::LOCAL_RELEASE_CHANNEL {
         return Ok(value.into());
     }
@@ -492,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn release_selection_distinguishes_tracks_pins_and_legacy_candidates() {
+    fn release_selection_distinguishes_tracks_and_pins() {
         assert_eq!(
             ReleaseSelection::parse("stable/0.4").unwrap(),
             ReleaseSelection::Track(ReleaseTrack::Stable(Some(ReleaseSeries {
@@ -504,9 +504,13 @@ mod tests {
             ReleaseSelection::parse("v0.4.0-rc.2").unwrap(),
             ReleaseSelection::Version("v0.4.0-rc.2".into())
         );
-        assert_eq!(normalise_legacy_channel("v0.4.0-rc.2").unwrap(), "rc/0.4");
-        assert_eq!(normalise_legacy_channel("v0.4.0").unwrap(), "v0.4.0");
         assert!(ReleaseSelection::parse("rc/0.4.0").is_err());
+    }
+
+    #[test]
+    fn legacy_state_selections_normalise_to_current_tracks_and_pins() {
+        assert_eq!(normalise_legacy_selection("v0.4.0-rc.2").unwrap(), "rc/0.4");
+        assert_eq!(normalise_legacy_selection("v0.4.0").unwrap(), "v0.4.0");
     }
 
     #[test]

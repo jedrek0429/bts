@@ -43,6 +43,6 @@ sudo bts-install upgrade --track rc/0.3
 sudo bts-install upgrade --release v0.3.0-rc.2
 ```
 
-For compatibility, legacy `--channel v0.3.0-rc.1` selections and matching Installer v2 state are migrated to `rc/0.3`. Legacy stable version tags remain exact pins.
+Installer v2 state written with a candidate tag such as `v0.3.0-rc.1` is migrated one way to `rc/0.3`. Legacy stable version tags remain exact pins. The old `--channel` CLI option is not retained; use `--track` or `--release` explicitly.
 
 Installations made from `--release-dir` remain local. Because local source paths are deliberately not persisted, a later local upgrade must provide `--release-dir` again.

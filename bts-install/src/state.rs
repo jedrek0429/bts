@@ -96,7 +96,7 @@ impl InstallerState {
                 _ => bail!("Pinned installer state must identify one exact release."),
             }
         } else {
-            crate::release::normalise_legacy_channel(&state.release_channel)
+            crate::release::normalise_legacy_selection(&state.release_channel)
                 .context("Installer state release selection is invalid")?
         };
         Ok(Some(state))

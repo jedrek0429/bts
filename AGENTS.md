@@ -42,6 +42,22 @@ CI validates all non-merge commits introduced by a pull request or direct push t
 - Document architectural decisions and unresolved assumptions in the PR.
 - Use British English in user-facing text.
 
+## Backwards compatibility
+
+BTS is developing rapidly and breaking changes are expected. Backwards
+compatibility is not a default requirement unless an issue or an existing public
+protocol contract explicitly requires it.
+
+- Do not retain deprecated CLI options, aliases, configuration formats or code
+  paths solely for backwards compatibility.
+- Prefer removing obsolete behaviour over maintaining parallel legacy and new
+  implementations.
+- Add a narrow, one-way migration only when it is inexpensive and needed to keep
+  already-deployed installations upgradeable. Do not expose migrations as
+  permanent public interfaces.
+- Document intentional breaking changes and any retained migration in the pull
+  request.
+
 ## Hardware-dependent work
 
 Do not claim that physical display, Raspberry Pi, Asterisk, audio,
