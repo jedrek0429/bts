@@ -42,6 +42,22 @@ else
     install -m644 "$repository_root/deploy/systemd/bts-display.target" "$bundle/systemd/"
     install -m644 "$repository_root/deploy/$component.env.example" "$bundle/config/"
 fi
+
+if [[ "$component" == display ]]; then
+    command -v curl >/dev/null
+    google_fonts_commit=352f6b7d9d6cc4fa9e242b931291d31b21a6dc84
+    cabin_base="https://raw.githubusercontent.com/google/fonts/$google_fonts_commit/ofl/cabin"
+    install -d "$bundle/share/fonts/bts" "$bundle/share/licenses/bts-cabin"
+    curl --fail --location --retry 3 \
+        "$cabin_base/Cabin%5Bwdth%2Cwght%5D.ttf" \
+        -o "$bundle/share/fonts/bts/Cabin.ttf"
+    curl --fail --location --retry 3 \
+        "$cabin_base/OFL.txt" \
+        -o "$bundle/share/licenses/bts-cabin/OFL.txt"
+    [[ -s "$bundle/share/fonts/bts/Cabin.ttf" ]] || { echo "Cabin font download is empty" >&2; exit 1; }
+    [[ -s "$bundle/share/licenses/bts-cabin/OFL.txt" ]] || { echo "Cabin licence download is empty" >&2; exit 1; }
+fi
+
 install -m644 "$repository_root/deploy/components/$component.conf" "$bundle/install/component.conf"
 install -m644 "$repository_root/LICENSE" "$bundle/LICENSE"
 printf '%s\n' "$version" > "$bundle/VERSION"
