@@ -14,6 +14,7 @@ use bts_install::{
     config, diagnostics,
     manifest::ComponentAsset,
     model::{Component, Role},
+    output::{Palette, human_plan},
     plan::{Action, InstallationPlan},
     platform::{Platform, detect_host},
     release::ReleaseClient,
@@ -191,15 +192,33 @@ async fn run() -> Result<()> {
         _ => unreachable!(),
     }
 
-    if !cli.quiet
-        && !cli.dry_run
-        && let Some(state) = state
-    {
-        println!(
-            "BTS {} is reconciled with components: {}.\nRun 'bts-install doctor' to check the installation.",
-            state.installed_version,
-            join_components(&state.installed_components)
-        );
+    if !cli.quiet && !cli.json && !cli.dry_run && let Some(state) = state {
+        let mut report = diagnostics::doctor(&cli.root, Some(&state), &mut RealSystem);
+        extend_remote_diagnostics(&cli, Some(&state), &mut report).await;
+        let palette = terminal_palette(false, false);
+        if report.healthy {
+            println!(
+                "{}",
+                palette.success(&format!(
+                    "✓ BTS {} is reconciled and ready ({}).",
+                    state.installed_version,
+                    join_components(&state.installed_components)
+                ))
+            );
+        } else {
+            println!("Installation files are complete, but BTS is not yet ready.");
+            for diagnostic in report
+                .diagnostics
+                .iter()
+                .filter(|item| item.severity == diagnostics::Severity::Error)
+            {
+                println!("{} {}", palette.error("✗"), diagnostic.message);
+                if let Some(action) = &diagnostic.suggested_action {
+                    println!("  {}", palette.dim(action));
+                }
+            }
+            println!("Run: bts-install doctor");
+        }
     }
     Ok(())
 }
@@ -401,7 +420,7 @@ async fn install_component(
         }
         return activation::activate(&cli.root, component, &activation_id);
     }
-    if !cli.quiet {
+    if !cli.quiet && !cli.json {
         println!("Downloading and verifying {component}...");
     }
     let client = release_client(cli)?;
@@ -1120,14 +1139,24 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
         }
     }
     if !cli.quiet && !cli.json {
-        println!("✓ {component} configuration updated.");
+        let palette = terminal_palette(false, false);
+        println!(
+            "{}",
+            palette.success(&format!("✓ {component} configuration updated."))
+        );
         if !cli.no_start && cli.root == Path::new("/") && component.unit().is_some() {
-            println!("✓ bts-{component} restarted.");
+            println!(
+                "{}",
+                palette.success(&format!("✓ bts-{component} restarted."))
+            );
             if component == Component::Telephony {
-                println!("✓ ARI endpoint and credentials verified.");
+                println!(
+                    "{}",
+                    palette.success("✓ ARI endpoint and credentials verified.")
+                );
             }
         } else {
-            println!("  {}", path.display());
+            println!("  {}", palette.dim(&path.display().to_string()));
         }
     }
     Ok(())
@@ -1701,17 +1730,24 @@ fn confirm_plan(cli: &Cli, plan: &InstallationPlan) -> Result<()> {
     if cli.json {
         println!("{}", serde_json::to_string_pretty(plan)?);
     } else if !cli.quiet {
-        println!(
-            "Plan: {}",
-            if plan.actions.is_empty() {
-                "no changes are required".to_owned()
-            } else {
-                plan.actions
-                    .iter()
-                    .map(|action| format!("\n  - {action:?}"))
-                    .collect::<String>()
-            }
-        );
+        if cli.dry_run {
+            println!(
+                "Resolved plan: {}",
+                if plan.actions.is_empty() {
+                    "no changes are required".to_owned()
+                } else {
+                    plan.actions
+                        .iter()
+                        .map(|action| format!("\n  - {action:?}"))
+                        .collect::<String>()
+                }
+            );
+        } else {
+            println!(
+                "{}",
+                human_plan(plan, INSTALLER_VERSION, terminal_palette(false, false))
+            );
+        }
     }
     if cli.dry_run || plan.actions.is_empty() || cli.yes {
         return Ok(());
@@ -1781,13 +1817,16 @@ fn print_status(report: &diagnostics::StatusReport, json: bool, quiet: bool) -> 
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
+    let palette = terminal_palette(json, quiet);
     println!(
-        "BTS {} (installer {})",
+        "{}",
+        palette.accent(&format!("BTS {} (installer {})",
         report
             .installed_version
             .as_deref()
             .unwrap_or("not installed"),
         report.installer_version
+        ))
     );
     for item in &report.components {
         println!(
@@ -1819,18 +1858,20 @@ fn print_doctor(report: &diagnostics::DoctorReport, json: bool, quiet: bool) -> 
         println!("{}", serde_json::to_string_pretty(report)?);
         return Ok(());
     }
+    let palette = terminal_palette(json, quiet);
     for item in &report.diagnostics {
+        let marker = match item.severity {
+            diagnostics::Severity::Ok => palette.success("✓"),
+            diagnostics::Severity::Warning => palette.warning("!"),
+            diagnostics::Severity::Error => palette.error("✗"),
+        };
         println!(
             "{} {}",
-            match item.severity {
-                diagnostics::Severity::Ok => "✓",
-                diagnostics::Severity::Warning => "!",
-                diagnostics::Severity::Error => "✗",
-            },
+            marker,
             item.message
         );
         if let Some(action) = &item.suggested_action {
-            println!("  {action}");
+            println!("  {}", palette.dim(action));
         }
     }
     Ok(())
@@ -1888,6 +1929,14 @@ fn interactive(cli: &Cli) -> bool {
     !cli.quiet && !cli.json && io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
+fn terminal_palette(json: bool, quiet: bool) -> Palette {
+    Palette::new(
+        !json
+            && !quiet
+            && io::stdout().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none(),
+    )
+}
 fn require_root_or_alternate(root: &Path) -> Result<()> {
     if root == Path::new("/") {
         ensure!(unsafe { libc::geteuid() } == 0, "Run bts-install as root.");

@@ -37,4 +37,14 @@ fn help_version_licence_and_machine_output_contracts() {
         .output()
         .unwrap();
     assert!(quiet.stdout.is_empty());
+
+    let json_text = String::from_utf8(status.stdout).unwrap();
+    assert!(!json_text.contains('\u{1b}'));
+    let plain = Command::new(binary)
+        .args(["status", "--root", root.path().to_str().unwrap()])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(plain.status.success());
+    assert!(!String::from_utf8(plain.stdout).unwrap().contains('\u{1b}'));
 }

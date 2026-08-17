@@ -7,6 +7,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod manifest;
 pub mod model;
+pub mod output;
 pub mod plan;
 pub mod platform;
 pub mod release;
