@@ -10,11 +10,13 @@ Update the installer from the newest compatible stable GitHub Release:
 sudo bts-install self-update
 ```
 
-Select a published prerelease explicitly when testing a release candidate:
+Update only the installer from a bounded candidate line:
 
 ```sh
-sudo bts-install self-update --channel v0.3.0-rc.2
+sudo bts-install self-update --track rc/0.3
 ```
+
+`self-update` changes only the installer binary and does not change installation state. Use `bts-install upgrade --track rc` to enrol the managed installation into the newest candidate line; that selection is persisted in bounded form, such as `rc/0.3`. Later plain upgrades follow rc.2, rc.3 and subsequent candidates on that line without moving to `rc/0.4`. Passing bare `--track rc` again is the explicit action that may select a newer candidate line. Use `--release v0.3.0-rc.2` to pin one exact release instead.
 
 The installer downloads the `bts-install` asset named by the release manifest, verifies its SHA-256 checksum, writes the replacement beside the running executable, syncs it, and activates it with an atomic rename. A failed download or verification leaves the running installer untouched. Self-update refuses an implicit downgrade.
 
@@ -32,12 +34,15 @@ An installer that cannot parse the selected release manifest stops before changi
 
 ## Upgrade release source
 
-`bts-install upgrade` is network-aware for GitHub-backed installations. Unless `--repository` or `--channel` is supplied explicitly, it reuses the repository and release channel stored in installer state, then checks GitHub Releases before changing components.
+`bts-install upgrade` is network-aware for GitHub-backed installations. Unless `--repository`, `--track` or `--release` is supplied explicitly, it reuses the repository and release selection stored in installer state, then checks GitHub Releases before changing components.
 
-A stable installation therefore follows the newest published compatible stable release and never moves to a prerelease implicitly. An explicitly pinned prerelease tag remains pinned until the operator selects another tag. For example:
+A `stable` installation follows the newest published compatible stable release and never moves to a prerelease implicitly. `stable/0.3` remains on the 0.3 stable line. A candidate track such as `rc/0.3` follows candidates only on that line; when the stable release corresponding to its newest candidate is published, the installer offers it and persists `stable/0.3`. Exact releases remain pinned. For example:
 
 ```sh
-sudo bts-install upgrade --channel v0.3.0-rc.2
+sudo bts-install upgrade --track rc/0.3
+sudo bts-install upgrade --release v0.3.0-rc.2
 ```
+
+For compatibility, legacy `--channel v0.3.0-rc.1` selections and matching Installer v2 state are migrated to `rc/0.3`. Legacy stable version tags remain exact pins.
 
 Installations made from `--release-dir` remain local. Because local source paths are deliberately not persisted, a later local upgrade must provide `--release-dir` again.

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -16,11 +16,29 @@ use crate::manifest::{ReleaseManifest, validate_release_assets};
 pub struct ReleaseClient {
     client: reqwest::Client,
     repository: String,
-    channel: String,
+    selection: ReleaseSelection,
     local_directory: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseSelection {
+    Track(ReleaseTrack),
+    Version(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseTrack {
+    Stable(Option<ReleaseSeries>),
+    Candidate(Option<ReleaseSeries>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReleaseSeries {
+    major: u64,
+    minor: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct GithubRelease {
     tag_name: String,
     draft: bool,
@@ -28,7 +46,7 @@ struct GithubRelease {
     assets: Vec<GithubAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GithubAsset {
     name: String,
     browser_download_url: String,
@@ -46,16 +64,38 @@ impl ReleaseClient {
         Ok(Self {
             client,
             repository,
-            channel,
+            selection: ReleaseSelection::parse(&channel)?,
             local_directory,
         })
+    }
+
+    pub fn recorded_channel(&self, manifest: &ReleaseManifest) -> Result<String> {
+        let version = Version::parse(manifest.release_version.trim_start_matches('v'))
+            .context("Release manifest version is invalid")?;
+        Ok(match &self.selection {
+            ReleaseSelection::Version(tag) => tag.clone(),
+            ReleaseSelection::Track(ReleaseTrack::Stable(None)) => "stable".into(),
+            ReleaseSelection::Track(ReleaseTrack::Stable(Some(series))) => {
+                format!("stable/{series}")
+            }
+            ReleaseSelection::Track(ReleaseTrack::Candidate(_)) if version.pre.is_empty() => {
+                format!("stable/{}.{}", version.major, version.minor)
+            }
+            ReleaseSelection::Track(ReleaseTrack::Candidate(_)) => {
+                format!("rc/{}.{}", version.major, version.minor)
+            }
+        })
+    }
+
+    pub fn is_exact_version(&self) -> bool {
+        matches!(self.selection, ReleaseSelection::Version(_))
     }
 
     pub async fn fetch_manifest(&self) -> Result<(ReleaseManifest, BTreeMap<String, String>)> {
         if let Some(directory) = &self.local_directory {
             return load_local_manifest(directory);
         }
-        let release: GithubRelease = if self.channel == "stable" {
+        let release: GithubRelease = if matches!(self.selection, ReleaseSelection::Track(_)) {
             let endpoint = format!(
                 "https://api.github.com/repos/{}/releases?per_page=100",
                 self.repository
@@ -69,15 +109,16 @@ impl ReleaseClient {
                 .json()
                 .await
                 .context("GitHub release metadata is invalid")?;
-            releases
-                .into_iter()
-                .filter(is_stable_release)
-                .max_by_key(|release| release_version(&release.tag_name))
+            select_release(&releases, &self.selection)
+                .cloned()
                 .context("Repository has no published compatible BTS release")?
         } else {
+            let ReleaseSelection::Version(tag) = &self.selection else {
+                unreachable!()
+            };
             let endpoint = format!(
                 "https://api.github.com/repos/{}/releases/tags/{}",
-                self.repository, self.channel
+                self.repository, tag
             );
             self.client
                 .get(endpoint)
@@ -144,6 +185,80 @@ impl ReleaseClient {
     }
 }
 
+impl ReleaseSelection {
+    pub fn parse(value: &str) -> Result<Self> {
+        if value == "stable" {
+            return Ok(Self::Track(ReleaseTrack::Stable(None)));
+        }
+        if value == "rc" {
+            return Ok(Self::Track(ReleaseTrack::Candidate(None)));
+        }
+        if let Some(value) = value.strip_prefix("stable/") {
+            return Ok(Self::Track(ReleaseTrack::Stable(Some(
+                ReleaseSeries::parse(value)?,
+            ))));
+        }
+        if let Some(value) = value.strip_prefix("rc/") {
+            return Ok(Self::Track(ReleaseTrack::Candidate(Some(
+                ReleaseSeries::parse(value)?,
+            ))));
+        }
+        if value.starts_with('v') && crate::manifest::is_release_version(value) {
+            return Ok(Self::Version(value.into()));
+        }
+        bail!(
+            "Release selection must be stable, stable/MAJOR.MINOR, rc, rc/MAJOR.MINOR or an explicit vVERSION."
+        )
+    }
+}
+
+pub fn normalise_legacy_channel(value: &str) -> Result<String> {
+    if value == crate::LOCAL_RELEASE_CHANNEL {
+        return Ok(value.into());
+    }
+    match ReleaseSelection::parse(value)? {
+        ReleaseSelection::Version(tag) => {
+            let version = Version::parse(tag.trim_start_matches('v'))?;
+            if is_rc(&version) {
+                Ok(format!("rc/{}.{}", version.major, version.minor))
+            } else {
+                Ok(tag)
+            }
+        }
+        _ => Ok(value.into()),
+    }
+}
+
+impl ReleaseSeries {
+    fn parse(value: &str) -> Result<Self> {
+        let (major, minor) = value
+            .split_once('.')
+            .context("A release track series must use MAJOR.MINOR form")?;
+        ensure!(
+            !minor.contains('.'),
+            "A release track series must use MAJOR.MINOR form."
+        );
+        Ok(Self {
+            major: major
+                .parse()
+                .context("Release track major version is invalid")?,
+            minor: minor
+                .parse()
+                .context("Release track minor version is invalid")?,
+        })
+    }
+
+    fn contains(self, version: &Version) -> bool {
+        version.major == self.major && version.minor == self.minor
+    }
+}
+
+impl std::fmt::Display for ReleaseSeries {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{}", self.major, self.minor)
+    }
+}
+
 fn load_local_manifest(directory: &Path) -> Result<(ReleaseManifest, BTreeMap<String, String>)> {
     ensure!(
         directory.is_dir(),
@@ -179,10 +294,75 @@ fn is_stable_release(release: &GithubRelease) -> bool {
     release_version(&release.tag_name).is_some()
         && !release.draft
         && !release.prerelease
-        && release
-            .assets
+        && has_release_manifest(release)
+}
+
+fn is_candidate_release(release: &GithubRelease) -> bool {
+    release_semver(release).is_some_and(|version| {
+        !release.draft && release.prerelease && is_rc(&version) && has_release_manifest(release)
+    })
+}
+
+fn select_release<'a>(
+    releases: &'a [GithubRelease],
+    selection: &ReleaseSelection,
+) -> Option<&'a GithubRelease> {
+    match selection {
+        ReleaseSelection::Version(_) => None,
+        ReleaseSelection::Track(ReleaseTrack::Stable(series)) => releases
             .iter()
-            .any(|asset| asset.name == "release-manifest.json")
+            .filter(|release| is_stable_release(release))
+            .filter(|release| {
+                series.is_none_or(|series| {
+                    release_semver(release).is_some_and(|version| series.contains(&version))
+                })
+            })
+            .max_by_key(|release| release_semver(release)),
+        ReleaseSelection::Track(ReleaseTrack::Candidate(series)) => {
+            let candidate = releases
+                .iter()
+                .filter(|release| is_candidate_release(release))
+                .filter(|release| {
+                    series.is_none_or(|series| {
+                        release_semver(release).is_some_and(|version| series.contains(&version))
+                    })
+                })
+                .max_by_key(|release| release_semver(release))?;
+            let mut final_version = release_semver(candidate)?;
+            final_version.pre = semver::Prerelease::EMPTY;
+            releases
+                .iter()
+                .find(|release| {
+                    is_stable_release(release)
+                        && release_semver(release).as_ref() == Some(&final_version)
+                })
+                .or(Some(candidate))
+        }
+    }
+}
+
+fn has_release_manifest(release: &GithubRelease) -> bool {
+    release
+        .assets
+        .iter()
+        .any(|asset| asset.name == "release-manifest.json")
+}
+
+fn is_rc(version: &Version) -> bool {
+    version
+        .pre
+        .as_str()
+        .strip_prefix("rc.")
+        .is_some_and(|number| {
+            number.as_bytes().first().is_some_and(|byte| *byte != b'0')
+                && number.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn release_semver(release: &GithubRelease) -> Option<Version> {
+    let version = release.tag_name.strip_prefix('v')?;
+    let version = Version::parse(version).ok()?;
+    version.build.is_empty().then_some(version)
 }
 
 fn release_version(tag: &str) -> Option<Version> {
@@ -210,6 +390,31 @@ mod tests {
         model::Component,
     };
     use tempfile::tempdir;
+
+    fn published_release(tag_name: &str, prerelease: bool) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag_name.into(),
+            draft: false,
+            prerelease,
+            assets: vec![GithubAsset {
+                name: "release-manifest.json".into(),
+                browser_download_url: "https://example.invalid/manifest".into(),
+            }],
+        }
+    }
+
+    fn manifest(version: &str) -> ReleaseManifest {
+        ReleaseManifest {
+            schema_version: crate::manifest::MANIFEST_SCHEMA_VERSION,
+            release_version: version.into(),
+            installer: ReleaseAsset {
+                filename: "bts-install".into(),
+                sha256: "0".repeat(64),
+            },
+            components: BTreeMap::new(),
+            licence_asset: None,
+        }
+    }
 
     #[test]
     fn stable_release_excludes_drafts_and_prereleases() {
@@ -248,6 +453,80 @@ mod tests {
             assets: Vec::new(),
         };
         assert!(!is_stable_release(&release));
+    }
+
+    #[test]
+    fn candidate_tracks_are_bounded_after_bare_rc_enrolment() {
+        let releases = [
+            published_release("v0.3.0-rc.2", true),
+            published_release("v0.4.0-rc.1", true),
+            published_release("v0.4.0-rc.3", true),
+            published_release("v0.5.0-rc.1", true),
+        ];
+        let latest = ReleaseSelection::parse("rc").unwrap();
+        let bounded = ReleaseSelection::parse("rc/0.4").unwrap();
+
+        assert_eq!(
+            select_release(&releases, &latest).unwrap().tag_name,
+            "v0.5.0-rc.1"
+        );
+        assert_eq!(
+            select_release(&releases, &bounded).unwrap().tag_name,
+            "v0.4.0-rc.3"
+        );
+    }
+
+    #[test]
+    fn candidate_track_promotes_to_its_matching_stable_release() {
+        let releases = [
+            published_release("v0.4.0-rc.3", true),
+            published_release("v0.4.0", false),
+            published_release("v0.5.0-rc.1", true),
+        ];
+        let selection = ReleaseSelection::parse("rc/0.4").unwrap();
+
+        assert_eq!(
+            select_release(&releases, &selection).unwrap().tag_name,
+            "v0.4.0"
+        );
+    }
+
+    #[test]
+    fn release_selection_distinguishes_tracks_pins_and_legacy_candidates() {
+        assert_eq!(
+            ReleaseSelection::parse("stable/0.4").unwrap(),
+            ReleaseSelection::Track(ReleaseTrack::Stable(Some(ReleaseSeries {
+                major: 0,
+                minor: 4
+            })))
+        );
+        assert_eq!(
+            ReleaseSelection::parse("v0.4.0-rc.2").unwrap(),
+            ReleaseSelection::Version("v0.4.0-rc.2".into())
+        );
+        assert_eq!(normalise_legacy_channel("v0.4.0-rc.2").unwrap(), "rc/0.4");
+        assert_eq!(normalise_legacy_channel("v0.4.0").unwrap(), "v0.4.0");
+        assert!(ReleaseSelection::parse("rc/0.4.0").is_err());
+    }
+
+    #[test]
+    fn resolved_candidate_tracks_are_persisted_canonically() {
+        let latest = ReleaseClient::new("example/bts".into(), "rc".into(), None).unwrap();
+        let bounded = ReleaseClient::new("example/bts".into(), "rc/0.4".into(), None).unwrap();
+        let pinned = ReleaseClient::new("example/bts".into(), "v0.4.0-rc.2".into(), None).unwrap();
+
+        assert_eq!(
+            latest.recorded_channel(&manifest("0.4.0-rc.2")).unwrap(),
+            "rc/0.4"
+        );
+        assert_eq!(
+            bounded.recorded_channel(&manifest("0.4.0")).unwrap(),
+            "stable/0.4"
+        );
+        assert_eq!(
+            pinned.recorded_channel(&manifest("0.4.0-rc.2")).unwrap(),
+            "v0.4.0-rc.2"
+        );
     }
 
     #[tokio::test]

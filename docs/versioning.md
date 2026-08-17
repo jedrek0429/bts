@@ -82,13 +82,14 @@ Release preparation is allowed to modify only `Cargo.toml` and `Cargo.lock`; une
 
 ## Installation
 
-Install stable by omitting `--channel`; install a candidate explicitly:
+Install from the moving stable track by omitting `--track`, follow a bounded candidate line, or pin one exact release:
 
 ```sh
 sudo bts-install install full
-sudo bts-install install full --channel v0.4.0-rc.1
+sudo bts-install install full --track rc/0.4
+sudo bts-install install full --release v0.4.0-rc.1
 ```
 
-Branches and Actions artifacts are development inputs rather than installation channels. `stable` excludes drafts, prereleases and legacy releases without an Installer v2 manifest.
+Bare `--track rc` enrols into the newest candidate line and persists it as `rc/X.Y`; it does not remain an unbounded moving selector. Branches and Actions artifacts are development inputs rather than installation tracks. `stable` excludes drafts, prereleases and legacy releases without an Installer v2 manifest.
 
 For an unpublished development build, run `scripts/build-release all` and install its directory with `--release-dir`; see the [development guide](development.md).

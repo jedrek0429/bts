@@ -52,7 +52,7 @@ fn run_self_update(cli: &Cli) -> Result<()> {
     if !cli.quiet {
         match outcome {
             SelfUpdateOutcome::Current { version } => {
-                println!("bts-install {version} is already current for the selected channel.");
+                println!("bts-install {version} is already current for the selected release.");
             }
             SelfUpdateOutcome::Updated { from, to } => {
                 println!("Updated bts-install from {from} to {to}.");
@@ -119,7 +119,13 @@ fn normalise_upgrade_source(cli: &Cli) -> Result<()> {
         additional.push(OsString::from(&state.repository));
     }
     if !cli.channel_selected {
-        additional.push(OsString::from("--channel"));
+        additional.push(OsString::from(
+            if state.release_pinned || state.release_channel.starts_with('v') {
+                "--release"
+            } else {
+                "--track"
+            },
+        ));
         additional.push(OsString::from(&state.release_channel));
     }
     if !additional.is_empty() {

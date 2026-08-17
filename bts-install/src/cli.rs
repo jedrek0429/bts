@@ -34,7 +34,9 @@ Options:
   --terminal-name NAME   Suggested terminal name for Display
   --cage-args ARGS       Override Cage arguments for Display (default: -m last)
   --repository OWNER/REPO  Release repository (default: jedrek0429/bts)
-  --channel CHANNEL      Release channel or explicit version tag (default: stable)
+  --track TRACK          Follow stable, stable/X.Y, rc or rc/X.Y (default: stable)
+  --release vVERSION     Pin one exact stable or prerelease version
+  --channel CHANNEL      Compatibility alias; candidate tags become bounded rc tracks
   --release-dir PATH     Install verified release assets from a local directory
   --root PATH            Alternate installation root (testing/recovery only)
   --yes                  Confirm planned host changes non-interactively
@@ -149,7 +151,36 @@ impl Cli {
                     repository_selected = true;
                 }
                 "--channel" => {
-                    channel = take_value("--channel")?;
+                    if channel_selected {
+                        bail!("Use only one of --track, --release or --channel.");
+                    }
+                    channel = crate::release::normalise_legacy_channel(&take_value("--channel")?)?;
+                    channel_selected = true;
+                }
+                "--track" => {
+                    if channel_selected {
+                        bail!("Use only one of --track, --release or --channel.");
+                    }
+                    channel = take_value("--track")?;
+                    let selection = crate::release::ReleaseSelection::parse(&channel)?;
+                    if matches!(selection, crate::release::ReleaseSelection::Version(_)) {
+                        bail!("--track requires stable, stable/MAJOR.MINOR, rc or rc/MAJOR.MINOR.");
+                    }
+                    channel_selected = true;
+                }
+                "--release" => {
+                    if channel_selected {
+                        bail!("Use only one of --track, --release or --channel.");
+                    }
+                    channel = take_value("--release")?;
+                    if !matches!(
+                        crate::release::ReleaseSelection::parse(&channel)?,
+                        crate::release::ReleaseSelection::Version(_)
+                    ) {
+                        bail!(
+                            "--release requires an explicit semantic version tag such as v0.4.0-rc.2."
+                        );
+                    }
                     channel_selected = true;
                 }
                 "--release-dir" => release_dir = Some(PathBuf::from(take_value("--release-dir")?)),
@@ -230,7 +261,9 @@ impl Cli {
             bail!("--release-dir is only valid for install, add and upgrade.");
         }
         if release_dir.is_some() && (repository_selected || channel_selected) {
-            bail!("--release-dir cannot be combined with --repository or --channel.");
+            bail!(
+                "--release-dir cannot be combined with --repository, --track, --release or --channel."
+            );
         }
         if matches!(command, Command::SelfUpdate) && root != std::path::Path::new("/") {
             bail!("self-update cannot be used with --root.");
@@ -251,11 +284,7 @@ impl Cli {
         if !repository.contains('/') || repository.starts_with('/') || repository.ends_with('/') {
             bail!("--repository must use OWNER/REPOSITORY form.");
         }
-        if channel != "stable"
-            && (!channel.starts_with('v') || !crate::manifest::is_release_version(&channel))
-        {
-            bail!("The installer accepts channel 'stable' or an explicit semantic version tag.");
-        }
+        crate::release::ReleaseSelection::parse(&channel)?;
 
         Ok(Self {
             command,
@@ -470,15 +499,21 @@ mod tests {
             "self-update",
             "--repository",
             "example/bts",
-            "--channel",
-            "v0.4.0-rc.2",
+            "--track",
+            "rc/0.4",
         ])
         .unwrap();
         assert!(matches!(cli.command, Command::SelfUpdate));
         assert!(cli.repository_selected);
         assert!(cli.channel_selected);
         assert_eq!(cli.repository, "example/bts");
-        assert_eq!(cli.channel, "v0.4.0-rc.2");
+        assert_eq!(cli.channel, "rc/0.4");
+        assert_eq!(
+            parse(&["bts-install", "self-update", "--release", "v0.4.0-rc.2"])
+                .unwrap()
+                .channel,
+            "v0.4.0-rc.2"
+        );
         assert!(parse(&["bts-install", "self-update", "--root", "/tmp/root"]).is_err());
     }
 
@@ -496,6 +531,8 @@ mod tests {
             "uninstall",
             "licence",
             "warranty",
+            "--track",
+            "--release",
             "GPL-3.0-or-later",
         ] {
             assert!(HELP.contains(text), "missing {text}");
@@ -550,11 +587,30 @@ mod tests {
     }
 
     #[test]
-    fn only_accepts_stable_or_version_channels() {
-        assert!(parse(&["bts-install", "status", "--channel", "v0.3.7"]).is_ok());
-        assert!(parse(&["bts-install", "status", "--channel", "v0.4.0"]).is_ok());
-        assert!(parse(&["bts-install", "status", "--channel", "v0.4.0-rc.1"]).is_ok());
-        assert!(parse(&["bts-install", "status", "--channel", "main"]).is_err());
+    fn accepts_tracks_pins_and_legacy_candidate_channels() {
+        for track in ["stable", "stable/0.4", "rc", "rc/0.4"] {
+            assert!(parse(&["bts-install", "status", "--track", track]).is_ok());
+        }
+        assert_eq!(
+            parse(&["bts-install", "status", "--channel", "v0.4.0-rc.1"])
+                .unwrap()
+                .channel,
+            "rc/0.4"
+        );
+        assert!(parse(&["bts-install", "status", "--release", "v0.4.0"]).is_ok());
+        assert!(parse(&["bts-install", "status", "--track", "rc/0.4.0"]).is_err());
+        assert!(parse(&["bts-install", "status", "--track", "main"]).is_err());
+        assert!(
+            parse(&[
+                "bts-install",
+                "status",
+                "--track",
+                "rc/0.4",
+                "--release",
+                "v0.4.0-rc.1"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -576,7 +632,7 @@ mod tests {
                 "display",
                 "--release-dir",
                 "/tmp/bts-release",
-                "--channel",
+                "--release",
                 "v0.4.0-dev.1",
             ])
             .is_err()
