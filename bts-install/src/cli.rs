@@ -14,6 +14,7 @@ Usage:
   bts-install [OPTIONS] add COMPONENT...
   bts-install [OPTIONS] remove COMPONENT... [--purge]
   bts-install [OPTIONS] upgrade [COMPONENT...]
+  bts-install [OPTIONS] self-update
   bts-install [OPTIONS] configure [COMPONENT]
   bts-install [OPTIONS] status
   bts-install [OPTIONS] doctor
@@ -22,7 +23,7 @@ Usage:
   bts-install warranty
 
 Roles: full, server, display, custom
-Components: core, display, telephony, addons
+Components: core, display, telephony, addons, cli
 
 Options:
   --component COMPONENT  Select a component for a custom installation
@@ -56,6 +57,8 @@ pub struct Cli {
     pub command: Command,
     pub repository: String,
     pub channel: String,
+    pub repository_selected: bool,
+    pub channel_selected: bool,
     pub release_dir: Option<PathBuf>,
     pub root: PathBuf,
     pub yes: bool,
@@ -87,6 +90,7 @@ pub enum Command {
     Add(Vec<Component>),
     Remove(Vec<Component>),
     Upgrade(Vec<Component>),
+    SelfUpdate,
     Configure(Option<Component>),
     Status,
     Doctor,
@@ -203,6 +207,7 @@ impl Cli {
             "add" => Command::Add(parse_components(&positional, true)?),
             "remove" => Command::Remove(parse_components(&positional, true)?),
             "upgrade" => Command::Upgrade(parse_components(&positional, false)?),
+            "self-update" if positional.is_empty() => Command::SelfUpdate,
             "configure" => Command::Configure(match positional.as_slice() {
                 [] => None,
                 [value] => Some(Component::from_str(value)?),
@@ -226,6 +231,9 @@ impl Cli {
         }
         if release_dir.is_some() && (repository_selected || channel_selected) {
             bail!("--release-dir cannot be combined with --repository or --channel.");
+        }
+        if matches!(command, Command::SelfUpdate) && root != PathBuf::from("/") {
+            bail!("self-update cannot be used with --root.");
         }
         validate_options(
             &command,
@@ -253,6 +261,8 @@ impl Cli {
             command,
             repository,
             channel,
+            repository_selected,
+            channel_selected,
             release_dir,
             root,
             yes,
@@ -275,6 +285,8 @@ impl Cli {
             command,
             repository: DEFAULT_REPOSITORY.into(),
             channel: DEFAULT_CHANNEL.into(),
+            repository_selected: false,
+            channel_selected: false,
             release_dir: None,
             root: "/".into(),
             yes: false,
@@ -452,12 +464,32 @@ mod tests {
     }
 
     #[test]
+    fn parses_self_update_and_tracks_release_source_options() {
+        let cli = parse(&[
+            "bts-install",
+            "self-update",
+            "--repository",
+            "example/bts",
+            "--channel",
+            "v0.4.0-rc.2",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Command::SelfUpdate));
+        assert!(cli.repository_selected);
+        assert!(cli.channel_selected);
+        assert_eq!(cli.repository, "example/bts");
+        assert_eq!(cli.channel, "v0.4.0-rc.2");
+        assert!(parse(&["bts-install", "self-update", "--root", "/tmp/root"]).is_err());
+    }
+
+    #[test]
     fn help_exposes_every_command_and_legal_information() {
         for text in [
             "install",
             "add",
             "remove",
             "upgrade",
+            "self-update",
             "configure",
             "status",
             "doctor",
