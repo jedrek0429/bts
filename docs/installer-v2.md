@@ -113,8 +113,12 @@ Common options:
 | `--terminal-name NAME` | Set Display's suggested terminal name |
 | `--cage-args ARGS` | Override Cage arguments for Display |
 | `--repository OWNER/REPO` | Select the public release repository |
-| `--channel stable` | Use the newest published compatible release |
-| `--channel vVERSION` | Use a specific stable or prerelease tag |
+| `--track stable` | Follow the newest published compatible stable release |
+| `--track stable/X.Y` | Follow stable releases only on one release line |
+| `--track rc` | Select the newest candidate line and persist it as `rc/X.Y` |
+| `--track rc/X.Y` | Follow candidates only on one release line |
+| `--release vVERSION` | Pin one exact stable or prerelease tag |
+| `--channel CHANNEL` | Compatibility alias; candidate tags migrate to bounded RC tracks |
 | `--release-dir PATH` | Use a locally built, verified release directory |
 | `--dry-run` | Print the plan without changing the machine |
 | `--yes` | Confirm changes without a prompt |
@@ -127,7 +131,7 @@ Common options:
 
 ## Persistent state
 
-Installer state is stored at `/var/lib/bts-install/state.json` with mode `0600`. It records schema and installer versions, the overall and per-component BTS versions, selected role, authoritative component set, release source, platform/architecture, timestamps and whether tty1 was installer-managed. Local source paths and credentials are never stored. Writes use a fully synced temporary file, atomic rename and parent-directory sync. Schema 1 is migrated to schema 2 when read; newer schemas are rejected.
+Installer state is stored at `/var/lib/bts-install/state.json` with mode `0600`. It records schema and installer versions, the overall and per-component BTS versions, selected role, authoritative component set, repository, canonical release track or exact-version pin, platform/architecture, timestamps and whether tty1 was installer-managed. Local source paths and credentials are never stored. Writes use a fully synced temporary file, atomic rename and parent-directory sync. Schema 1 is migrated to schema 2 when read; legacy candidate tags are normalised to bounded tracks, and newer schemas are rejected.
 
 ## Configuration
 
@@ -215,9 +219,9 @@ The installer detects Debian-family or Arch Linux through `/etc/os-release` and 
 
 The selected release manifest provides every asset name and checksum. Assets are downloaded, SHA-256 verified, checked for compatible manifest/bundle schemas, and inspected before extraction. Absolute paths, parent traversal, special members and escaping links are rejected. Re-running an already satisfied component plan performs no work. Adding or removing one component does not restart unrelated services; dependency references are calculated from the complete desired component set.
 
-`stable` selects the highest published semantic version with an Installer v2 manifest and excludes drafts and prereleases. Select a public candidate explicitly, for example `--channel v0.4.0-rc.1`. Developers can build the same asset set locally and pass it with `--release-dir`; local files receive the same manifest and checksum validation, and `doctor` stays offline for their availability check. Branches and Actions artefacts are not installation sources.
+`stable` selects the highest published stable semantic version with an Installer v2 manifest and excludes drafts and prereleases. Bare `rc` selects the newest candidate line once, then persists the bounded `rc/X.Y` track so plain upgrades cannot jump release lines. A matching final release changes that selection to `stable/X.Y`. Passing bare `--track rc` again explicitly permits selecting a newer candidate line. Use `--release vVERSION` when reproducibility requires one immutable version. Developers can build the same asset set locally and pass it with `--release-dir`; local files receive the same manifest and checksum validation, and `doctor` stays offline for their availability check. Branches and Actions artefacts are not installation sources.
 
-Display installation creates the kiosk account, installs Cage/seatd/font runtime dependencies, grants display device groups, discloses tty1 takeover, and enables only Display. ARM64 DRM, Cage, seatd and tty behaviour must still be accepted on real supported hardware.
+Display installation creates the kiosk account, installs Cage and seatd, activates the bundled Cabin font, grants display device groups, discloses tty1 takeover, and enables only Display. ARM64 DRM, Cage, seatd and tty behaviour must still be accepted on real supported hardware.
 
 ### Display hardware
 

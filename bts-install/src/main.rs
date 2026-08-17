@@ -261,7 +261,8 @@ async fn execute_plan(
         systemctl(&mut system, &cli.root, "daemon-reload", &[])?;
     }
     if !added.is_empty() {
-        let (manifest, urls) = release_client(cli)?.fetch_manifest().await?;
+        let client = release_client(cli)?;
+        let (manifest, urls) = client.fetch_manifest().await?;
         for component in added {
             let asset = manifest.select(component, platform, architecture)?;
             install_component(
@@ -290,6 +291,7 @@ async fn execute_plan(
                 }
             }
         }
+        record_release_source(cli, state, &client, &manifest)?;
         state.installed_version = manifest.release_version;
         for component in &plan.after {
             if !plan.before.contains(component) {
@@ -301,7 +303,6 @@ async fn execute_plan(
         state.installer_version = INSTALLER_VERSION.into();
         state.platform = platform;
         state.architecture = architecture;
-        record_release_source(cli, state);
     }
     state
         .component_versions
@@ -320,13 +321,20 @@ fn release_client(cli: &Cli) -> Result<ReleaseClient> {
     )
 }
 
-fn record_release_source(cli: &Cli, state: &mut InstallerState) {
+fn record_release_source(
+    cli: &Cli,
+    state: &mut InstallerState,
+    client: &ReleaseClient,
+    manifest: &bts_install::manifest::ReleaseManifest,
+) -> Result<()> {
     state.repository = cli.repository.clone();
     state.release_channel = if cli.release_dir.is_some() {
         bts_install::LOCAL_RELEASE_CHANNEL.into()
     } else {
-        cli.channel.clone()
+        client.recorded_channel(manifest)?
     };
+    state.release_pinned = cli.release_dir.is_none() && client.is_exact_version();
+    Ok(())
 }
 
 async fn install_component(
@@ -391,7 +399,8 @@ async fn upgrade(
     platform: Platform,
     architecture: bts_install::platform::Architecture,
 ) -> Result<()> {
-    let (manifest, urls) = release_client(cli)?.fetch_manifest().await?;
+    let client = release_client(cli)?;
+    let (manifest, urls) = client.fetch_manifest().await?;
     let mut pending = BTreeMap::new();
     for component in selected {
         let asset = manifest.select(*component, platform, architecture)?;
@@ -435,11 +444,18 @@ async fn upgrade(
         after: state.installed_components.clone(),
         actions,
     };
+    let release_source_changed = print_release_source_change(cli, state, &client, &manifest)?;
     confirm_plan(cli, &plan)?;
+    if release_source_changed && plan.actions.is_empty() && !cli.dry_run && !cli.yes {
+        ensure!(
+            interactive(cli),
+            "Changing the release track requires --yes in non-interactive mode."
+        );
+        ensure!(confirm("Change the release track")?, "Operation cancelled.");
+    }
     if cli.dry_run {
         return Ok(());
     }
-    let client = release_client(cli)?;
     let mut staged = Vec::new();
     for (component, activation_id) in &pending {
         let asset = manifest.select(*component, platform, architecture)?;
@@ -524,6 +540,7 @@ async fn upgrade(
             }
         }
     }
+    record_release_source(cli, state, &client, &manifest)?;
     state.installed_version = manifest.release_version;
     for component in selected {
         state
@@ -531,11 +548,30 @@ async fn upgrade(
             .insert(*component, state.installed_version.clone());
     }
     state.installer_version = INSTALLER_VERSION.into();
-    record_release_source(cli, state);
     if !pending.is_empty() {
         state.updated_at = Some(timestamp());
     }
     Ok(())
+}
+
+fn print_release_source_change(
+    cli: &Cli,
+    state: &InstallerState,
+    client: &ReleaseClient,
+    manifest: &bts_install::manifest::ReleaseManifest,
+) -> Result<bool> {
+    if cli.release_dir.is_some() {
+        return Ok(false);
+    }
+    let resolved = client.recorded_channel(manifest)?;
+    let changed = resolved != state.release_channel;
+    if changed && !cli.quiet && !cli.json {
+        println!(
+            "Release track: {} -> {} (resolved release {}).",
+            state.release_channel, resolved, manifest.release_version
+        );
+    }
+    Ok(changed)
 }
 
 fn restart_restored_services(
@@ -1033,7 +1069,8 @@ async fn extend_remote_diagnostics(
                 severity: diagnostics::Severity::Error,
                 message: format!("Release client configuration is invalid: {error}"),
                 suggested_action: Some(
-                    "Re-run installation with a valid --repository and --channel.".into(),
+                    "Re-run installation with a valid --repository and --track or --release."
+                        .into(),
                 ),
             }),
         }

@@ -28,6 +28,8 @@ pub struct InstallerState {
     pub component_versions: BTreeMap<Component, String>,
     pub repository: String,
     pub release_channel: String,
+    #[serde(default)]
+    pub release_pinned: bool,
     pub platform: Platform,
     pub architecture: Architecture,
     pub installed_at: String,
@@ -48,6 +50,7 @@ impl InstallerState {
             component_versions: BTreeMap::new(),
             repository: DEFAULT_REPOSITORY.into(),
             release_channel: DEFAULT_CHANNEL.into(),
+            release_pinned: false,
             platform,
             architecture,
             installed_at: unix_timestamp().to_string(),
@@ -85,6 +88,17 @@ impl InstallerState {
                 .map(|component| (*component, state.installed_version.clone()))
                 .collect();
         }
+        state.release_channel = if state.release_pinned {
+            match crate::release::ReleaseSelection::parse(&state.release_channel)
+                .context("Installer state release selection is invalid")?
+            {
+                crate::release::ReleaseSelection::Version(_) => state.release_channel,
+                _ => bail!("Pinned installer state must identify one exact release."),
+            }
+        } else {
+            crate::release::normalise_legacy_channel(&state.release_channel)
+                .context("Installer state release selection is invalid")?
+        };
         Ok(Some(state))
     }
 
@@ -143,6 +157,7 @@ fn migrate_v1(value: serde_json::Value) -> Result<InstallerState> {
         component_versions: BTreeMap::new(),
         repository: old.repository,
         release_channel: old.channel,
+        release_pinned: false,
         platform: old.platform,
         architecture: old.architecture,
         installed_at: old.installed_at,
@@ -203,6 +218,34 @@ mod tests {
         assert_eq!(state.schema_version, STATE_SCHEMA_VERSION);
         assert_eq!(state.selected_role, Some(Role::Display));
         assert!(!serde_json::to_string(&state).unwrap().contains("password"));
+    }
+
+    #[test]
+    fn migrates_legacy_candidate_channels_to_a_bounded_track() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let mut state = InstallerState::new("0.3.0-rc.1", Platform::Arch, Architecture::X86_64);
+        state.release_channel = "v0.3.0-rc.1".into();
+        state.write_atomic(&path).unwrap();
+
+        let loaded = InstallerState::load(&path).unwrap().unwrap();
+
+        assert_eq!(loaded.release_channel, "rc/0.3");
+    }
+
+    #[test]
+    fn preserves_an_explicitly_pinned_candidate() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let mut state = InstallerState::new("0.3.0-rc.1", Platform::Arch, Architecture::X86_64);
+        state.release_channel = "v0.3.0-rc.1".into();
+        state.release_pinned = true;
+        state.write_atomic(&path).unwrap();
+
+        let loaded = InstallerState::load(&path).unwrap().unwrap();
+
+        assert_eq!(loaded.release_channel, "v0.3.0-rc.1");
+        assert!(loaded.release_pinned);
     }
 
     #[test]
