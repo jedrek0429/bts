@@ -257,6 +257,81 @@ fn local_release_installs_cli_without_runtime_components() {
     assert!(!root.join("usr/lib/systemd/system/bts-cli.service").exists());
 }
 
+#[test]
+fn fresh_telephony_install_configures_unavailable_external_services() {
+    let temporary = tempdir().unwrap();
+    let assets = temporary.path().join("assets");
+    let root = temporary.path().join("root");
+    let fake_bin = temporary.path().join("bin");
+    fs::create_dir_all(root.join("etc")).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::copy("/etc/os-release", root.join("etc/os-release")).unwrap();
+    let systemctl = fake_bin.join("systemctl");
+    fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+    let secret = temporary.path().join("telephony.env");
+    fs::write(
+        &secret,
+        concat!(
+            "BTS_ARI_URL=http://127.0.0.1:1\n",
+            "BTS_ARI_USERNAME=bts\n",
+            "BTS_ARI_PASSWORD=installation-secret\n",
+            "BTS_KOKORO_URL=http://127.0.0.1:2/v1/audio/speech\n",
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => panic!("unsupported test architecture {other}"),
+    };
+    release_command(&[
+        "component",
+        "telephony",
+        architecture,
+        "/usr/bin/true",
+        assets.to_str().unwrap(),
+    ]);
+    release_command(&[
+        "installer",
+        env!("CARGO_BIN_EXE_bts-install"),
+        assets.to_str().unwrap(),
+    ]);
+    release_command(&["assemble", assets.to_str().unwrap()]);
+
+    let output = installer_command(
+        &[
+            "--root",
+            root.to_str().unwrap(),
+            "--release-dir",
+            assets.to_str().unwrap(),
+            "--secret-file",
+            secret.to_str().unwrap(),
+            "--core-http-url",
+            "http://127.0.0.1:3",
+            "--yes",
+            "--no-start",
+            "install",
+            "telephony",
+        ],
+        &fake_bin,
+    )
+    .output()
+    .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Telephony configuration saved"));
+    assert!(stdout.contains("BTS Telephony is installed but not ready yet"));
+    assert!(stdout.contains("docs/telephony-setup.md"));
+    assert!(!stdout.contains("installation-secret"));
+    let values = fs::read_to_string(root.join("etc/bts/telephony.env")).unwrap();
+    assert!(values.contains("BTS_ARI_URL=\"http://127.0.0.1:1\""));
+    assert!(values.contains("BTS_KOKORO_URL=\"http://127.0.0.1:2/v1/audio/speech\""));
+    assert!(values.contains("BTS_ARI_PASSWORD=\"installation-secret\""));
+}
+
 fn release_command(arguments: &[&str]) {
     assert!(
         Command::new("../scripts/build-release")

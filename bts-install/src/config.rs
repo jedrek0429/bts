@@ -69,9 +69,16 @@ fn legacy_owner(
         "BTS_CORE_BIND" | "BTS_CORE_TERMINAL_STATE_PATH" => Component::Core,
         "BTS_TERMINAL_ID" | "BTS_TERMINAL_NAME" | "BTS_CAGE_ARGS" | "BTS_DISPLAY_TTY"
         | "BTS_CABIN_FONT" | "WLR_DRM_DEVICES" => Component::Display,
-        "BTS_ARI_URL" | "BTS_ARI_USERNAME" | "BTS_ARI_PASSWORD" | "BTS_CORE_URL" => {
-            Component::Telephony
-        }
+        "BTS_ARI_URL"
+        | "BTS_ARI_USERNAME"
+        | "BTS_ARI_PASSWORD"
+        | "BTS_CORE_URL"
+        | "BTS_KOKORO_URL"
+        | "BTS_KOKORO_VOICE"
+        | "BTS_KOKORO_MODEL"
+        | "BTS_KOKORO_MODEL_VERSION"
+        | "BTS_KOKORO_SPEED"
+        | "BTS_VOICE_LANGUAGE" => Component::Telephony,
         "BTS_CORE_HTTP_URL" | "BTS_ADDON_DATA_ROOT" => Component::Addons,
         "BTS_CORE_WS_URL" if value.contains(bts_compat::CORE_TERMINALS_WEBSOCKET_PATH) => {
             Component::Display

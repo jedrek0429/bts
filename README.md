@@ -7,6 +7,7 @@ Components are independently deployable and communicate through the versioned co
 ## Documentation
 
 - [Install and operate BTS](docs/installer-v2.md)
+- [Set up Asterisk, Kokoro and BTS Telephony](docs/telephony-setup.md)
 - [Update bts-install and understand compatibility preflight](docs/installer-self-update.md)
 - [Build and run a development environment](docs/development.md)
 - [Versioning and releases](docs/versioning.md)

@@ -87,7 +87,7 @@ local Core service.
 ## Commands
 
 ```text
-bts-install install [ROLE]
+bts-install install [ROLE|COMPONENT]
 bts-install add COMPONENT...
 bts-install remove COMPONENT... [--purge]
 bts-install upgrade [COMPONENT...]
@@ -145,7 +145,7 @@ Each service loads only its authoritative component file:
 
 Every unit sets `RUST_LOG=info` before loading its component file, so `RUST_LOG` in that file may override the safe default. Core addresses live only with the consuming component. No service loads `/etc/bts/bts.env`.
 
-Installer-written files use mode `0640` in the traversable, non-writable `/etc/bts` directory. Server component files are owned by `root:bts`; Display configuration is owned by `root:bts-display`, so a display-only host needs no unrelated service account. Interactive Telephony configuration reads and confirms the ARI password without echoing it. Automation uses `--secret-file` (with no group or other access) or `--secret-fd`; password command arguments are deliberately unsupported. ARI validation distinguishes unreachable endpoints, rejected authentication, malformed configuration and successful responses before configuration replacement or service restart.
+Installer-written files use mode `0640` in the traversable, non-writable `/etc/bts` directory. Server component files are owned by `root:bts`; Display configuration is owned by `root:bts-display`, so a display-only host needs no unrelated service account. Interactive Telephony configuration reads and confirms the ARI password without echoing it. Automation uses `--secret-file` (with no group or other access) or `--secret-fd`; password command arguments are deliberately unsupported. Post-save readiness checks distinguish malformed configuration, unreachable services, rejected ARI authentication, HTTP failures and unusable TTS audio. External-service failures preserve the saved configuration and leave Telephony installed but not ready.
 
 ### Migration from `/etc/bts/bts.env`
 
@@ -161,6 +161,11 @@ Configure Telephony interactively:
 sudo bts-install configure telephony
 ```
 
+Fresh Telephony, server and full installations use this same configuration flow
+before first start. Asterisk and Kokoro remain independently operated external
+services and may be on this computer or remote. Follow [Setting up BTS
+Telephony](telephony-setup.md) for a complete beginner path.
+
 For automation, prepare a root-owned environment file containing `BTS_ARI_PASSWORD` and pass it without placing the password in command arguments:
 
 ```sh
@@ -168,7 +173,8 @@ sudo bts-install configure telephony \
   --secret-file /root/bts-telephony.env
 ```
 
-The file must not be accessible to group or other users. It may also contain `BTS_ARI_URL`, `BTS_ARI_USERNAME` and `BTS_CORE_URL`.
+The file must not be accessible to group or other users. It may also contain
+`BTS_ARI_URL`, `BTS_ARI_USERNAME`, `BTS_CORE_URL` and `BTS_KOKORO_URL`.
 
 Display configuration requires the dedicated `/api/v1/terminals/ws` endpoint, a stable terminal ID and a suggested name. Interactive installation prompts for all three; non-interactive installation requires `--core-url`, `--terminal-id` and `--terminal-name`. The ID is written to `/etc/bts/display.env` before the service first starts and must remain unchanged across process restarts, upgrades, DHCP changes and Core restarts. It is never derived from the hostname, address or graphics connector.
 
