@@ -13,6 +13,7 @@ User=bts-display
 Group=bts-display
 Environment=RUST_LOG=info
 Environment="BTS_CAGE_ARGS=-m last"
+Environment=BTS_CABIN_FONT=/usr/lib/bts/components/display/current/share/fonts/bts/Cabin.ttf
 EnvironmentFile=-/etc/bts/display.env
 Environment=XDG_RUNTIME_DIR=/run/bts-display
 Environment=HOME=/var/lib/bts-display
