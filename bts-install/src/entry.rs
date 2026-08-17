@@ -32,11 +32,11 @@ fn bootstrap() -> Result<()> {
         Command::SelfUpdate => run_self_update(&cli),
         Command::Install { .. } | Command::Add(_) | Command::Upgrade(_) => {
             preflight_release_operation(&cli)?;
-            legacy::run();
+            legacy::invoke();
             Ok(())
         }
         _ => {
-            legacy::run();
+            legacy::invoke();
             Ok(())
         }
     }
@@ -83,12 +83,7 @@ fn preflight_release_operation(cli: &Cli) -> Result<()> {
 
     require_root()?;
     let executable = std::env::current_exe().context("Could not resolve the running installer")?;
-    let outcome = runtime.block_on(update_from_manifest(
-        &client,
-        &manifest,
-        &urls,
-        &executable,
-    ))?;
+    let outcome = runtime.block_on(update_from_manifest(&client, &manifest, &urls, &executable))?;
     if outcome.changed() {
         if !cli.quiet
             && let SelfUpdateOutcome::Updated { from, to } = outcome
@@ -107,8 +102,8 @@ fn normalise_upgrade_source(cli: &Cli) -> Result<()> {
         return Ok(());
     }
     let state_path = rooted(&cli.root, "/var/lib/bts-install/state.json");
-    let state = InstallerState::load(&state_path)?
-        .context("No managed BTS installation exists.")?;
+    let state =
+        InstallerState::load(&state_path)?.context("No managed BTS installation exists.")?;
 
     if state.release_channel == LOCAL_RELEASE_CHANNEL {
         ensure!(
@@ -160,9 +155,9 @@ fn rooted(root: &Path, absolute: &str) -> PathBuf {
 }
 
 mod legacy {
-    include!("main.rs");
-
-    pub(super) fn run() {
+    pub(super) fn invoke() {
         main();
     }
+
+    include!("main.rs");
 }

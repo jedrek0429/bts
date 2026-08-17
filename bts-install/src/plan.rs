@@ -208,6 +208,9 @@ mod tests {
                 |value| matches!(value, Action::InstallPackage { package } if package == "cage")
             )
         );
+        assert!(!plan.actions.iter().any(
+            |value| matches!(value, Action::InstallPackage { package } if package.contains("cabin"))
+        ));
         assert!(!format!("{plan:?}").contains("core.service"));
     }
 

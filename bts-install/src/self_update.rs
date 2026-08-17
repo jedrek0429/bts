@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use semver::Version;
 
 use crate::{INSTALLER_VERSION, manifest::ReleaseManifest, release::ReleaseClient};
@@ -157,12 +157,8 @@ mod tests {
         )
         .unwrap();
 
-        let client = ReleaseClient::new(
-            "unused/repository".into(),
-            "stable".into(),
-            Some(release),
-        )
-        .unwrap();
+        let client =
+            ReleaseClient::new("unused/repository".into(), "stable".into(), Some(release)).unwrap();
         let outcome = self_update(&client, &executable).await.unwrap();
 
         assert!(outcome.changed());
