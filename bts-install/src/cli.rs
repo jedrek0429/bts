@@ -232,7 +232,7 @@ impl Cli {
         if release_dir.is_some() && (repository_selected || channel_selected) {
             bail!("--release-dir cannot be combined with --repository or --channel.");
         }
-        if matches!(command, Command::SelfUpdate) && root != PathBuf::from("/") {
+        if matches!(command, Command::SelfUpdate) && root != std::path::Path::new("/") {
             bail!("self-update cannot be used with --root.");
         }
         validate_options(

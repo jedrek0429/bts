@@ -62,7 +62,7 @@ impl Component {
     pub fn runtime_dependencies(self) -> &'static [&'static str] {
         match self {
             Self::Core => &["ca-certificates"],
-            Self::Display => &["ca-certificates", "cage", "seatd", "font-cabin"],
+            Self::Display => &["ca-certificates", "cage", "seatd"],
             Self::Telephony => &["ca-certificates"],
             Self::Addons => &["ca-certificates"],
             Self::Cli => &["ca-certificates"],
