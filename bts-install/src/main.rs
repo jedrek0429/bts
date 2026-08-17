@@ -24,6 +24,10 @@ use bts_install::{
 };
 
 const LICENCE: &str = include_str!("../../LICENSE");
+const DEFAULT_ARI_URL: &str = "http://127.0.0.1:8088";
+const DEFAULT_ARI_USERNAME: &str = "bts";
+const DEFAULT_KOKORO_URL: &str = "http://127.0.0.1:8880/v1/audio/speech";
+const TELEPHONY_SETUP_GUIDE: &str = "docs/telephony-setup.md";
 
 #[tokio::main]
 async fn main() {
@@ -196,6 +200,24 @@ async fn run() -> Result<()> {
         let mut report = diagnostics::doctor(&cli.root, Some(&state), &mut RealSystem);
         extend_remote_diagnostics(&cli, Some(&state), &mut report).await;
         let palette = terminal_palette(false, false);
+        if state.installed_components.contains(&Component::Telephony) {
+            println!("Checking Telephony configuration...");
+            for diagnostic in report
+                .diagnostics
+                .iter()
+                .filter(|item| telephony_service_check(item))
+            {
+                let marker = match diagnostic.severity {
+                    diagnostics::Severity::Ok => palette.success("✓"),
+                    diagnostics::Severity::Warning => palette.warning("!"),
+                    diagnostics::Severity::Error => palette.error("✗"),
+                };
+                println!("{marker} {}", diagnostic.message);
+                if let Some(action) = &diagnostic.suggested_action {
+                    println!("  {}", palette.dim(action));
+                }
+            }
+        }
         if report.healthy {
             println!(
                 "{}",
@@ -206,21 +228,44 @@ async fn run() -> Result<()> {
                 ))
             );
         } else {
-            println!("Installation files are complete, but BTS is not yet ready.");
+            if state.installed_components.contains(&Component::Telephony) {
+                println!("BTS Telephony is installed but not ready yet.");
+            } else {
+                println!("Installation files are complete, but BTS is not yet ready.");
+            }
             for diagnostic in report
                 .diagnostics
                 .iter()
-                .filter(|item| item.severity == diagnostics::Severity::Error)
+                .filter(|item| {
+                    item.severity == diagnostics::Severity::Error
+                        && !telephony_service_check(item)
+                })
             {
                 println!("{} {}", palette.error("✗"), diagnostic.message);
                 if let Some(action) = &diagnostic.suggested_action {
                     println!("  {}", palette.dim(action));
                 }
             }
-            println!("Run: bts-install doctor");
+            if state.installed_components.contains(&Component::Telephony) {
+                println!("See {TELEPHONY_SETUP_GUIDE} for setup instructions.");
+            }
+            println!("Run: sudo bts-install doctor");
         }
     }
     Ok(())
+}
+
+fn telephony_service_check(diagnostic: &diagnostics::Diagnostic) -> bool {
+    diagnostic.component == Some(Component::Telephony)
+        && [
+            "BTS Core ",
+            "Asterisk ARI ",
+            "ARI credentials ",
+            "Kokoro TTS ",
+            "Test speech ",
+        ]
+        .iter()
+        .any(|prefix| diagnostic.message.starts_with(prefix))
 }
 
 async fn execute_plan(
@@ -320,6 +365,9 @@ async fn execute_plan(
                     component,
                     plan.after.contains(&Component::Core),
                 )?;
+                if component == Component::Telephony && !cli.quiet && !cli.json {
+                    println!("Telephony configuration saved.");
+                }
             }
             if let Some(unit) = component.unit() {
                 systemctl(&mut system, &cli.root, "enable", &[unit])?;
@@ -340,6 +388,15 @@ async fn execute_plan(
                     "stop",
                     &[Component::Telephony.unit().expect("Telephony has a unit")],
                 )?;
+            }
+        }
+        if desired_services.contains(&Component::Telephony) {
+            let values = read_component_configuration(&cli.root, Component::Telephony)?;
+            let ari_ready = probe_ari(&values).await == AriProbe::Accepted;
+            let core_ready = plan.after.contains(&Component::Core)
+                || probe_core(&values["BTS_CORE_URL"]).await == CoreProbe::Reachable;
+            if !ari_ready || !core_ready {
+                desired_services.remove(&Component::Telephony);
             }
         }
         services::reconcile(
@@ -741,61 +798,12 @@ fn ensure_default_configuration(
             local_core_selected.then_some(bts_compat::LOCAL_CORE_TERMINAL_WEBSOCKET_URL),
         )?,
         Component::Telephony => {
-            let mut values = existing;
-            values
-                .entry("BTS_ARI_URL".into())
-                .or_insert_with(|| "http://localhost:8088".into());
-            values
-                .entry("BTS_ARI_USERNAME".into())
-                .or_insert_with(|| "bts".into());
-            if !values.contains_key("BTS_CORE_URL") {
-                values.insert(
-                    "BTS_CORE_URL".into(),
-                    resolve_core_http(cli, local_core_selected)?,
-                );
-            }
-            let valid = config::validate_telephony(&values).and_then(|()| {
-                config::validate_http_url(
-                    values
-                        .get("BTS_CORE_URL")
-                        .expect("Telephony Core URL was populated"),
-                    "BTS_CORE_URL",
-                )
-            });
-            if valid.is_err() {
-                if let Some(input) = &cli.secret_input {
-                    values.extend(config::read_secret_input(input)?);
-                } else if interactive(cli) {
-                    let url = prompt(
-                        "ARI URL",
-                        values
-                            .get("BTS_ARI_URL")
-                            .map(String::as_str)
-                            .unwrap_or("http://localhost:8088"),
-                    )?;
-                    let username = prompt(
-                        "ARI username",
-                        values
-                            .get("BTS_ARI_USERNAME")
-                            .map(String::as_str)
-                            .unwrap_or("bts"),
-                    )?;
-                    let core_url = prompt(
-                        "Core HTTP URL",
-                        values
-                            .get("BTS_CORE_URL")
-                            .map(String::as_str)
-                            .unwrap_or("http://127.0.0.1:3100"),
-                    )?;
-                    let password = rpassword::prompt_password("ARI password: ")?;
-                    let confirmation = rpassword::prompt_password("Confirm ARI password: ")?;
-                    ensure!(password == confirmation, "ARI passwords did not match.");
-                    values.insert("BTS_ARI_URL".into(), url);
-                    values.insert("BTS_ARI_USERNAME".into(), username);
-                    values.insert("BTS_CORE_URL".into(), core_url);
-                    values.insert("BTS_ARI_PASSWORD".into(), password);
-                }
-            }
+            let values = resolve_telephony_configuration(
+                cli,
+                existing,
+                local_core_selected,
+                false,
+            )?;
             if values.contains_key("BTS_ARI_PASSWORD") {
                 config::validate_telephony(&values)?;
                 config::validate_http_url(
@@ -837,6 +845,104 @@ fn ensure_default_configuration(
     };
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)
+}
+
+fn resolve_telephony_configuration(
+    cli: &Cli,
+    mut values: BTreeMap<String, String>,
+    local_core_selected: bool,
+    force_input: bool,
+) -> Result<BTreeMap<String, String>> {
+    values
+        .entry("BTS_ARI_URL".into())
+        .or_insert_with(|| DEFAULT_ARI_URL.into());
+    values
+        .entry("BTS_ARI_USERNAME".into())
+        .or_insert_with(|| DEFAULT_ARI_USERNAME.into());
+    values
+        .entry("BTS_KOKORO_URL".into())
+        .or_insert_with(|| DEFAULT_KOKORO_URL.into());
+    for (key, default) in [
+        ("BTS_KOKORO_VOICE", "bf_emma"),
+        ("BTS_KOKORO_MODEL", "kokoro"),
+        ("BTS_KOKORO_MODEL_VERSION", "0.6.0"),
+        ("BTS_KOKORO_SPEED", "1.05"),
+        ("BTS_VOICE_LANGUAGE", "en"),
+    ] {
+        values.entry(key.into()).or_insert_with(|| default.into());
+    }
+    if !values.contains_key("BTS_CORE_URL") {
+        if let Some(url) = &cli.core_http_url {
+            values.insert("BTS_CORE_URL".into(), url.clone());
+        } else if local_core_selected {
+            values.insert("BTS_CORE_URL".into(), bts_compat::LOCAL_CORE_HTTP_URL.into());
+        }
+    }
+
+    let complete = config::validate_telephony(&values).is_ok()
+        && values.get("BTS_CORE_URL").is_some_and(|url| {
+            config::validate_http_url(url, "BTS_CORE_URL").is_ok()
+        });
+    if complete && !force_input {
+        return Ok(values);
+    }
+
+    if let Some(input) = &cli.secret_input {
+        values.extend(config::read_secret_input(input)?);
+    } else if interactive(cli) {
+        println!("\nConfigure BTS Telephony");
+        println!(
+            "The default addresses assume Asterisk, Kokoro and BTS Telephony run on this computer."
+        );
+        println!(
+            "If a service runs on another computer, enter that computer's address instead.\n"
+        );
+        let ari_url = prompt("Asterisk ARI URL", &values["BTS_ARI_URL"])?;
+        let username = prompt("ARI username", &values["BTS_ARI_USERNAME"])?;
+        let password = if values.contains_key("BTS_ARI_PASSWORD") {
+            rpassword::prompt_password("ARI password (leave blank to keep the current password): ")?
+        } else {
+            rpassword::prompt_password("ARI password: ")?
+        };
+        if !password.is_empty() {
+            let confirmation = rpassword::prompt_password("Confirm ARI password: ")?;
+            ensure!(password == confirmation, "ARI passwords did not match.");
+            values.insert("BTS_ARI_PASSWORD".into(), password);
+        }
+        println!("\nText-to-speech server");
+        println!("BTS Telephony uses a Kokoro-compatible text-to-speech service.");
+        println!("Use the default for Kokoro on this computer, or enter its remote API URL.");
+        let kokoro_url = prompt("Kokoro TTS URL", &values["BTS_KOKORO_URL"])?;
+        let core_url = match &cli.core_http_url {
+            Some(value) => value.clone(),
+            None => prompt(
+                "BTS Core URL",
+                values
+                    .get("BTS_CORE_URL")
+                    .map(String::as_str)
+                    .unwrap_or(bts_compat::LOCAL_CORE_HTTP_URL),
+            )?,
+        };
+        values.insert("BTS_ARI_URL".into(), ari_url);
+        values.insert("BTS_ARI_USERNAME".into(), username);
+        values.insert("BTS_KOKORO_URL".into(), kokoro_url);
+        values.insert("BTS_CORE_URL".into(), core_url);
+    } else if force_input {
+        bail!(
+            "Non-interactive Telephony configuration requires --secret-file or --secret-fd."
+        );
+    }
+
+    if values.contains_key("BTS_ARI_PASSWORD") {
+        config::validate_telephony(&values)?;
+        config::validate_http_url(
+            values
+                .get("BTS_CORE_URL")
+                .context("BTS_CORE_URL is not configured")?,
+            "BTS_CORE_URL",
+        )?;
+    }
+    Ok(values)
 }
 
 fn migrate_legacy_configuration(cli: &Cli, installed: &BTreeSet<Component>) -> Result<()> {
@@ -980,64 +1086,7 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
     let values = match component {
         Component::Display => resolve_display_configuration(cli, existing, None)?,
         Component::Telephony => {
-            let mut values = if let Some(input) = &cli.secret_input {
-                let mut values = existing;
-                values.extend(config::read_secret_input(input)?);
-                values
-            } else {
-                ensure!(
-                    io::stdin().is_terminal(),
-                    "Non-interactive Telephony configuration requires --secret-file or --secret-fd."
-                );
-                let url = prompt(
-                    "ARI URL",
-                    existing
-                        .get("BTS_ARI_URL")
-                        .map(String::as_str)
-                        .unwrap_or("http://localhost:8088"),
-                )?;
-                let user = prompt(
-                    "ARI username",
-                    existing
-                        .get("BTS_ARI_USERNAME")
-                        .map(String::as_str)
-                        .unwrap_or("bts"),
-                )?;
-                let core_url = match &cli.core_http_url {
-                    Some(value) => value.clone(),
-                    None => prompt(
-                        "Core HTTP URL",
-                        existing
-                            .get("BTS_CORE_URL")
-                            .map(String::as_str)
-                            .unwrap_or("http://127.0.0.1:3100"),
-                    )?,
-                };
-                let password = rpassword::prompt_password("ARI password: ")?;
-                let confirmation = rpassword::prompt_password("Confirm ARI password: ")?;
-                ensure!(password == confirmation, "ARI passwords did not match.");
-                let mut values = existing;
-                values.insert("BTS_ARI_URL".into(), url);
-                values.insert("BTS_ARI_USERNAME".into(), user);
-                values.insert("BTS_ARI_PASSWORD".into(), password);
-                values.insert("BTS_CORE_URL".into(), core_url);
-                values
-            };
-            values
-                .entry("BTS_ARI_URL".into())
-                .or_insert_with(|| "http://localhost:8088".into());
-            values
-                .entry("BTS_ARI_USERNAME".into())
-                .or_insert_with(|| "bts".into());
-            values.entry("BTS_CORE_URL".into()).or_insert_with(|| {
-                cli.core_http_url
-                    .clone()
-                    .unwrap_or_else(|| "http://127.0.0.1:3100".into())
-            });
-            config::validate_telephony(&values)?;
-            config::validate_http_url(values.get("BTS_CORE_URL").unwrap(), "BTS_CORE_URL")?;
-            verify_ari(&values).await?;
-            values
+            resolve_telephony_configuration(cli, existing, false, true)?
         }
         Component::Core => {
             ensure!(
@@ -1123,38 +1172,48 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
     }
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)?;
+    let mut restart_error = None;
     if !cli.no_start && cli.root == Path::new("/") && component.unit().is_some() {
         let unit = component.unit().expect("checked service component");
-        systemctl(
-            &mut RealSystem,
-            &cli.root,
-            "restart",
-            &[unit],
-        )?;
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        systemctl(&mut RealSystem, &cli.root, "is-active", &[unit])
-            .with_context(|| format!("{component} did not remain active after configuration"))?;
-        if component == Component::Telephony {
-            verify_ari(&values).await?;
+        let restart = systemctl(&mut RealSystem, &cli.root, "restart", &[unit]);
+        let restart = match restart {
+            Ok(()) => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                systemctl(&mut RealSystem, &cli.root, "is-active", &[unit]).with_context(|| {
+                    format!("{component} did not remain active after configuration")
+                })
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = restart {
+            if component == Component::Telephony {
+                restart_error = Some(error);
+            } else {
+                return Err(error);
+            }
         }
     }
     if !cli.quiet && !cli.json {
         let palette = terminal_palette(false, false);
         println!(
             "{}",
-            palette.success(&format!("✓ {component} configuration updated."))
+            palette.success(&format!("✓ {component} configuration saved."))
         );
-        if !cli.no_start && cli.root == Path::new("/") && component.unit().is_some() {
+        if let Some(error) = restart_error {
+            println!(
+                "{}",
+                palette.warning(&format!(
+                    "! bts-telephony did not become ready after restart: {error}"
+                ))
+            );
+            println!("  Configuration was saved; external services may still need setup.");
+            println!("  See {TELEPHONY_SETUP_GUIDE}");
+            println!("  Run: sudo bts-install doctor");
+        } else if !cli.no_start && cli.root == Path::new("/") && component.unit().is_some() {
             println!(
                 "{}",
                 palette.success(&format!("✓ bts-{component} restarted."))
             );
-            if component == Component::Telephony {
-                println!(
-                    "{}",
-                    palette.success("✓ ARI endpoint and credentials verified.")
-                );
-            }
         } else {
             println!("  {}", palette.dim(&path.display().to_string()));
         }
@@ -1183,12 +1242,42 @@ fn component_configuration_is_valid(root: &Path, component: Component) -> bool {
     }
 }
 
-async fn verify_ari(values: &BTreeMap<String, String>) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AriProbe {
+    Accepted,
+    AuthenticationFailed,
+    HttpError(reqwest::StatusCode),
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TtsProbe {
+    Rendered,
+    HttpError(reqwest::StatusCode),
+    InvalidResponse,
+    UnreadableResponse,
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreProbe {
+    Reachable,
+    HttpError(reqwest::StatusCode),
+    Unreachable,
+}
+
+async fn probe_ari(values: &BTreeMap<String, String>) -> AriProbe {
     let url = values.get("BTS_ARI_URL").unwrap();
     let user = values.get("BTS_ARI_USERNAME").unwrap();
     let password = values.get("BTS_ARI_PASSWORD").unwrap();
     let endpoint = format!("{}/ari/api-docs/resources.json", url.trim_end_matches('/'));
-    match reqwest::Client::new()
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    else {
+        return AriProbe::Unreachable;
+    };
+    match client
         .get(endpoint)
         .basic_auth(user, Some(password))
         .send()
@@ -1198,34 +1287,30 @@ async fn verify_ari(values: &BTreeMap<String, String>) -> Result<()> {
             if response.status() == reqwest::StatusCode::UNAUTHORIZED
                 || response.status() == reqwest::StatusCode::FORBIDDEN =>
         {
-            bail!(
-                "ARI authentication was rejected. Check the username and password, then run 'bts-install configure telephony' again."
-            )
+            AriProbe::AuthenticationFailed
         }
-        Ok(response) if response.status().is_server_error() => bail!(
-            "ARI endpoint returned {}. Check Asterisk ARI configuration.",
-            response.status()
-        ),
-        Ok(_) => Ok(()),
-        Err(error) if error.is_connect() || error.is_timeout() => bail!(
-            "ARI endpoint is unreachable. Check Asterisk and the configured address; configuration was not changed."
-        ),
-        Err(error) => bail!("ARI configuration could not be verified: {error}"),
+        Ok(response) if !response.status().is_success() => AriProbe::HttpError(response.status()),
+        Ok(_) => AriProbe::Accepted,
+        Err(_) => AriProbe::Unreachable,
     }
 }
 
-async fn verify_tts(values: &BTreeMap<String, String>) -> Result<()> {
+async fn probe_tts(values: &BTreeMap<String, String>) -> TtsProbe {
     let endpoint = values
         .get("BTS_KOKORO_URL")
         .map(String::as_str)
-        .unwrap_or("http://127.0.0.1:8880/v1/audio/speech");
+        .unwrap_or(DEFAULT_KOKORO_URL);
     let speed = values
         .get("BTS_KOKORO_SPEED")
         .and_then(|value| value.parse::<f32>().ok())
         .unwrap_or(1.05);
-    let response = reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .build()?
+        .build()
+    else {
+        return TtsProbe::Unreachable;
+    };
+    let response = match client
         .post(endpoint)
         .json(&serde_json::json!({
             "model": values.get("BTS_KOKORO_MODEL").map(String::as_str).unwrap_or("kokoro"),
@@ -1236,15 +1321,36 @@ async fn verify_tts(values: &BTreeMap<String, String>) -> Result<()> {
         }))
         .send()
         .await
-        .context("TTS endpoint is unreachable")?
-        .error_for_status()
-        .context("TTS endpoint rejected the configured voice")?;
-    let bytes = response.bytes().await.context("TTS response could not be read")?;
-    ensure!(
-        bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
-        "TTS endpoint returned malformed WAV audio."
-    );
-    Ok(())
+    {
+        Ok(response) => response,
+        Err(_) => return TtsProbe::Unreachable,
+    };
+    if !response.status().is_success() {
+        return TtsProbe::HttpError(response.status());
+    }
+    let Ok(bytes) = response.bytes().await else {
+        return TtsProbe::UnreadableResponse;
+    };
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        TtsProbe::Rendered
+    } else {
+        TtsProbe::InvalidResponse
+    }
+}
+
+async fn probe_core(endpoint: &str) -> CoreProbe {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    else {
+        return CoreProbe::Unreachable;
+    };
+    let health = format!("{}/health", endpoint.trim_end_matches('/'));
+    match client.get(health).send().await {
+        Ok(response) if response.status().is_success() => CoreProbe::Reachable,
+        Ok(response) => CoreProbe::HttpError(response.status()),
+        Err(_) => CoreProbe::Unreachable,
+    }
 }
 
 async fn extend_remote_diagnostics(
@@ -1485,39 +1591,161 @@ async fn extend_remote_diagnostics(
         let result =
             read_component_configuration(&cli.root, Component::Telephony).and_then(|values| {
                 config::validate_telephony(&values)?;
+                config::validate_http_url(
+                    values
+                        .get("BTS_CORE_URL")
+                        .context("BTS_CORE_URL is not configured")?,
+                    "BTS_CORE_URL",
+                )?;
                 Ok(values)
             });
         match result {
             Ok(values) => {
-                match verify_ari(&values).await {
-                    Ok(()) => report.diagnostics.push(diagnostics::Diagnostic {
+                let core_endpoint = &values["BTS_CORE_URL"];
+                match probe_core(core_endpoint).await {
+                    CoreProbe::Reachable => report.diagnostics.push(diagnostics::Diagnostic {
                         component: Some(Component::Telephony),
                         severity: diagnostics::Severity::Ok,
-                        message: "ARI endpoint and credentials were verified.".into(),
+                        message: format!("BTS Core reachable.\n  Endpoint: {core_endpoint}"),
                         suggested_action: None,
                     }),
-                    Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+                    CoreProbe::HttpError(status) => report.diagnostics.push(diagnostics::Diagnostic {
                         component: Some(Component::Telephony),
                         severity: diagnostics::Severity::Error,
-                        message: error.to_string(),
-                        suggested_action: Some("Run: sudo bts-install configure telephony".into()),
+                        message: format!(
+                            "BTS Core responded with HTTP {status}.\n  Endpoint: {core_endpoint}"
+                        ),
+                        suggested_action: Some(telephony_diagnostic_action()),
+                    }),
+                    CoreProbe::Unreachable => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Error,
+                        message: format!("BTS Core unreachable.\n  Endpoint: {core_endpoint}"),
+                        suggested_action: Some(telephony_diagnostic_action()),
                     }),
                 }
-                match verify_tts(&values).await {
-                    Ok(()) => report.diagnostics.push(diagnostics::Diagnostic {
-                        component: Some(Component::Telephony),
-                        severity: diagnostics::Severity::Ok,
-                        message: "Configured TTS voice produced valid WAV audio.".into(),
-                        suggested_action: None,
-                    }),
-                    Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+
+                let ari_endpoint = &values["BTS_ARI_URL"];
+                let ari_username = &values["BTS_ARI_USERNAME"];
+                match probe_ari(&values).await {
+                    AriProbe::Accepted => {
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: format!(
+                                "Asterisk ARI reachable.\n  Endpoint: {ari_endpoint}"
+                            ),
+                            suggested_action: None,
+                        });
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: format!(
+                                "ARI credentials accepted.\n  Username: {ari_username}"
+                            ),
+                            suggested_action: None,
+                        });
+                    }
+                    AriProbe::AuthenticationFailed => {
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: format!(
+                                "Asterisk ARI reachable.\n  Endpoint: {ari_endpoint}"
+                            ),
+                            suggested_action: None,
+                        });
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Error,
+                            message: format!(
+                                "Asterisk ARI authentication failed.\n  Endpoint: {ari_endpoint}\n  Username: {ari_username}"
+                            ),
+                            suggested_action: Some(telephony_diagnostic_action()),
+                        });
+                    }
+                    AriProbe::HttpError(status) => report.diagnostics.push(diagnostics::Diagnostic {
                         component: Some(Component::Telephony),
                         severity: diagnostics::Severity::Error,
-                        message: format!("Telephony voice rendering is unavailable: {error}"),
-                        suggested_action: Some(
-                            "Check Kokoro and BTS_KOKORO_URL, then restart bts-telephony.service."
-                                .into(),
+                        message: format!(
+                            "Asterisk ARI responded with HTTP {status}.\n  Endpoint: {ari_endpoint}"
                         ),
+                        suggested_action: Some(telephony_diagnostic_action()),
+                    }),
+                    AriProbe::Unreachable => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Error,
+                        message: format!(
+                            "Asterisk ARI unreachable.\n  Endpoint: {ari_endpoint}"
+                        ),
+                        suggested_action: Some(telephony_diagnostic_action()),
+                    }),
+                }
+
+                let tts_endpoint = values
+                    .get("BTS_KOKORO_URL")
+                    .map(String::as_str)
+                    .unwrap_or(DEFAULT_KOKORO_URL);
+                match probe_tts(&values).await {
+                    TtsProbe::Rendered => {
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: format!(
+                                "Kokoro TTS reachable.\n  Endpoint: {tts_endpoint}"
+                            ),
+                            suggested_action: None,
+                        });
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: "Test speech rendered successfully.".into(),
+                            suggested_action: None,
+                        });
+                    }
+                    TtsProbe::HttpError(status) => {
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: format!(
+                                "Kokoro TTS reachable.\n  Endpoint: {tts_endpoint}"
+                            ),
+                            suggested_action: None,
+                        });
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Error,
+                            message: format!(
+                                "Kokoro TTS returned HTTP {status}.\n  Endpoint: {tts_endpoint}"
+                            ),
+                            suggested_action: Some(telephony_diagnostic_action()),
+                        });
+                    }
+                    TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse => {
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Ok,
+                            message: format!(
+                                "Kokoro TTS reachable.\n  Endpoint: {tts_endpoint}"
+                            ),
+                            suggested_action: None,
+                        });
+                        report.diagnostics.push(diagnostics::Diagnostic {
+                            component: Some(Component::Telephony),
+                            severity: diagnostics::Severity::Error,
+                            message: format!(
+                                "Kokoro TTS responded but returned an unusable TTS response.\n  Endpoint: {tts_endpoint}"
+                            ),
+                            suggested_action: Some(telephony_diagnostic_action()),
+                        });
+                    }
+                    TtsProbe::Unreachable => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Error,
+                        message: format!(
+                            "Kokoro TTS unreachable.\n  Endpoint: {tts_endpoint}"
+                        ),
+                        suggested_action: Some(telephony_diagnostic_action()),
                     }),
                 }
             }
@@ -1529,15 +1757,14 @@ async fn extend_remote_diagnostics(
                     diagnostics::Severity::Error
                 },
                 message: if diagnostics::is_permission_denied(&error) {
-                    "ARI credential check requires access to protected Telephony configuration."
-                        .into()
+                    "Telephony service checks require access to protected configuration.".into()
                 } else {
-                    error.to_string()
+                    format!("Telephony configuration is invalid: {error}")
                 },
                 suggested_action: Some(if diagnostics::is_permission_denied(&error) {
-                    "Run: sudo bts-install doctor for protected ARI checks.".into()
+                    "Run: sudo bts-install doctor for protected Telephony checks.".into()
                 } else {
-                    "Run: sudo bts-install configure telephony".into()
+                    telephony_diagnostic_action()
                 }),
             }),
         }
@@ -1546,6 +1773,12 @@ async fn extend_remote_diagnostics(
         .diagnostics
         .iter()
         .any(|item| item.severity == diagnostics::Severity::Error);
+}
+
+fn telephony_diagnostic_action() -> String {
+    format!(
+        "See {TELEPHONY_SETUP_GUIDE}; then run: sudo bts-install doctor"
+    )
 }
 
 fn read_component_configuration(
@@ -1965,6 +2198,32 @@ fn join_components(values: &BTreeSet<Component>) -> String {
 mod tests {
     use super::*;
     use bts_install::{platform::Architecture, system::RecordingSystem};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    async fn serve_once(response: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(response).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
+    fn telephony_values(ari_url: String, kokoro_url: String) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("BTS_ARI_URL".into(), ari_url),
+            ("BTS_ARI_USERNAME".into(), "bts".into()),
+            ("BTS_ARI_PASSWORD".into(), "never-print-this".into()),
+            ("BTS_CORE_URL".into(), "http://127.0.0.1:3100".into()),
+            ("BTS_KOKORO_URL".into(), kokoro_url),
+        ])
+    }
 
     #[test]
     fn upgrade_defaults_to_installed_and_rejects_others() {
@@ -2041,11 +2300,165 @@ mod tests {
         let first = config::parse_environment(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(first["BTS_ARI_PASSWORD"], "first-secret");
         assert_eq!(first["BTS_CORE_URL"], "http://127.0.0.1:3100");
+        assert_eq!(first["BTS_ARI_URL"], DEFAULT_ARI_URL);
+        assert_eq!(first["BTS_KOKORO_URL"], DEFAULT_KOKORO_URL);
+        assert_eq!(first["BTS_KOKORO_VOICE"], "bf_emma");
+        assert_eq!(first["BTS_KOKORO_MODEL_VERSION"], "0.6.0");
 
         fs::write(&secret, "BTS_ARI_PASSWORD=replacement\n").unwrap();
         ensure_default_configuration(&cli, Component::Telephony, true).unwrap();
         let preserved = config::parse_environment(&fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(preserved["BTS_ARI_PASSWORD"], "first-secret");
+    }
+
+    #[test]
+    fn telephony_install_persists_remote_services_without_requiring_reachability() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = root.path().join("telephony-secret.env");
+        fs::write(
+            &secret,
+            concat!(
+                "BTS_ARI_URL=http://asterisk.lan:8088\n",
+                "BTS_ARI_USERNAME=operator\n",
+                "BTS_ARI_PASSWORD=remote-secret\n",
+                "BTS_KOKORO_URL=http://speech.lan:8880/v1/audio/speech\n",
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "install",
+            "telephony",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--secret-file",
+            secret.to_str().unwrap(),
+            "--core-http-url",
+            "http://core.lan:3100",
+            "--yes",
+        ])
+        .unwrap();
+
+        ensure_default_configuration(&cli, Component::Telephony, false).unwrap();
+
+        let contents = fs::read_to_string(root.path().join("etc/bts/telephony.env")).unwrap();
+        let values = config::parse_environment(&contents).unwrap();
+        assert_eq!(values["BTS_ARI_URL"], "http://asterisk.lan:8088");
+        assert_eq!(
+            values["BTS_KOKORO_URL"],
+            "http://speech.lan:8880/v1/audio/speech"
+        );
+        assert_eq!(values["BTS_ARI_PASSWORD"], "remote-secret");
+        assert!(!config::redact(&contents).contains("remote-secret"));
+    }
+
+    #[tokio::test]
+    async fn telephony_probes_distinguish_authentication_and_invalid_audio() {
+        let ari_url = serve_once(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await;
+        let kokoro_url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot audio",
+        )
+        .await;
+        let values = telephony_values(ari_url, kokoro_url);
+
+        let ari_result = probe_ari(&values).await;
+        assert_eq!(ari_result, AriProbe::AuthenticationFailed);
+        assert_eq!(probe_tts(&values).await, TtsProbe::InvalidResponse);
+        assert!(!format!("{ari_result:?}").contains("never-print-this"));
+    }
+
+    #[tokio::test]
+    async fn telephony_probes_distinguish_unreachable_services() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unreachable = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let values = telephony_values(unreachable.clone(), unreachable);
+
+        assert_eq!(probe_ari(&values).await, AriProbe::Unreachable);
+        assert_eq!(probe_tts(&values).await, TtsProbe::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_ari_authentication_and_invalid_kokoro_separately() {
+        let root = tempfile::tempdir().unwrap();
+        let core_url = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let ari_url = serve_once(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await;
+        let kokoro_url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nnot audio",
+        )
+        .await;
+        let mut values = telephony_values(ari_url, kokoro_url);
+        values.insert("BTS_CORE_URL".into(), core_url);
+        let path = root.path().join("etc/bts/telephony.env");
+        config::write_secure(&path, &values).unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+        state.release_channel = bts_install::LOCAL_RELEASE_CHANNEL.into();
+        let cli = Cli::parse([
+            "bts-install",
+            "--root",
+            root.path().to_str().unwrap(),
+            "doctor",
+        ])
+        .unwrap();
+        let mut report = diagnostics::DoctorReport {
+            schema_version: diagnostics::OUTPUT_SCHEMA_VERSION,
+            healthy: true,
+            diagnostics: Vec::new(),
+        };
+
+        extend_remote_diagnostics(&cli, Some(&state), &mut report).await;
+
+        let output = report
+            .diagnostics
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("BTS Core reachable"));
+        assert!(output.contains("Asterisk ARI authentication failed"));
+        assert!(output.contains("unusable TTS response"));
+        assert!(!output.contains("never-print-this"));
+        assert!(!report.healthy);
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_unreachable_ari_and_kokoro_separately() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unreachable = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let mut values = telephony_values(unreachable.clone(), unreachable.clone());
+        values.insert("BTS_CORE_URL".into(), unreachable);
+        config::write_secure(&root.path().join("etc/bts/telephony.env"), &values).unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+        state.release_channel = bts_install::LOCAL_RELEASE_CHANNEL.into();
+        let cli = Cli::parse([
+            "bts-install",
+            "--root",
+            root.path().to_str().unwrap(),
+            "doctor",
+        ])
+        .unwrap();
+        let mut report = diagnostics::DoctorReport {
+            schema_version: diagnostics::OUTPUT_SCHEMA_VERSION,
+            healthy: true,
+            diagnostics: Vec::new(),
+        };
+
+        extend_remote_diagnostics(&cli, Some(&state), &mut report).await;
+
+        let output = report
+            .diagnostics
+            .iter()
+            .map(|item| item.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("BTS Core unreachable"));
+        assert!(output.contains("Asterisk ARI unreachable"));
+        assert!(output.contains("Kokoro TTS unreachable"));
     }
 
     #[test]

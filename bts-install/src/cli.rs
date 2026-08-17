@@ -10,7 +10,7 @@ use crate::{
 pub const HELP: &str = r#"bts-install — modular BTS deployment manager (GPL-3.0-or-later)
 
 Usage:
-  bts-install [OPTIONS] install [ROLE] [--component COMPONENT]...
+  bts-install [OPTIONS] install [ROLE|COMPONENT] [--component COMPONENT]...
   bts-install [OPTIONS] add COMPONENT...
   bts-install [OPTIONS] remove COMPONENT... [--purge]
   bts-install [OPTIONS] upgrade [COMPONENT...]
@@ -222,8 +222,14 @@ impl Cli {
             "install" => {
                 let role = match positional.as_slice() {
                     [] => None,
-                    [value] => Some(Role::from_str(value)?),
-                    _ => bail!("install accepts at most one role."),
+                    [value] => match Role::from_str(value) {
+                        Ok(role) => Some(role),
+                        Err(_) => {
+                            components.push(Component::from_str(value)?);
+                            Some(Role::Custom)
+                        }
+                    },
+                    _ => bail!("install accepts at most one role or component."),
                 };
                 Command::Install { role, components }
             }
@@ -585,6 +591,7 @@ mod tests {
 
     #[test]
     fn telephony_install_accepts_protected_secret_input_and_configure_accepts_no_start() {
+        assert!(parse(&["bts-install", "install", "telephony"]).is_ok());
         assert!(
             parse(&[
                 "bts-install",

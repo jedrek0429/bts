@@ -1,18 +1,13 @@
 # Voice prompts
 
-BTS uses a local Kokoro service with the British `bf_emma` voice. Telephony
-generates and caches prompts automatically on first use; cached prompts work
-without Kokoro afterwards.
+BTS Telephony uses a Kokoro-compatible text-to-speech service to generate voice
+prompts. Kokoro may run on the same machine as BTS Telephony or on another
+machine reachable over the network. `BTS_KOKORO_URL` selects the HTTP speech
+endpoint. See [Setting up BTS Telephony](telephony-setup.md) for beginner local
+and remote installation instructions.
 
-Start Kokoro:
-
-```sh
-docker run -d \
-  --name kokoro \
-  --restart unless-stopped \
-  -p 127.0.0.1:8880:8880 \
-  ghcr.io/remsky/kokoro-fastapi-cpu:v0.6.0
-```
+Telephony uses the British `bf_emma` voice and generates and caches prompts
+automatically on first use; cached prompts work without Kokoro afterwards.
 
 Telephony accepts these environment variables:
 
