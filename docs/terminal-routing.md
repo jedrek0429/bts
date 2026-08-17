@@ -70,7 +70,7 @@ administrative API exposure are intentionally not part of this milestone slice.
 
 Core stores the effective accepted `DisplayState` independently for each
 `TerminalId`, together with generation, presentation ID, event source, optional
-Addon API v1 addon owner and optional legacy lease. Only a current-generation
+Addon API v2 addon owner and optional legacy lease. Only a current-generation
 accepted acknowledgement changes state.
 Rejection, incompatibility, offline presence, timeout and disconnection leave
 the previous state untouched. A single-terminal action therefore cannot change

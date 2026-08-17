@@ -7,7 +7,7 @@ use bts_protocol::{
     ResourceCandidate, TerminalCapabilities, TerminalDescription, TerminalId,
     TerminalImplementationId, TerminalName, TerminalReference, TerminalResource, TerminalTag,
     UpdateGroupMembersRequest,
-    addons::v1::{API_VERSION, AddonId, AddonManifest, AddonVersion},
+    addons::v2::{API_VERSION, AddonId, AddonManifest, AddonVersion},
     core::{
         CORE_ADMIN_ADDON_ENABLED_PATH, CORE_ADMIN_ADDON_PATH, CORE_ADMIN_ADDONS_PATH,
         CORE_ADMIN_BASE_PATH, CORE_ADMIN_GROUP_MEMBERS_PATH, CORE_ADMIN_GROUP_NAME_PATH,

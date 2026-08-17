@@ -3,7 +3,7 @@ pub(crate) mod message;
 pub(crate) mod weather;
 
 use bts_addons::{AddonFailure, AddonRegistry, HttpAddonContext};
-use bts_protocol::addons::v1::{Addon, AddonId, AddonVersion};
+use bts_protocol::addons::v2::{Addon, AddonId, AddonVersion};
 use bts_protocol::{Event, EventKind};
 use std::path::PathBuf;
 
@@ -115,7 +115,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use async_trait::async_trait;
-    use bts_protocol::addons::v1::{
+    use bts_protocol::addons::v2::{
         API_VERSION, ActionId, ActionRegistration, ActionRequest, AddonContext, AddonManifest,
         AddonVersion,
     };

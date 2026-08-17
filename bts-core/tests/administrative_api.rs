@@ -16,7 +16,7 @@ use bts_protocol::{
     CoreOperationalStatus, EventKind, GroupId, GroupName, NewEvent, ProtocolVersion,
     TerminalCapabilities, TerminalCapability, TerminalConnectionId, TerminalId, TerminalIdentity,
     TerminalImplementationId, TerminalName, TerminalRegistration, TerminalTag,
-    addons::v1::{
+    addons::v2::{
         API_VERSION, ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest,
         AddonVersion,
     },

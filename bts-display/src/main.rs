@@ -744,7 +744,7 @@ mod tests {
     use bts_protocol::{
         EventKind, NewEvent, PresentationDeliveryOutcome, PresentationDispatch, PresentationId,
         PresentationRequest, ResolvedTarget, ScreenKind, TargetScope, TerminalTarget,
-        addons::v1::{API_VERSION, AddonCapability, AddonId, AddonManifest, AddonVersion},
+        addons::v2::{API_VERSION, AddonCapability, AddonId, AddonManifest, AddonVersion},
         core::{CORE_EVENTS_PATH, CORE_TERMINALS_WEBSOCKET_PATH},
     };
     use tokio::sync::oneshot;

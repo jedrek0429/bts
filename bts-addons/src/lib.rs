@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use bts_protocol::addons::v1::{
+use bts_protocol::addons::v2::{
     API_VERSION, ActionId, ActionRequest, Addon, AddonContext, AddonId, AddonManifest,
 };
 use bts_protocol::{
@@ -364,7 +364,7 @@ impl AddonRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::addons::v1::{API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
+    use bts_protocol::addons::v2::{API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
     use bts_protocol::{DtmfMenuKey, Event};
     use bts_protocol::{TargetScope, TerminalId};
 
@@ -390,7 +390,9 @@ mod tests {
             }],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new(digit).unwrap(),
-                prompt: "sound:test".into(),
+                label: "Test".into(),
+                spoken_label: None,
+                speech_style: Default::default(),
                 action: ActionId::new(action),
                 order: 1,
             }],

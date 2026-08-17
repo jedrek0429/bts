@@ -8,7 +8,7 @@ use bts_protocol::{
     TerminalCapability, TerminalClientMessage, TerminalEvent as ProtocolTerminalEvent,
     TerminalEventKind, TerminalId, TerminalIdentity, TerminalImplementationId, TerminalName,
     TerminalRegistration, TerminalRuntimeDiagnostics, TerminalTarget,
-    addons::v1::{API_VERSION, AddonCapability, AddonId, AddonManifest, AddonVersion},
+    addons::v2::{API_VERSION, AddonCapability, AddonId, AddonManifest, AddonVersion},
     core::{
         CORE_EVENTS_PATH, CORE_TELEPHONY_TARGETS_PATH, CORE_TERMINAL_EVENTS_WEBSOCKET_PATH,
         CORE_TERMINALS_WEBSOCKET_PATH,

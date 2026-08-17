@@ -16,13 +16,13 @@ use bts_protocol::{
     PresentationDeliveryOutcome, PresentationId, PresentationRequest, ScreenKind, TargetScope,
     TelephonyTargets, TerminalCapabilities, TerminalCapability, TerminalDescription, TerminalId,
     TerminalImplementationId, TerminalName, TerminalTarget,
-    addons::v1::{
+    addons::v2::{
         API_VERSION, ActionId, ActionRegistration, ActionRequest, Addon, AddonCapability,
         AddonContext, AddonId, AddonManifest, AddonVersion, MenuEntry,
     },
     core::{CORE_EVENTS_PATH, CORE_TELEPHONY_TARGETS_PATH, CORE_TERMINALS_WEBSOCKET_PATH},
 };
-use bts_telephony::session::{CallerIdentity, MenuContext, TelephonySession};
+use bts_telephony::session::{CallerIdentity, MediaItem, MenuContext, TelephonySession};
 use bts_terminal::{ConnectionState, RuntimeDiagnostics, TerminalConfiguration};
 use bts_terminal_simulator::{
     HeadlessTerminal, ResponsePolicy, SimulatorConfiguration, SimulatorEvent,
@@ -155,7 +155,9 @@ fn addon_manifest() -> AddonManifest {
         }],
         menu: vec![MenuEntry {
             digit: DtmfMenuKey::new('2').unwrap(),
-            prompt: "sound:bts/integration".to_owned(),
+            label: "Integration".to_owned(),
+            spoken_label: None,
+            speech_style: Default::default(),
             action: ActionId::new(ACTION_ID),
             order: 20,
         }],
@@ -602,7 +604,7 @@ async fn telephony_changes_target_inside_addon_without_changing_the_previous_scr
             name: Some("Integration caller".to_owned()),
         },
         &targets,
-        "sound:bts/main".to_owned(),
+        vec![MediaItem::Uri("sound:bts/main".to_owned())],
     );
     assert!(
         session

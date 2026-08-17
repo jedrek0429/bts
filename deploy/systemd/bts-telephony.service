@@ -16,6 +16,11 @@ Restart=on-failure
 RestartSec=3s
 NoNewPrivileges=yes
 PrivateTmp=yes
+CacheDirectory=bts/voice
+CacheDirectoryMode=0755
+# BTS owns only this generated Asterisk sound namespace.
+StateDirectory=asterisk/sounds/en/bts-generated
+StateDirectoryMode=0755
 ProtectSystem=strict
 ProtectHome=yes
 ProtectKernelTunables=yes

@@ -2,9 +2,13 @@ use anyhow::Context;
 use asterisk_ari::{AriClient, Config, apis::channels};
 use std::{collections::HashMap, sync::Arc};
 
-use bts_protocol::addons::v1::{ActionId, AddonManifest};
+use bts_protocol::addons::v2::{ActionId, AddonManifest};
 use bts_protocol::{EventKind, NewEvent, TelephonyTargets};
-use bts_telephony::session::{CallerIdentity, TelephonySession};
+use bts_telephony::semantic_menu::render_menu;
+use bts_telephony::{
+    session::{CallerIdentity, MediaItem, TelephonySession},
+    voice::{KokoroSynthesizer, VoiceCache, VoiceSettings},
+};
 use reqwest::Client;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -12,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 const APPLICATION_NAME: &str = "bts";
 const EVENT_SOURCE: &str = "bts-telephony";
-const WELCOME_PROMPT: &str = "sound:bts/welcome";
+const WELCOME_PROMPT: &str = "Welcome to Bansleben Telephone Services.";
 
 #[derive(Clone)]
 struct EventPublisher {
@@ -92,6 +96,8 @@ async fn main() -> anyhow::Result<()> {
 
     let publisher = EventPublisher::new(&core_url);
     let sessions = Arc::new(Mutex::new(HashMap::<String, TelephonySession>::new()));
+    let voice = Arc::new(runtime_voice_cache());
+    let playbacks = Arc::new(Mutex::new(HashMap::<String, Vec<String>>::new()));
 
     /*
      * A call has entered Stasis(bts).
@@ -99,11 +105,15 @@ async fn main() -> anyhow::Result<()> {
     let start_publisher = publisher.clone();
     let start_menu_media_uris = menu_media_uris.clone();
     let start_sessions = sessions.clone();
+    let start_voice = voice.clone();
+    let start_playbacks = playbacks.clone();
 
     ari.on_stasis_start(move |client, event| {
         let publisher = start_publisher.clone();
         let menu_media_uris = start_menu_media_uris.clone();
         let sessions = start_sessions.clone();
+        let voice = start_voice.clone();
+        let playbacks = start_playbacks.clone();
 
         async move {
             let channel = event.data.channel;
@@ -144,11 +154,8 @@ async fn main() -> anyhow::Result<()> {
             let (session, outcome) =
                 TelephonySession::new(caller, &targets, menu_media_uris.clone());
             sessions.lock().await.insert(channel_id.clone(), session);
-            if let Some(media) = outcome.media
-                && let Err(error) = play_media(&client, &channel_id, &media).await
-            {
-                warn!(channel_id = %channel_id, media_uri = %media, %error, "failed to play session prompt");
-            }
+            let ids = play_media_queue(&client, &channel_id, &outcome.media, &voice).await;
+            playbacks.lock().await.insert(channel_id.clone(), ids);
 
             if let Err(error) = publisher
                 .publish(EventKind::PhoneCallStarted {
@@ -174,11 +181,15 @@ async fn main() -> anyhow::Result<()> {
     let dtmf_publisher = publisher.clone();
     let dtmf_actions = menu_actions.clone();
     let dtmf_sessions = sessions.clone();
+    let dtmf_voice = voice.clone();
+    let dtmf_playbacks = playbacks.clone();
 
     ari.on_channel_dtmf_received(move |client, event| {
         let publisher = dtmf_publisher.clone();
         let actions = dtmf_actions.clone();
         let sessions = dtmf_sessions.clone();
+        let voice = dtmf_voice.clone();
+        let playbacks = dtmf_playbacks.clone();
 
         async move {
             let channel_id = event.data.channel.id.clone();
@@ -190,6 +201,13 @@ async fn main() -> anyhow::Result<()> {
                 duration_ms = event.data.duration_ms,
                 "DTMF received"
             );
+
+            let interrupted = playbacks.lock().await.remove(&channel_id).unwrap_or_default();
+            for playback_id in interrupted {
+                if let Err(error) = client.playbacks().stop(&playback_id).await {
+                    tracing::debug!(channel_id = %channel_id, %playback_id, %error, "playback completed while being interrupted");
+                }
+            }
 
             if let Err(error) = publisher
                 .publish(EventKind::PhoneDtmfReceived {
@@ -225,10 +243,9 @@ async fn main() -> anyhow::Result<()> {
             let Some(outcome) = outcome else {
                 return Ok(());
             };
-            if let Some(media) = outcome.media
-                && let Err(error) = play_media(&client, &channel_id, &media).await
-            {
-                warn!(channel_id = %channel_id, media_uri = %media, %error, "failed to play session prompt");
+            if !outcome.media.is_empty() {
+                let ids = play_media_queue(&client, &channel_id, &outcome.media, &voice).await;
+                playbacks.lock().await.insert(channel_id.clone(), ids);
             }
             if let Some(request) = outcome.action
                 && let Err(error) = publisher
@@ -242,21 +259,42 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let finished_playbacks = playbacks.clone();
+    ari.on_playback_finished(move |_, event| {
+        let playbacks = finished_playbacks.clone();
+        async move {
+            let playback = event.data.playback;
+            if playback.state == asterisk_ari::apis::playbacks::models::PlaybackState::Failed {
+                warn!(media_uri = ?playback.media_uri, playback_id = ?playback.id, "voice prompt playback failed");
+            }
+            if let Some(id) = playback.id {
+                let mut queues = playbacks.lock().await;
+                for queue in queues.values_mut() {
+                    queue.retain(|queued_id| queued_id != &id);
+                }
+            }
+            Ok(())
+        }
+    });
+
     /*
      * The channel has left Stasis, normally because the caller hung up.
      */
     let end_publisher = publisher.clone();
     let end_sessions = sessions.clone();
+    let end_playbacks = playbacks.clone();
 
     ari.on_stasis_end(move |_, event| {
         let publisher = end_publisher.clone();
         let sessions = end_sessions.clone();
+        let playbacks = end_playbacks.clone();
 
         async move {
             let channel_id = event.data.channel.id.clone();
             if sessions.lock().await.remove(&channel_id).is_none() {
                 return Ok(());
             }
+            playbacks.lock().await.remove(&channel_id);
 
             info!(
                 channel_id = %channel_id,
@@ -284,7 +322,7 @@ async fn main() -> anyhow::Result<()> {
         application = APPLICATION_NAME,
         ari_url = %ari_url,
         core_url = %core_url,
-        menu_media_uris = %menu_media_uris,
+        menu_items = ?menu_media_uris,
         "starting BTS telephony"
     );
 
@@ -305,23 +343,75 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn play_media(
+async fn play_media_queue(
     client: &asterisk_ari::apis::client::Client,
     channel_id: &str,
-    media: &str,
-) -> anyhow::Result<()> {
-    client
-        .channels()
-        .play(channels::params::PlayRequest::new(channel_id, media))
-        .await?;
-    Ok(())
+    media: &[MediaItem],
+    voice: &VoiceCache<KokoroSynthesizer>,
+) -> Vec<String> {
+    let mut playback_ids = Vec::new();
+    for item in media {
+        let mut stop_after_item = false;
+        let media_uri = match item {
+            MediaItem::Uri(uri) => uri.clone(),
+            MediaItem::Speech(text) => match voice.render(text).await {
+                Ok(prompt) => prompt.media_uri,
+                Err(error) => {
+                    warn!(channel_id = %channel_id, prompt_text = %text, %error, "failed to render voice prompt; playing the emergency error tone and abandoning the incomplete queue");
+                    stop_after_item = true;
+                    "sound:beeperr".to_owned()
+                }
+            },
+        };
+        match client
+            .channels()
+            .play(channels::params::PlayRequest::new(channel_id, &media_uri))
+            .await
+        {
+            Ok(playback) => {
+                if let Some(id) = playback.id {
+                    playback_ids.push(id);
+                }
+            }
+            Err(error) => {
+                warn!(channel_id = %channel_id, %media_uri, %error, "failed to enqueue voice prompt item")
+            }
+        }
+        if stop_after_item {
+            break;
+        }
+    }
+    playback_ids
+}
+
+fn runtime_voice_cache() -> VoiceCache<KokoroSynthesizer> {
+    let endpoint = std::env::var("BTS_KOKORO_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8880/v1/audio/speech".into());
+    let mut settings = VoiceSettings::default();
+    settings.language = std::env::var("BTS_VOICE_LANGUAGE").unwrap_or(settings.language);
+    settings.voice = std::env::var("BTS_KOKORO_VOICE").unwrap_or(settings.voice);
+    settings.model = std::env::var("BTS_KOKORO_MODEL").unwrap_or(settings.model);
+    settings.model_version =
+        std::env::var("BTS_KOKORO_MODEL_VERSION").unwrap_or(settings.model_version);
+    settings.speed = std::env::var("BTS_KOKORO_SPEED")
+        .ok()
+        .and_then(|speed| speed.parse().ok())
+        .filter(|speed| *speed > 0.0)
+        .unwrap_or(settings.speed);
+    VoiceCache::new(
+        KokoroSynthesizer::new(endpoint),
+        settings,
+        std::env::var("BTS_VOICE_CACHE_DIR").unwrap_or_else(|_| "/var/cache/bts/voice".into()),
+        std::env::var("BTS_ASTERISK_GENERATED_SOUNDS_DIR")
+            .unwrap_or_else(|_| "/var/lib/asterisk/sounds/en/bts-generated".into()),
+    )
 }
 
 fn non_empty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
-async fn load_menu(core_url: &str) -> anyhow::Result<(String, HashMap<String, ActionId>)> {
+async fn load_menu(core_url: &str) -> anyhow::Result<(Vec<MediaItem>, HashMap<String, ActionId>)> {
     let endpoint = format!(
         "{}{}",
         core_url.trim_end_matches('/'),
@@ -345,19 +435,14 @@ async fn load_menu(core_url: &str) -> anyhow::Result<(String, HashMap<String, Ac
     Ok(menu)
 }
 
-fn build_menu(manifests: Vec<AddonManifest>) -> (String, HashMap<String, ActionId>) {
-    let mut entries: Vec<_> = manifests
-        .into_iter()
-        .flat_map(|manifest| manifest.menu)
-        .collect();
-    entries.sort_by_key(|entry| (entry.order, entry.digit));
+fn build_menu(manifests: Vec<AddonManifest>) -> (Vec<MediaItem>, HashMap<String, ActionId>) {
     let mut actions = HashMap::new();
-    let mut media = vec![WELCOME_PROMPT.to_owned()];
-    for entry in entries {
+    let mut media = vec![MediaItem::Speech(WELCOME_PROMPT.to_owned())];
+    for entry in render_menu(manifests) {
         actions.insert(entry.digit.to_string(), entry.action);
-        media.push(entry.prompt);
+        media.push(MediaItem::Speech(entry.speech));
     }
-    (media.join(","), actions)
+    (media, actions)
 }
 
 fn initialise_logging() {
@@ -374,9 +459,9 @@ fn initialise_logging() {
 mod tests {
     use super::*;
     use bts_protocol::DtmfMenuKey;
-    use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
+    use bts_protocol::addons::v2::{API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
 
-    fn manifest(id: &str, digit: char, order: u16, prompt: &str) -> AddonManifest {
+    fn manifest(id: &str, digit: char, order: u16, label: &str) -> AddonManifest {
         AddonManifest {
             api_version: API_VERSION,
             id: AddonId::new(id),
@@ -385,7 +470,9 @@ mod tests {
             actions: vec![],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new(digit).unwrap(),
-                prompt: prompt.into(),
+                label: label.into(),
+                spoken_label: None,
+                speech_style: Default::default(),
                 action: ActionId::new(format!("{id}.run")),
                 order,
             }],
@@ -397,10 +484,17 @@ mod tests {
     #[test]
     fn menu_is_ordered_by_manifest_order_then_digit() {
         let (media, actions) = build_menu(vec![
-            manifest("later", '3', 30, "sound:later"),
-            manifest("first", '2', 20, "sound:first"),
+            manifest("later", '3', 30, "Later"),
+            manifest("first", '2', 20, "First"),
         ]);
-        assert_eq!(media, "sound:bts/welcome,sound:first,sound:later");
+        assert_eq!(
+            media,
+            vec![
+                MediaItem::Speech(WELCOME_PROMPT.into()),
+                MediaItem::Speech("Press two for first.".into()),
+                MediaItem::Speech("Press three for later.".into()),
+            ]
+        );
         assert_eq!(actions["2"], ActionId::new("first.run"));
         assert_eq!(actions["3"], ActionId::new("later.run"));
     }

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bts_protocol::addons::v1::AddonId;
+use bts_protocol::addons::v2::AddonId;
 use bts_protocol::{
     DisplayCommand, DisplayLease, DisplayState, Event, EventKind, PresentationDeliveryContext,
     PresentationDeliveryOutcome, PresentationDeliveryResult, PresentationDispatch,
@@ -955,7 +955,7 @@ fn missing_capabilities(
 mod tests {
     use std::{collections::BTreeSet, sync::Arc};
 
-    use bts_protocol::addons::v1::AddonId;
+    use bts_protocol::addons::v2::AddonId;
     use bts_protocol::{
         DisplayCommand, DisplayLease, DisplayLeaseId, Event, GroupId, GroupIdentity, GroupName,
         PresentationDeliveryOutcome, PresentationId, PresentationRejectionCode, ProtocolVersion,

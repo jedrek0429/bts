@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use bts_protocol::addons::v1::{ActionId, ActionRequest, AddonId, MenuEntry};
+use bts_protocol::addons::v2::{API_VERSION, ActionId, ActionRequest, AddonId, MenuEntry};
 use bts_protocol::{
     BtsState, CoreTerminalMessage, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
     DtmfMenuKey, DtmfMenuKeyError, Event, EventKind, GroupId, GroupIdentity, GroupName,
@@ -466,7 +466,9 @@ fn reserved_dtmf_controls_cannot_be_addon_menu_keys() {
 
     let entry = MenuEntry {
         digit: DtmfMenuKey::new('7').unwrap(),
-        prompt: "sound:test".to_owned(),
+        label: "Test".to_owned(),
+        spoken_label: Some("the test".to_owned()),
+        speech_style: Default::default(),
         action: ActionId::new("test.run"),
         order: 1,
     };
@@ -562,7 +564,7 @@ fn legacy_display_wire_format_is_unchanged_and_migrates_to_all_online() {
         "legacy-addon",
         EventKind::DisplayRequested {
             command: DisplayCommand::Release {
-                addon_id: bts_protocol::addons::v1::AddonId::new("legacy-addon"),
+                addon_id: bts_protocol::addons::v2::AddonId::new("legacy-addon"),
                 lease_id: DisplayLeaseId(lease_id),
             },
         },
@@ -571,20 +573,34 @@ fn legacy_display_wire_format_is_unchanged_and_migrates_to_all_online() {
 }
 
 #[test]
-fn existing_menu_entry_wire_shape_is_preserved() {
-    let legacy: MenuEntry = serde_json::from_value(json!({
+fn semantic_menu_entry_wire_shape_replaces_asterisk_prompt_uris() {
+    assert_eq!(API_VERSION, 2);
+    assert!(
+        serde_json::from_value::<MenuEntry>(json!({
+            "digit": "4",
+            "prompt": "sound:test",
+            "action": "test.run",
+            "order": 40
+        }))
+        .is_err()
+    );
+
+    let entry: MenuEntry = serde_json::from_value(json!({
         "digit": "4",
-        "prompt": "sound:test",
-        "action": "test.run",
-        "order": 40
+        "label": "Clear display",
+        "spoken_label": "clear the display",
+        "speech_style": "instruction",
+        "action": "display.blank",
+        "order": 90
     }))
     .unwrap();
-    assert_eq!(legacy.digit.digit(), '4');
+    assert_eq!(entry.digit.digit(), '4');
+    assert_eq!(entry.label, "Clear display");
 
     assert!(
         serde_json::from_value::<MenuEntry>(json!({
             "digit": "0",
-            "prompt": "sound:test",
+            "label": "Invalid",
             "action": "test.run",
             "order": 40
         }))

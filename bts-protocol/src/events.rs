@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::addons::v1::{ActionRequest, AddonId, AddonManifest};
+use crate::addons::v2::{ActionRequest, AddonId, AddonManifest};
 use crate::{
     BtsState, DisplayCommand, GroupId, GroupName, PresentationDeliveryResult, PresentationId,
     PresentationRequest, TerminalCapabilities, TerminalId, TerminalName, TerminalTag,

@@ -10,7 +10,7 @@ Components are independently deployable and communicate through the versioned co
 - [Update bts-install and understand compatibility preflight](docs/installer-self-update.md)
 - [Build and run a development environment](docs/development.md)
 - [Versioning and releases](docs/versioning.md)
-- [Write addons with Addon API v1](docs/addon-api-v1.md)
+- [Write addons with Addon API v2](docs/addon-api-v2.md)
 - [Understand terminal architecture and operation](docs/terminal-platform.md)
 - [Migrate an implicit single display](docs/terminal-migration.md)
 - [Understand administrative crate boundaries](docs/administrative-architecture.md)
