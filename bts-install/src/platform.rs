@@ -74,11 +74,9 @@ impl Platform {
         match (self, dependency) {
             (Self::Debian, "cage") => Ok(&["cage"]),
             (Self::Debian, "seatd") => Ok(&["seatd"]),
-            (Self::Debian, "font-cabin") => Ok(&["fonts-cabin"]),
             (Self::Debian, "ca-certificates") => Ok(&["ca-certificates"]),
             (Self::Arch, "cage") => Ok(&["cage"]),
             (Self::Arch, "seatd") => Ok(&["seatd"]),
-            (Self::Arch, "font-cabin") => Ok(&["ttf-impallari-cabin-font"]),
             (Self::Arch, "ca-certificates") => Ok(&["ca-certificates"]),
             (_, other) => bail!("No package mapping exists for runtime dependency '{other}'."),
         }
