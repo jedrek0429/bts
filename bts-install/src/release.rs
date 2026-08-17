@@ -15,6 +15,7 @@ use crate::manifest::{ReleaseManifest, validate_release_assets};
 #[derive(Debug, Clone)]
 pub struct ReleaseClient {
     client: reqwest::Client,
+    api_base_url: String,
     repository: String,
     selection: ReleaseSelection,
     local_directory: Option<PathBuf>,
@@ -63,6 +64,7 @@ impl ReleaseClient {
             .build()?;
         Ok(Self {
             client,
+            api_base_url: "https://api.github.com".into(),
             repository,
             selection: ReleaseSelection::parse(&channel)?,
             local_directory,
@@ -91,14 +93,21 @@ impl ReleaseClient {
         matches!(self.selection, ReleaseSelection::Version(_))
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_api_base_url(mut self, api_base_url: String) -> Self {
+        self.api_base_url = api_base_url;
+        self
+    }
+
     pub async fn fetch_manifest(&self) -> Result<(ReleaseManifest, BTreeMap<String, String>)> {
         if let Some(directory) = &self.local_directory {
             return load_local_manifest(directory);
         }
         let release: GithubRelease = if matches!(self.selection, ReleaseSelection::Track(_)) {
             let endpoint = format!(
-                "https://api.github.com/repos/{}/releases?per_page=100",
-                self.repository
+                "{}/repos/{}/releases?per_page=100",
+                self.api_base_url.trim_end_matches('/'),
+                self.repository,
             );
             let releases: Vec<GithubRelease> = self
                 .client
@@ -117,8 +126,10 @@ impl ReleaseClient {
                 unreachable!()
             };
             let endpoint = format!(
-                "https://api.github.com/repos/{}/releases/tags/{}",
-                self.repository, tag
+                "{}/repos/{}/releases/tags/{}",
+                self.api_base_url.trim_end_matches('/'),
+                self.repository,
+                tag,
             );
             self.client
                 .get(endpoint)
@@ -390,6 +401,54 @@ mod tests {
         model::Component,
     };
     use tempfile::tempdir;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        task::JoinHandle,
+    };
+
+    async fn serve_http(responses: Vec<(String, u16, Vec<u8>)>) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = spawn_http(listener, responses);
+        (format!("http://{address}"), handle)
+    }
+
+    fn spawn_http(listener: TcpListener, responses: Vec<(String, u16, Vec<u8>)>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            for (expected_path, status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 1024];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert!(
+                    request.starts_with(&format!("GET {expected_path} HTTP/1.1")),
+                    "unexpected request: {request}"
+                );
+                let reason = if status == 200 {
+                    "OK"
+                } else {
+                    "Service Unavailable"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+            }
+        })
+    }
 
     fn published_release(tag_name: &str, prerelease: bool) -> GithubRelease {
         GithubRelease {
@@ -453,6 +512,74 @@ mod tests {
             assets: Vec::new(),
         };
         assert!(!is_stable_release(&release));
+    }
+
+    #[tokio::test]
+    async fn github_lookup_failure_is_reported_without_resolving_a_manifest() {
+        let (base_url, server) = serve_http(vec![(
+            "/repos/example/bts/releases?per_page=100".into(),
+            503,
+            b"unavailable".to_vec(),
+        )])
+        .await;
+        let client = ReleaseClient::new("example/bts".into(), "stable".into(), None)
+            .unwrap()
+            .with_api_base_url(base_url);
+
+        let error = client.fetch_manifest().await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("503"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_prerelease_tag_is_selected_and_installed() {
+        let replacement = b"new prerelease installer";
+        let mut selected_manifest = manifest("0.4.0-rc.2");
+        selected_manifest.installer.sha256 = hex::encode(Sha256::digest(replacement));
+        let release_manifest = serde_json::to_vec(&selected_manifest).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let base_url = format!("http://{address}");
+        let release = serde_json::to_vec(&serde_json::json!({
+            "tag_name": "v0.4.0-rc.2",
+            "draft": false,
+            "prerelease": true,
+            "assets": [{
+                "name": "release-manifest.json",
+                "browser_download_url": format!("{base_url}/release-manifest.json")
+            }, {
+                "name": "bts-install",
+                "browser_download_url": format!("{base_url}/bts-install")
+            }]
+        }))
+        .unwrap();
+        let server = spawn_http(
+            listener,
+            vec![
+                (
+                    "/repos/example/bts/releases/tags/v0.4.0-rc.2".into(),
+                    200,
+                    release,
+                ),
+                ("/release-manifest.json".into(), 200, release_manifest),
+                ("/bts-install".into(), 200, replacement.to_vec()),
+            ],
+        );
+        let client = ReleaseClient::new("example/bts".into(), "v0.4.0-rc.2".into(), None)
+            .unwrap()
+            .with_api_base_url(base_url);
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("bts-install");
+        fs::write(&executable, b"old installer").unwrap();
+
+        let outcome = crate::self_update::self_update(&client, &executable)
+            .await
+            .unwrap();
+
+        assert!(outcome.changed());
+        assert_eq!(fs::read(executable).unwrap(), replacement);
+        server.await.unwrap();
     }
 
     #[test]

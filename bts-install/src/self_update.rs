@@ -74,6 +74,14 @@ fn parse_version(value: &str) -> Result<Version> {
 }
 
 fn replace_executable_atomically(executable: &Path, bytes: &[u8]) -> Result<()> {
+    replace_executable_atomically_with(executable, bytes, |_| Ok(()))
+}
+
+fn replace_executable_atomically_with(
+    executable: &Path,
+    bytes: &[u8],
+    before_activate: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let parent = executable
         .parent()
         .context("The running installer path has no parent directory.")?;
@@ -95,6 +103,7 @@ fn replace_executable_atomically(executable: &Path, bytes: &[u8]) -> Result<()> 
         .sync_all()
         .context("Could not sync the replacement installer")?;
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o755))?;
+    before_activate(temporary.path())?;
 
     let temporary_path = temporary.into_temp_path();
     fs::rename(&temporary_path, executable).with_context(|| {
@@ -117,7 +126,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn atomic_replacement_preserves_old_file_on_precondition_failure() {
+    fn atomic_replacement_activates_a_complete_executable() {
         let root = tempdir().unwrap();
         let executable = root.path().join("bts-install");
         fs::write(&executable, b"old").unwrap();
@@ -129,6 +138,22 @@ mod tests {
             fs::metadata(&executable).unwrap().permissions().mode() & 0o777,
             0o755
         );
+    }
+
+    #[test]
+    fn interrupted_replacement_preserves_the_active_installer() {
+        let root = tempdir().unwrap();
+        let executable = root.path().join("bts-install");
+        fs::write(&executable, b"old").unwrap();
+
+        let error = replace_executable_atomically_with(&executable, b"new", |_| {
+            anyhow::bail!("simulated interruption before activation")
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("simulated interruption"));
+        assert_eq!(fs::read(&executable).unwrap(), b"old");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[tokio::test]
@@ -163,6 +188,96 @@ mod tests {
 
         assert!(outcome.changed());
         assert_eq!(fs::read(executable).unwrap(), replacement);
+    }
+
+    #[tokio::test]
+    async fn current_installer_is_a_no_op() {
+        let root = tempdir().unwrap();
+        let executable = root.path().join("bts-install");
+        fs::write(&executable, b"current installer").unwrap();
+        let manifest = manifest(INSTALLER_VERSION, "0".repeat(64));
+
+        let outcome = update_from_manifest(
+            &ReleaseClient::new("unused/repository".into(), "stable".into(), None).unwrap(),
+            &manifest,
+            &std::collections::BTreeMap::new(),
+            &executable,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            SelfUpdateOutcome::Current {
+                version: INSTALLER_VERSION.into()
+            }
+        );
+        assert_eq!(fs::read(executable).unwrap(), b"current installer");
+    }
+
+    #[tokio::test]
+    async fn automatic_preflight_update_verifies_before_replacing() {
+        let root = tempdir().unwrap();
+        let release = root.path().join("release");
+        let executable = root.path().join("bts-install");
+        fs::create_dir(&release).unwrap();
+        fs::write(&executable, b"old installer").unwrap();
+        write_local_release(&release, b"new installer", None);
+        let client =
+            ReleaseClient::new("unused/repository".into(), "stable".into(), Some(release)).unwrap();
+        let (manifest, urls) = client.fetch_manifest().await.unwrap();
+
+        let outcome = update_from_manifest(&client, &manifest, &urls, &executable)
+            .await
+            .unwrap();
+
+        assert!(outcome.changed());
+        assert_eq!(fs::read(executable).unwrap(), b"new installer");
+    }
+
+    #[tokio::test]
+    async fn failed_checksum_verification_preserves_the_active_installer() {
+        let root = tempdir().unwrap();
+        let release = root.path().join("release");
+        let executable = root.path().join("bts-install");
+        fs::create_dir(&release).unwrap();
+        fs::write(&executable, b"old installer").unwrap();
+        write_local_release(&release, b"corrupt installer", Some("0".repeat(64)));
+        let client =
+            ReleaseClient::new("unused/repository".into(), "stable".into(), Some(release)).unwrap();
+
+        let error = self_update(&client, &executable).await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("checksum"));
+        assert_eq!(fs::read(executable).unwrap(), b"old installer");
+    }
+
+    fn write_local_release(release: &Path, replacement: &[u8], digest: Option<String>) {
+        let installer_digest = digest.unwrap_or_else(|| hex::encode(Sha256::digest(replacement)));
+        fs::write(release.join("bts-install"), replacement).unwrap();
+        fs::write(release.join("LICENSE"), b"licence").unwrap();
+        fs::write(release.join("SHA256SUMS"), b"checksums").unwrap();
+        fs::write(
+            release.join("release-manifest.json"),
+            serde_json::to_vec(&manifest(&next_test_version(), installer_digest)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn manifest(version: &str, installer_digest: String) -> ReleaseManifest {
+        ReleaseManifest {
+            schema_version: crate::manifest::MANIFEST_SCHEMA_VERSION,
+            release_version: version.into(),
+            installer: crate::manifest::ReleaseAsset {
+                filename: "bts-install".into(),
+                sha256: installer_digest,
+            },
+            components: std::collections::BTreeMap::new(),
+            licence_asset: Some(crate::manifest::ReleaseAsset {
+                filename: "LICENSE".into(),
+                sha256: hex::encode(Sha256::digest(b"licence")),
+            }),
+        }
     }
 
     fn next_test_version() -> String {
