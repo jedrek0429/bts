@@ -27,7 +27,7 @@ pub use terminal::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::addons::v1::*;
+    use crate::addons::v2::*;
 
     #[test]
     fn addon_manifest_round_trips_through_json() {
@@ -42,7 +42,9 @@ mod tests {
             }],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new('4').unwrap(),
-                prompt: "sound:example".into(),
+                label: "Example".into(),
+                spoken_label: None,
+                speech_style: Default::default(),
                 action: ActionId::new("example.run"),
                 order: 40,
             }],

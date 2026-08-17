@@ -9,8 +9,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Wire version for the semantic Addon API contract.
-pub const API_VERSION: u16 = 2;
+pub use bts_compat::ADDON_API_VERSION as API_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

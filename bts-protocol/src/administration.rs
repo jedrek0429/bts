@@ -13,7 +13,7 @@ use crate::{
     BtsState, DisplayState, GroupId, GroupName, IdentifierError, PresentationGeneration,
     PresentationId, ProtocolVersion, TerminalCapabilities, TerminalDescription, TerminalId,
     TerminalImplementationId, TerminalImplementationVersion, TerminalName,
-    TerminalRuntimeDiagnostics, TerminalTag, addons::v1::AddonManifest,
+    TerminalRuntimeDiagnostics, TerminalTag, addons::v2::AddonManifest,
 };
 
 const MAX_RESOURCE_REFERENCE_LENGTH: usize = 100;
@@ -307,7 +307,7 @@ pub struct GroupListResource {
     pub groups: Vec<GroupResource>,
 }
 
-/// Core-owned policy and observed registration for one Addon API v1 addon.
+/// Core-owned policy and observed registration for one Addon API v2 addon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddonResource {
     pub manifest: AddonManifest,

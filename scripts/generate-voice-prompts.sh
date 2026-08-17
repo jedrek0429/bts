@@ -68,9 +68,8 @@ generate_prompt() {
 install -d "$output_dir"
 
 generate_prompt "welcome" "Welcome to Bansleben Telephone Services!"
-generate_prompt "press-2-time" "Press two for the time."
-generate_prompt "press-3-weather" "Press three for the weather."
-generate_prompt "press-4-clear" "Press four to clear the display."
+# Addon menu speech is generated at runtime from semantic menu entries. Numbered
+# menu files must not become authoritative because mappings are configurable.
 generate_prompt "configuration" "Configuration."
 generate_prompt "press-1-change-terminal" "Press one to change terminal."
 generate_prompt "press-star-return" "Press star to return."

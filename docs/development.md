@@ -194,7 +194,7 @@ Core listens on port 3100 by default:
 - `POST /api/v1/events`
 - `POST /api/v1/assets`
 
-Addon development is documented in [Addon API v1](addon-api-v1.md).
+Addon development is documented in [Addon API v2](addon-api-v2.md).
 
 ## Deployment-file checks
 

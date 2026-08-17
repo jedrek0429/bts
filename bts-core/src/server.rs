@@ -29,7 +29,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
-use bts_protocol::addons::v1::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
+use bts_protocol::addons::v2::{API_VERSION, ActionId, AddonCapability, AddonId, AddonManifest};
 use bts_protocol::core::{
     CORE_ADDONS_PATH, CORE_ADMIN_ADDON_ENABLED_PATH, CORE_ADMIN_ADDON_PATH, CORE_ADMIN_ADDONS_PATH,
     CORE_ADMIN_GROUP_MEMBERS_PATH, CORE_ADMIN_GROUP_NAME_PATH, CORE_ADMIN_GROUP_PATH,
@@ -1618,7 +1618,12 @@ fn validate_manifest(manifest: &AddonManifest) -> Result<(), (StatusCode, String
         ));
     }
     for entry in &manifest.menu {
-        if !actions.contains(&entry.action) || entry.prompt.trim().is_empty() {
+        let invalid_spoken_label = entry
+            .spoken_label
+            .as_ref()
+            .is_some_and(|label| label.trim().is_empty());
+        if !actions.contains(&entry.action) || entry.label.trim().is_empty() || invalid_spoken_label
+        {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!("invalid menu entry for digit {}", entry.digit),
@@ -1786,7 +1791,7 @@ async fn send_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bts_protocol::addons::v1::{
+    use bts_protocol::addons::v2::{
         API_VERSION, ActionRegistration, AddonCapability, AddonVersion, MenuEntry,
     };
     use bts_protocol::{DisplayLease, DisplayLeaseId, DisplayState, DtmfMenuKey, ScreenKind};
@@ -1803,7 +1808,9 @@ mod tests {
             }],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new(digit).unwrap(),
-                prompt: "sound:test".to_owned(),
+                label: "Test".to_owned(),
+                spoken_label: None,
+                speech_style: Default::default(),
                 action: ActionId::new(action),
                 order: 1,
             }],
@@ -1868,6 +1875,14 @@ mod tests {
     fn manifest_validation_rejects_invalid_menu_entries() {
         let mut invalid = manifest("one", "one.run", '1');
         invalid.menu[0].action = ActionId::new("missing");
+        assert!(validate_manifest(&invalid).is_err());
+
+        let mut invalid = manifest("one", "one.run", '1');
+        invalid.menu[0].label = "  ".into();
+        assert!(validate_manifest(&invalid).is_err());
+
+        let mut invalid = manifest("one", "one.run", '1');
+        invalid.menu[0].spoken_label = Some("".into());
         assert!(validate_manifest(&invalid).is_err());
     }
 

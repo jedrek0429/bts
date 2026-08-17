@@ -457,12 +457,18 @@ version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "asterisk-ari",
+ "async-trait",
  "bts-protocol",
+ "hex",
  "reqwest",
+ "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

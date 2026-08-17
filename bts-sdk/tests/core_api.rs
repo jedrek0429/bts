@@ -6,7 +6,7 @@ use bts_protocol::{
     AdministrativeErrorCategory, AdministrativeErrorCode, AdministrativeErrorResponse,
     ApiDiscovery, CoreOperationalStatus, CoreStateResource, CoreStatusResource, MutationResponse,
     SetAddonEnabledRequest,
-    addons::v1::{API_VERSION, AddonId, AddonManifest, AddonVersion},
+    addons::v2::{API_VERSION, AddonId, AddonManifest, AddonVersion},
     core::{CORE_ADMIN_STATE_PATH, CORE_ADMIN_STATUS_PATH, CORE_API_DISCOVERY_PATH},
 };
 use bts_sdk::{CoreApi, CoreApiConfiguration, SdkError};

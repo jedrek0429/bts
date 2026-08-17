@@ -1,6 +1,6 @@
 # Addon API v2 author guide
 
-Addon API v2 is available as the next BTS network contract at `bts_protocol::addons::v2`. It is introduced alongside v1 so producers and consumers can migrate in a separate, reviewable change. An addon implements `Addon`, declares everything it may do in one `AddonManifest`, and communicates only with `bts-core` through the transport-neutral `AddonContext` interface. It must not depend on `bts-addons`, import or contact `bts-display` or `bts-telephony`, use Asterisk or egui APIs, or access another component's filesystem.
+Addon API v2 is the published BTS network contract at `bts_protocol::addons::v2`. An addon implements `Addon`, declares everything it may do in one `AddonManifest`, and communicates only with `bts-core` through the transport-neutral `AddonContext` interface. It must not depend on `bts-addons`, import or contact `bts-display` or `bts-telephony`, use Asterisk or egui APIs, or access another component's filesystem.
 
 `bts-addons` is one host implementation for the built-in addons. It does not own the API. A third-party host may implement `AddonContext` over the published Core HTTP and WebSocket endpoints and can run on any machine that can reach Core.
 
@@ -91,7 +91,7 @@ An in-process host such as `bts-addons` registers the implementation with its ge
 
 ## Actions and telephone menus
 
-Actions carry an opaque `ActionId` and JSON parameters. During adoption, Core resolves and validates the registered owner, while the addon host dispatches the request only to that owner. Telephony will retrieve manifests from `GET /api/v1/addons`, order entries by `order` and digit, render the current digit and semantic speech data through the configured BTS voice, and publish the selected generic action. It has no addon-specific digit mapping. `MenuSpeechStyle::Choice` produces “Press three for the weather”; `Instruction` produces “Press four to clear the display”. When `spoken_label` is absent, Telephony derives it from `label`.
+Actions carry an opaque `ActionId` and JSON parameters. Core resolves and validates the registered owner, while the addon host dispatches the request only to that owner. Telephony retrieves manifests from `GET /api/v1/addons`, orders entries by `order` and digit, renders the current digit and semantic speech data through the configured BTS voice, and publishes the selected generic action. It has no addon-specific digit mapping. `MenuSpeechStyle::Choice` produces “Press three for the weather”; `Instruction` produces “Press four to clear the display”. When `spoken_label` is absent, Telephony derives it from `label`.
 
 A telephony action carries its session's unresolved `TerminalTarget`. The addon
 host binds that value to the invocation's `AddonContext`; addons read
@@ -128,4 +128,4 @@ Installation, service supervision and future third-party packaging belong to
 
 ## Deliberate exclusions
 
-API v2 does not provide dynamic libraries, third-party package installation, process sandboxing, arbitrary renderer code, direct container access or a Spotify integration. Those broader third-party distribution and split-renderer designs remain tracked separately in Milestone 5; they are not prerequisites for semantic telephone menus. Capability declarations are validated at Core API boundaries; operating-system sandboxing remains the responsibility of deployment units.
+API v2 does not provide dynamic libraries, third-party package installation, process sandboxing, arbitrary renderer code, direct container access or a Spotify integration. Capability declarations are validated at Core API boundaries; operating-system sandboxing remains the responsibility of deployment units.

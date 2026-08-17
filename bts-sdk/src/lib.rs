@@ -11,8 +11,9 @@ pub use configuration::{ConfigurationError, CoreApiConfiguration};
 pub use core::{CoreApi, SdkMetadata};
 pub use error::SdkError;
 
-pub use bts_protocol::addons::v1::{
+pub use bts_protocol::addons::v2::{
     ActionId, ActionRegistration, AddonCapability, AddonId, AddonManifest, AddonVersion, MenuEntry,
+    MenuSpeechStyle,
 };
 pub use bts_protocol::{
     AddonListResource, AddonReference, AddonResource, AdministrativeError,

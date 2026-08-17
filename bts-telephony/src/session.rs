@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
-use bts_protocol::addons::v1::{ActionId, ActionRequest};
+use bts_protocol::addons::v2::{ActionId, ActionRequest};
 use bts_protocol::{TelephonyTargetOption, TelephonyTargets, TerminalTarget};
 
 const CONFIGURATION_PROMPT: &str =
-    "sound:bts/configuration,sound:bts/press-1-change-terminal,sound:bts/press-star-return";
-const NO_TERMINALS_PROMPT: &str = "sound:bts/no-terminals-online,sound:bts/press-0-configuration";
-const SELECT_TARGET_PROMPT: &str = "sound:bts/select-terminal,sound:bts/press-hash-confirm";
-const TARGET_SELECTED_PROMPT: &str = "sound:bts/target-selected";
+    "speech:Configuration.,speech:Press one to change terminal.,speech:Press star to return.";
+const NO_TERMINALS_PROMPT: &str =
+    "speech:No terminals are online.,speech:Press zero for configuration.";
+const SELECT_TARGET_PROMPT: &str = "speech:Select a terminal target.";
 const TARGET_UNAVAILABLE_PROMPT: &str =
-    "sound:bts/target-unavailable,sound:bts/press-0-configuration";
-const INVALID_SELECTION_PROMPT: &str = "sound:bts/invalid-selection";
+    "speech:The selected target is unavailable.,speech:Press zero for configuration.";
+const INVALID_SELECTION_PROMPT: &str = "speech:That selection is not valid.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallerIdentity {
@@ -43,21 +43,34 @@ pub struct TargetChoice {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionOutcome {
-    pub media: Option<String>,
+    pub media: Vec<MediaItem>,
     pub action: Option<ActionRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaItem {
+    Uri(String),
+    Speech(String),
 }
 
 impl SessionOutcome {
     fn media(value: impl Into<String>) -> Self {
         Self {
-            media: Some(value.into()),
+            media: media_items(&value.into()),
+            action: None,
+        }
+    }
+
+    fn items(media: Vec<MediaItem>) -> Self {
+        Self {
+            media,
             action: None,
         }
     }
 
     fn action(request: ActionRequest) -> Self {
         Self {
-            media: None,
+            media: Vec::new(),
             action: Some(request),
         }
     }
@@ -72,14 +85,14 @@ pub struct TelephonySession {
     pub return_stack: Vec<MenuContext>,
     #[allow(dead_code)] // Issue #32 establishes the settings slot before settings are added.
     pub settings: SessionSettings,
-    main_menu_media: String,
+    main_menu_media: Vec<MediaItem>,
 }
 
 impl TelephonySession {
     pub fn new(
         caller: CallerIdentity,
         targets: &TelephonyTargets,
-        main_menu_media: String,
+        main_menu_media: Vec<MediaItem>,
     ) -> (Self, SessionOutcome) {
         let mut session = Self {
             caller,
@@ -95,14 +108,15 @@ impl TelephonySession {
             [only] => {
                 session.selected_target = Some(only.target.clone());
                 session.current_context = MenuContext::MainMenu;
-                SessionOutcome::media(session.selected_target_media(only))
+                // Automatic selection is an implementation detail, not a caller action.
+                SessionOutcome::items(session.current_prompt())
             }
             _ => {
                 session.current_context = MenuContext::TargetSelection {
                     choices: target_choices(targets),
                     input: String::new(),
                 };
-                SessionOutcome::media(session.current_prompt())
+                SessionOutcome::items(session.current_prompt())
             }
         };
         (session, outcome)
@@ -129,15 +143,17 @@ impl TelephonySession {
                         input: String::new(),
                     };
                     if fresh_targets.terminals.is_empty() {
-                        SessionOutcome::media(format!(
-                            "{NO_TERMINALS_PROMPT},{CONFIGURATION_PROMPT}"
+                        SessionOutcome::items(prompt_then(
+                            NO_TERMINALS_PROMPT,
+                            media_items(CONFIGURATION_PROMPT),
                         ))
                     } else {
-                        SessionOutcome::media(self.current_prompt())
+                        SessionOutcome::items(self.current_prompt())
                     }
                 } else {
-                    SessionOutcome::media(format!(
-                        "{INVALID_SELECTION_PROMPT},{CONFIGURATION_PROMPT}"
+                    SessionOutcome::items(prompt_then(
+                        INVALID_SELECTION_PROMPT,
+                        media_items(CONFIGURATION_PROMPT),
                     ))
                 }
             }
@@ -150,19 +166,19 @@ impl TelephonySession {
                     {
                         *input = candidate;
                         SessionOutcome {
-                            media: None,
+                            media: Vec::new(),
                             action: None,
                         }
                     } else {
-                        SessionOutcome::media(format!(
-                            "{INVALID_SELECTION_PROMPT},{}",
-                            self.current_prompt()
+                        SessionOutcome::items(prompt_then(
+                            INVALID_SELECTION_PROMPT,
+                            self.current_prompt(),
                         ))
                     }
                 } else {
-                    SessionOutcome::media(format!(
-                        "{INVALID_SELECTION_PROMPT},{}",
-                        self.current_prompt()
+                    SessionOutcome::items(prompt_then(
+                        INVALID_SELECTION_PROMPT,
+                        self.current_prompt(),
                     ))
                 }
             }
@@ -199,21 +215,21 @@ impl TelephonySession {
             MenuContext::Addon { .. } => self.current_context = MenuContext::MainMenu,
             MenuContext::NoTargets | MenuContext::MainMenu => {}
         }
-        SessionOutcome::media(self.current_prompt())
+        SessionOutcome::items(self.current_prompt())
     }
 
     fn confirm(&mut self, fresh_targets: &TelephonyTargets) -> SessionOutcome {
         let MenuContext::TargetSelection { choices, input } = &self.current_context else {
-            return SessionOutcome::media(self.current_prompt());
+            return SessionOutcome::items(self.current_prompt());
         };
         let selected = choices
             .iter()
             .find(|choice| choice.code == *input)
             .map(|choice| choice.option.clone());
         let Some(selected) = selected else {
-            return SessionOutcome::media(format!(
-                "{INVALID_SELECTION_PROMPT},{}",
-                self.current_prompt()
+            return SessionOutcome::items(prompt_then(
+                INVALID_SELECTION_PROMPT,
+                self.current_prompt(),
             ));
         };
 
@@ -222,9 +238,9 @@ impl TelephonySession {
                 choices: target_choices(fresh_targets),
                 input: String::new(),
             };
-            return SessionOutcome::media(format!(
-                "{TARGET_UNAVAILABLE_PROMPT},{}",
-                self.current_prompt()
+            return SessionOutcome::items(prompt_then(
+                TARGET_UNAVAILABLE_PROMPT,
+                self.current_prompt(),
             ));
         }
 
@@ -239,7 +255,7 @@ impl TelephonySession {
             )
             | None => MenuContext::MainMenu,
         };
-        SessionOutcome::media(self.selected_target_media(&selected))
+        SessionOutcome::items(self.selected_target_media(&selected))
     }
 
     fn invoke_action(
@@ -249,9 +265,9 @@ impl TelephonySession {
         actions: &HashMap<String, ActionId>,
     ) -> SessionOutcome {
         let Some(action) = actions.get(digit).cloned() else {
-            return SessionOutcome::media(format!(
-                "{INVALID_SELECTION_PROMPT},{}",
-                self.current_prompt()
+            return SessionOutcome::items(prompt_then(
+                INVALID_SELECTION_PROMPT,
+                self.current_prompt(),
             ));
         };
         let Some(target) = self.selected_target.clone() else {
@@ -270,20 +286,22 @@ impl TelephonySession {
         })
     }
 
-    fn selected_target_media(&self, option: &TelephonyTargetOption) -> String {
-        format!(
-            "{TARGET_SELECTED_PROMPT},characters:{},{}",
-            spoken_name(&option.name),
-            self.current_prompt()
-        )
+    fn selected_target_media(&self, option: &TelephonyTargetOption) -> Vec<MediaItem> {
+        let mut media = vec![MediaItem::Speech(format!("{} selected.", option.name))];
+        media.extend(self.current_prompt());
+        media
     }
 
-    fn current_prompt(&self) -> String {
+    fn current_prompt(&self) -> Vec<MediaItem> {
         match &self.current_context {
-            MenuContext::NoTargets => NO_TERMINALS_PROMPT.to_owned(),
+            MenuContext::NoTargets => media_items(NO_TERMINALS_PROMPT),
             MenuContext::MainMenu => self.main_menu_media.clone(),
-            MenuContext::Addon { .. } => "sound:bts/returned-to-addon".to_owned(),
-            MenuContext::Configuration => CONFIGURATION_PROMPT.to_owned(),
+            MenuContext::Addon { .. } => {
+                vec![MediaItem::Speech(
+                    "Returning to the previous service.".into(),
+                )]
+            }
+            MenuContext::Configuration => media_items(CONFIGURATION_PROMPT),
             MenuContext::TargetSelection { choices, .. } => target_menu_media(choices),
         }
     }
@@ -312,33 +330,57 @@ fn bijective_base_nine(index: usize) -> String {
     digits.into_iter().rev().collect()
 }
 
-fn target_menu_media(choices: &[TargetChoice]) -> String {
-    let mut media = vec![SELECT_TARGET_PROMPT.to_owned()];
+fn target_menu_media(choices: &[TargetChoice]) -> Vec<MediaItem> {
+    let mut media = media_items(SELECT_TARGET_PROMPT);
     for choice in choices {
-        media.push(format!("digits:{}", choice.code));
-        media.push(format!("characters:{}", spoken_name(&choice.option.name)));
+        media.push(MediaItem::Speech(format!(
+            "Press {} for {}.",
+            spoken_digits(&choice.code),
+            choice.option.name
+        )));
     }
-    media.join(",")
+    media.push(MediaItem::Speech("Press hash to confirm.".into()));
+    media
 }
 
-fn spoken_name(name: &str) -> String {
-    let spoken = name
-        .chars()
-        .filter_map(|character| {
-            if character.is_ascii_alphanumeric() {
-                Some(character.to_ascii_lowercase())
-            } else if character.is_whitespace() || matches!(character, '-' | '_' | '.') {
-                Some('-')
-            } else {
-                None
-            }
+fn spoken_digits(code: &str) -> String {
+    code.chars()
+        .filter_map(|digit| {
+            Some(match digit {
+                '0' => "zero",
+                '1' => "one",
+                '2' => "two",
+                '3' => "three",
+                '4' => "four",
+                '5' => "five",
+                '6' => "six",
+                '7' => "seven",
+                '8' => "eight",
+                '9' => "nine",
+                _ => return None,
+            })
         })
-        .collect::<String>();
-    if spoken.is_empty() {
-        "terminal".to_owned()
-    } else {
-        spoken
-    }
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn media_items(value: &str) -> Vec<MediaItem> {
+    value
+        .split(',')
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.strip_prefix("speech:").map_or_else(
+                || MediaItem::Uri(value.to_owned()),
+                |text| MediaItem::Speech(text.to_owned()),
+            )
+        })
+        .collect()
+}
+
+fn prompt_then(prompt: &str, rest: Vec<MediaItem>) -> Vec<MediaItem> {
+    let mut media = media_items(prompt);
+    media.extend(rest);
+    media
 }
 
 #[cfg(test)]
@@ -348,6 +390,10 @@ mod tests {
     use super::*;
 
     const MAIN: &str = "sound:bts/main";
+
+    fn main_media() -> Vec<MediaItem> {
+        media_items(MAIN)
+    }
 
     fn terminal(id: &str, name: &str) -> TelephonyTargetOption {
         TelephonyTargetOption {
@@ -393,32 +439,36 @@ mod tests {
 
     #[test]
     fn none_one_and_many_terminals_have_distinct_initial_states() {
-        let (none, outcome) = TelephonySession::new(caller(), &targets(vec![]), MAIN.to_owned());
+        let (none, outcome) = TelephonySession::new(caller(), &targets(vec![]), main_media());
         assert_eq!(none.selected_target, None);
         assert_eq!(none.current_context, MenuContext::NoTargets);
-        assert_eq!(outcome.media.as_deref(), Some(NO_TERMINALS_PROMPT));
+        assert_eq!(outcome.media, media_items(NO_TERMINALS_PROMPT));
 
         let one_target = terminal("bedroom", "Bedroom");
-        let (one, outcome) = TelephonySession::new(
-            caller(),
-            &targets(vec![one_target.clone()]),
-            MAIN.to_owned(),
-        );
+        let (one, outcome) =
+            TelephonySession::new(caller(), &targets(vec![one_target.clone()]), main_media());
         assert_eq!(one.selected_target, Some(one_target.target));
         assert_eq!(one.current_context, MenuContext::MainMenu);
-        assert!(outcome.media.unwrap().contains("characters:bedroom"));
+        assert_eq!(outcome.media, vec![MediaItem::Uri(MAIN.into())]);
 
         let (many, outcome) = TelephonySession::new(
             caller(),
             &targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]),
-            MAIN.to_owned(),
+            main_media(),
         );
         assert!(many.selected_target.is_none());
         assert!(matches!(
             many.current_context,
             MenuContext::TargetSelection { .. }
         ));
-        assert!(outcome.media.unwrap().contains("digits:1"));
+        assert!(
+            outcome
+                .media
+                .contains(&MediaItem::Speech("Press one for Alpha.".into()))
+        );
+        assert!(outcome.media.iter().all(|item| {
+            !matches!(item, MediaItem::Uri(uri) if uri.starts_with("characters:"))
+        }));
     }
 
     #[test]
@@ -448,7 +498,7 @@ mod tests {
     #[test]
     fn changing_target_inside_addon_returns_without_dispatching_an_action() {
         let initial = targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]);
-        let (mut session, _) = TelephonySession::new(caller(), &initial, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &initial, main_media());
         session.selected_target = Some(initial.terminals[0].target.clone());
         session.current_context = MenuContext::Addon {
             action: ActionId::new("weather.show"),
@@ -475,7 +525,7 @@ mod tests {
     #[test]
     fn cancel_restores_addon_and_old_target() {
         let catalogue = targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]);
-        let (mut session, _) = TelephonySession::new(caller(), &catalogue, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &catalogue, main_media());
         let original = catalogue.terminals[0].target.clone();
         session.selected_target = Some(original.clone());
         session.current_context = MenuContext::Addon {
@@ -493,36 +543,34 @@ mod tests {
     fn terminal_disconnect_before_confirm_refreshes_without_replacement() {
         let initial = targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]);
         let fresh = targets(vec![initial.terminals[0].clone()]);
-        let (mut session, _) = TelephonySession::new(caller(), &initial, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &initial, main_media());
         session.handle_dtmf("2", &fresh, &actions());
         let outcome = session.handle_dtmf("#", &fresh, &actions());
         assert!(session.selected_target.is_none());
-        assert!(
-            outcome
-                .media
-                .unwrap()
-                .starts_with(TARGET_UNAVAILABLE_PROMPT)
+        assert_eq!(
+            outcome.media.first(),
+            media_items(TARGET_UNAVAILABLE_PROMPT).first()
         );
     }
 
     #[test]
     fn unavailable_selected_terminal_never_redirects_an_action() {
         let initial = targets(vec![terminal("alpha", "Alpha")]);
-        let (mut session, _) = TelephonySession::new(caller(), &initial, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &initial, main_media());
         let outcome = session.handle_dtmf("2", &targets(vec![]), &actions());
         assert!(outcome.action.is_none());
         assert_eq!(
             session.selected_target,
             Some(initial.terminals[0].target.clone())
         );
-        assert_eq!(outcome.media.as_deref(), Some(TARGET_UNAVAILABLE_PROMPT));
+        assert_eq!(outcome.media, media_items(TARGET_UNAVAILABLE_PROMPT));
     }
 
     #[test]
     fn group_and_all_targets_flow_through_action_context() {
         let mut catalogue = targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]);
         catalogue.groups.push(group("downstairs", "Downstairs"));
-        let (mut session, _) = TelephonySession::new(caller(), &catalogue, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &catalogue, main_media());
 
         for (code, expected) in [
             ("3", catalogue.groups[0].target.clone()),
@@ -542,7 +590,7 @@ mod tests {
     #[test]
     fn reserved_keys_are_interpreted_before_addon_digits() {
         let catalogue = targets(vec![terminal("alpha", "Alpha")]);
-        let (mut session, _) = TelephonySession::new(caller(), &catalogue, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &catalogue, main_media());
         let reserved = HashMap::from([
             ("0".to_owned(), ActionId::new("bad.zero")),
             ("*".to_owned(), ActionId::new("bad.star")),
@@ -571,14 +619,12 @@ mod tests {
     #[test]
     fn target_selection_rejects_non_matching_prefix_digits() {
         let catalogue = targets(vec![terminal("alpha", "Alpha"), terminal("bravo", "Bravo")]);
-        let (mut session, _) = TelephonySession::new(caller(), &catalogue, MAIN.to_owned());
+        let (mut session, _) = TelephonySession::new(caller(), &catalogue, main_media());
 
         let outcome = session.handle_dtmf("9", &catalogue, &actions());
-        assert!(
-            outcome
-                .media
-                .as_deref()
-                .is_some_and(|media| media.starts_with(INVALID_SELECTION_PROMPT))
+        assert_eq!(
+            outcome.media.first(),
+            media_items(INVALID_SELECTION_PROMPT).first()
         );
         assert_eq!(
             session.current_context,
@@ -587,5 +633,24 @@ mod tests {
                 input: String::new(),
             }
         );
+    }
+
+    #[test]
+    fn explicit_target_selection_speaks_the_natural_name() {
+        let catalogue = targets(vec![
+            terminal("bedroom", "Yendreck's Bedroom"),
+            terminal("kitchen", "Kitchen"),
+        ]);
+        let (mut session, _) = TelephonySession::new(caller(), &catalogue, main_media());
+        session.handle_dtmf("1", &catalogue, &actions());
+        let outcome = session.handle_dtmf("#", &catalogue, &actions());
+        assert!(
+            outcome
+                .media
+                .contains(&MediaItem::Speech("Yendreck's Bedroom selected.".into()))
+        );
+        assert!(outcome.media.iter().all(|item| {
+            !matches!(item, MediaItem::Uri(uri) if uri.starts_with("characters:"))
+        }));
     }
 }

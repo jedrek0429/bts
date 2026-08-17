@@ -6,10 +6,16 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 asterisk-ari.workspace = true
 bts-protocol = { path = "../bts-protocol" }
+hex.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true

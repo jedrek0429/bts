@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use bts_protocol::addons::v1::{
+use bts_protocol::addons::v2::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
     AddonManifest, MenuEntry,
 };
@@ -45,7 +45,9 @@ impl Addon for ClockAddon {
             }],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new('2').expect("2 is an addon DTMF key"),
-                prompt: "sound:bts/press-2-time".into(),
+                label: "Clock".into(),
+                spoken_label: Some("the time".into()),
+                speech_style: Default::default(),
                 action: ActionId::new(ACTION),
                 order: 20,
             }],

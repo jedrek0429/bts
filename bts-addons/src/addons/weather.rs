@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use bts_protocol::addons::v1::{
+use bts_protocol::addons::v2::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
     AddonManifest, MenuEntry,
 };
@@ -63,7 +63,9 @@ impl Addon for WeatherAddon {
             }],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new('3').expect("3 is an addon DTMF key"),
-                prompt: "sound:bts/press-3-weather".into(),
+                label: "Weather".into(),
+                spoken_label: Some("the weather".into()),
+                speech_style: Default::default(),
                 action: ActionId::new(ACTION),
                 order: 30,
             }],

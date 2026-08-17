@@ -1,8 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use bts_protocol::addons::v1::{
+use bts_protocol::addons::v2::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
-    AddonManifest, MenuEntry,
+    AddonManifest, MenuEntry, MenuSpeechStyle,
 };
 use bts_protocol::{DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind};
 
@@ -33,7 +33,9 @@ impl Addon for MessageAddon {
             ],
             menu: vec![MenuEntry {
                 digit: DtmfMenuKey::new('4').expect("4 is an addon DTMF key"),
-                prompt: "sound:bts/press-4-clear".into(),
+                label: "Clear display".into(),
+                spoken_label: Some("clear the display".into()),
+                speech_style: MenuSpeechStyle::Instruction,
                 action: ActionId::new(BLANK),
                 order: 90,
             }],
