@@ -122,6 +122,31 @@ fn local_release_reinstalls_and_reconciles_offline() {
             .unwrap()
             .success()
     );
+    let current = root.join("usr/lib/bts/components/core/current");
+    let first_activation = fs::read_link(&current).unwrap();
+    release_command(&[
+        "component",
+        "core",
+        architecture,
+        "/usr/bin/false",
+        assets.to_str().unwrap(),
+    ]);
+    release_command(&["assemble", assets.to_str().unwrap()]);
+    assert!(
+        installer_command(&install, &fake_bin)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let replacement_activation = fs::read_link(&current).unwrap();
+    assert_ne!(first_activation, replacement_activation);
+    assert!(
+        installer_command(&install, &fake_bin)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(fs::read_link(&current).unwrap(), replacement_activation);
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("var/lib/bts-install/state.json")).unwrap())
             .unwrap();
