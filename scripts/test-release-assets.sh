@@ -5,7 +5,11 @@ repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 assets="$test_root/assets"
-install -d "$assets" "$test_root/bin"
+font_source="$test_root/cabin"
+install -d "$assets" "$test_root/bin" "$font_source"
+install -m644 /usr/bin/true "$font_source/Cabin.ttf"
+printf '%s\n' 'SIL Open Font License test fixture' > "$font_source/OFL.txt"
+export BTS_CABIN_SOURCE_DIR="$font_source"
 version=$("$repository_root/scripts/release-version.py" workspace-version)
 for component in core display telephony addons cli; do
     binary="bts-$component"
