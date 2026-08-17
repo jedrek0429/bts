@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "bts-addons"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "bts-cli"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "axum",
  "bts-sdk",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "bts-compat"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "bts-core"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "bts-display"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "bts-core",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "bts-install"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "bts-compat",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "bts-protocol"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "bts-sdk"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "axum",
  "bts-protocol",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "bts-telephony"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "asterisk-ari",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "bts-terminal"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "async-trait",
  "bts-protocol",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "bts-terminal-simulator"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "bts-protocol",
