@@ -10,6 +10,7 @@ pub mod model;
 pub mod plan;
 pub mod platform;
 pub mod release;
+pub mod self_update;
 pub mod state;
 pub mod system;
 
