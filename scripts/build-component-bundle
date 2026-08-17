@@ -44,7 +44,10 @@ else
 fi
 
 if [[ "$component" == display ]]; then
-    command -v curl >/dev/null
+    if ! command -v curl >/dev/null; then
+        echo "curl is required to bundle the Display Cabin font asset" >&2
+        exit 1
+    fi
     google_fonts_commit=352f6b7d9d6cc4fa9e242b931291d31b21a6dc84
     cabin_base="https://raw.githubusercontent.com/google/fonts/$google_fonts_commit/ofl/cabin"
     install -d "$bundle/share/fonts/bts" "$bundle/share/licenses/bts-cabin"

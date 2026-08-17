@@ -115,7 +115,7 @@ fn preflight_release_operation(cli: &Cli) -> Result<()> {
                 "Updated bts-install from {from} to {to} before continuing with the requested operation."
             );
         }
-        reexec_current(&[])?;
+        reexec_with(&executable, &[])?;
     }
     Ok(())
 }
@@ -167,6 +167,10 @@ fn release_client(cli: &Cli) -> Result<ReleaseClient> {
 
 fn reexec_current(additional: &[OsString]) -> Result<()> {
     let executable = std::env::current_exe().context("Could not resolve the running installer")?;
+    reexec_with(&executable, additional)
+}
+
+fn reexec_with(executable: &Path, additional: &[OsString]) -> Result<()> {
     let mut command = ProcessCommand::new(executable);
     command.args(std::env::args_os().skip(1));
     command.args(additional);
