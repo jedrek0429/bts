@@ -8,6 +8,9 @@ use anyhow::{Context, Result, bail};
 
 pub trait SystemAdapter {
     fn run(&mut self, program: &str, arguments: &[String]) -> Result<()>;
+    fn run_quiet(&mut self, program: &str, arguments: &[String]) -> Result<()> {
+        self.run(program, arguments)
+    }
     fn output(&mut self, program: &str, arguments: &[String]) -> Result<String>;
     fn exists(&self, path: &Path) -> bool;
 }
@@ -23,6 +26,22 @@ impl SystemAdapter for RealSystem {
             .with_context(|| format!("Could not run {program}"))?;
         if !status.success() {
             bail!("{program} failed with status {status}.");
+        }
+        Ok(())
+    }
+
+    fn run_quiet(&mut self, program: &str, arguments: &[String]) -> Result<()> {
+        let output = Command::new(program)
+            .args(arguments)
+            .output()
+            .with_context(|| format!("Could not run {program}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let detail = detail.trim();
+            if detail.is_empty() {
+                bail!("{program} failed with status {}.", output.status);
+            }
+            bail!("{program} failed with status {}: {detail}", output.status);
         }
         Ok(())
     }
@@ -55,6 +74,9 @@ impl SystemAdapter for RecordingSystem {
         self.commands.push((program.into(), arguments.to_vec()));
         Ok(())
     }
+    fn run_quiet(&mut self, program: &str, arguments: &[String]) -> Result<()> {
+        self.run(program, arguments)
+    }
     fn output(&mut self, program: &str, arguments: &[String]) -> Result<String> {
         self.commands.push((program.into(), arguments.to_vec()));
         Ok(self.outputs.get(program).cloned().unwrap_or_default())
@@ -76,7 +98,7 @@ pub fn systemctl<S: SystemAdapter>(
     }
     arguments.push(verb.into());
     arguments.extend(units.iter().map(|value| (*value).into()));
-    system.run("systemctl", &arguments)
+    system.run_quiet("systemctl", &arguments)
 }
 
 pub fn create_service_account<S: SystemAdapter>(

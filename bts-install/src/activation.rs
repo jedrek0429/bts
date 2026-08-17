@@ -13,6 +13,8 @@ pub struct Activation {
     pub component: Component,
     pub previous: Option<PathBuf>,
     pub current: PathBuf,
+    /// Whether this activation changed the release selected by `current`.
+    pub changed: bool,
 }
 
 pub fn activate(root: &Path, component: Component, version: &str) -> Result<Activation> {
@@ -42,10 +44,15 @@ pub fn activate(root: &Path, component: Component, version: &str) -> Result<Acti
     fs::create_dir_all(&base)?;
     let current = base.join("current");
     let previous = fs::read_link(&current).ok();
-    let temporary = base.join(format!(".current.{}", std::process::id()));
-    let _ = fs::remove_file(&temporary);
-    symlink(Path::new("releases").join(version), &temporary)?;
-    fs::rename(&temporary, &current).context("Could not atomically activate staged component")?;
+    let target = Path::new("releases").join(version);
+    let changed = previous.as_deref() != Some(target.as_path());
+    if changed {
+        let temporary = base.join(format!(".current.{}", std::process::id()));
+        let _ = fs::remove_file(&temporary);
+        symlink(&target, &temporary)?;
+        fs::rename(&temporary, &current)
+            .context("Could not atomically activate staged component")?;
+    }
     if component == Component::Cli {
         let binary_directory = rooted(root, "/usr/bin");
         fs::create_dir_all(&binary_directory)?;
@@ -59,6 +66,7 @@ pub fn activate(root: &Path, component: Component, version: &str) -> Result<Acti
         component,
         previous,
         current,
+        changed,
     })
 }
 
@@ -140,6 +148,22 @@ mod tests {
         assert_eq!(
             fs::read_link(root.path().join("usr/bin/btscli")).unwrap(),
             PathBuf::from("../lib/bts/components/cli/current/bin/btscli")
+        );
+    }
+
+    #[test]
+    fn activating_the_current_release_reports_no_change() {
+        let root = tempdir().unwrap();
+        stage(root.path(), "0.3.0");
+        assert!(
+            activate(root.path(), Component::Core, "0.3.0")
+                .unwrap()
+                .changed
+        );
+        assert!(
+            !activate(root.path(), Component::Core, "0.3.0")
+                .unwrap()
+                .changed
         );
     }
 }

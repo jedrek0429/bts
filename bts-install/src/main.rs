@@ -17,6 +17,7 @@ use bts_install::{
     plan::{Action, InstallationPlan},
     platform::{Platform, detect_host},
     release::ReleaseClient,
+    services,
     state::InstallerState,
     system::{RealSystem, SystemAdapter, create_service_account, systemctl},
 };
@@ -95,7 +96,7 @@ async fn run() -> Result<()> {
                 let mut next = state.unwrap_or_else(|| {
                     InstallerState::new(INSTALLER_VERSION, platform, architecture)
                 });
-                execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
+                execute_plan(&cli, &plan, &mut next, platform, architecture, true).await?;
                 next.selected_role = plan.role;
                 next.installed_components = plan.after.clone();
                 next.write_atomic(&state_path)?;
@@ -111,7 +112,7 @@ async fn run() -> Result<()> {
             if !cli.dry_run {
                 migrate_legacy_configuration(&cli, &plan.after)?;
                 let mut next = current.clone();
-                execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
+                execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
                 next.selected_role = Some(Role::Custom);
                 next.installed_components = plan.after.clone();
                 next.write_atomic(&state_path)?;
@@ -127,7 +128,7 @@ async fn run() -> Result<()> {
             if !cli.dry_run {
                 migrate_legacy_configuration(&cli, &plan.before)?;
                 let mut next = current.clone();
-                execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
+                execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
                 next.selected_role = Some(Role::Custom);
                 next.installed_components = plan.after.clone();
                 next.write_atomic(&state_path)?;
@@ -182,7 +183,7 @@ async fn run() -> Result<()> {
             if !cli.dry_run {
                 migrate_legacy_configuration(&cli, &plan.before)?;
                 let mut next = current.clone();
-                execute_plan(&cli, &plan, &mut next, platform, architecture).await?;
+                execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
                 next.installed_components = plan.after.clone();
                 persist_uninstall_state(&state_path, &mut state, next)?;
             }
@@ -209,8 +210,14 @@ async fn execute_plan(
     state: &mut InstallerState,
     platform: Platform,
     architecture: bts_install::platform::Architecture,
+    refresh_existing: bool,
 ) -> Result<()> {
     let added: Vec<_> = plan.after.difference(&plan.before).copied().collect();
+    let deployed: Vec<_> = if refresh_existing {
+        plan.after.iter().copied().collect()
+    } else {
+        added.clone()
+    };
     let mut system = RealSystem;
     let packages: Vec<_> = plan
         .actions
@@ -260,12 +267,13 @@ async fn execute_plan(
     {
         systemctl(&mut system, &cli.root, "daemon-reload", &[])?;
     }
-    if !added.is_empty() {
+    if !deployed.is_empty() {
         let client = release_client(cli)?;
         let (manifest, urls) = client.fetch_manifest().await?;
-        for component in added {
+        let mut changed = BTreeSet::new();
+        for component in deployed {
             let asset = manifest.select(component, platform, architecture)?;
-            install_component(
+            let activation = install_component(
                 cli,
                 &mut system,
                 &manifest.release_version,
@@ -274,10 +282,13 @@ async fn execute_plan(
                 &urls,
             )
             .await?;
-            if component == Component::Display {
+            if activation.changed {
+                changed.insert(component);
+            }
+            if component == Component::Display && added.contains(&component) {
                 prepare_display_host(cli, &mut system, state)?;
             }
-            if component.config_name().is_some() {
+            if component.config_name().is_some() && added.contains(&component) {
                 ensure_default_configuration(
                     cli,
                     component,
@@ -286,19 +297,21 @@ async fn execute_plan(
             }
             if let Some(unit) = component.unit() {
                 systemctl(&mut system, &cli.root, "enable", &[unit])?;
-                if !cli.no_start && cli.root == Path::new("/") {
-                    systemctl(&mut system, &cli.root, "start", &[unit])?;
-                }
             }
         }
+        services::reconcile(
+            &mut system,
+            &cli.root,
+            &plan.after,
+            &changed,
+            cli.no_start,
+        )?;
         record_release_source(cli, state, &client, &manifest)?;
         state.installed_version = manifest.release_version;
         for component in &plan.after {
-            if !plan.before.contains(component) {
-                state
-                    .component_versions
-                    .insert(*component, state.installed_version.clone());
-            }
+            state
+                .component_versions
+                .insert(*component, state.installed_version.clone());
         }
         state.installer_version = INSTALLER_VERSION.into();
         state.platform = platform;
@@ -344,7 +357,7 @@ async fn install_component(
     component: Component,
     asset: &ComponentAsset,
     urls: &BTreeMap<String, String>,
-) -> Result<()> {
+) -> Result<activation::Activation> {
     let base = rooted(
         &cli.root,
         &format!("/usr/lib/bts/components/{component}/releases"),
@@ -362,8 +375,7 @@ async fn install_component(
         if cli.root == Path::new("/") {
             systemctl(system, &cli.root, "daemon-reload", &[])?;
         }
-        activation::activate(&cli.root, component, &activation_id)?;
-        return Ok(());
+        return activation::activate(&cli.root, component, &activation_id);
     }
     if !cli.quiet {
         println!("Downloading and verifying {component}...");
@@ -388,8 +400,7 @@ async fn install_component(
     if cli.root == Path::new("/") {
         systemctl(system, &cli.root, "daemon-reload", &[])?;
     }
-    activation::activate(&cli.root, component, &activation_id)?;
-    Ok(())
+    activation::activate(&cli.root, component, &activation_id)
 }
 
 async fn upgrade(
@@ -426,13 +437,10 @@ async fn upgrade(
                     component: *component,
                 },
             ];
-            if let Some(unit) = component.unit() {
-                actions.push(Action::StopService { unit: unit.into() });
-            }
             actions.push(Action::Activate {
                 component: *component,
             });
-            if let Some(unit) = component.unit() {
+            if !cli.no_start && let Some(unit) = component.unit() {
                 actions.push(Action::StartService { unit: unit.into() });
             }
             actions
@@ -485,19 +493,6 @@ async fn upgrade(
     let mut system = RealSystem;
     if cli.root == Path::new("/") && !staged.is_empty() {
         systemctl(&mut system, &cli.root, "daemon-reload", &[])?;
-        let mut stopped = Vec::new();
-        for (component, _) in &staged {
-            let Some(unit) = component.unit() else {
-                continue;
-            };
-            if let Err(error) = systemctl(&mut system, &cli.root, "stop", &[unit]) {
-                for unit in stopped {
-                    let _ = systemctl(&mut system, &cli.root, "start", &[unit]);
-                }
-                bail!("Could not stop {} safely: {error}", component);
-            }
-            stopped.push(unit);
-        }
     }
     let mut activations = Vec::new();
     for (component, activation_id) in &staged {
@@ -518,27 +513,28 @@ async fn upgrade(
             }
         }
     }
-    if !cli.no_start && cli.root == Path::new("/") {
-        for (component, _) in &staged {
-            let Some(unit) = component.unit() else {
-                continue;
-            };
-            let started = systemctl(&mut system, &cli.root, "start", &[unit])
-                .and_then(|()| systemctl(&mut system, &cli.root, "is-active", &[unit]));
-            if started.is_err() {
-                let rollback = activations.iter().rev().try_for_each(activation::rollback);
-                restart_restored_services(cli, &mut system, &activations);
-                bail!(
-                    "{} failed its activation health check; rollback {}.",
-                    component,
-                    if rollback.is_ok() {
-                        "succeeded"
-                    } else {
-                        "failed"
-                    }
-                );
+    let changed = activations
+        .iter()
+        .filter(|activation| activation.changed)
+        .map(|activation| activation.component)
+        .collect::<BTreeSet<_>>();
+    if let Err(error) = services::reconcile(
+        &mut system,
+        &cli.root,
+        &state.installed_components,
+        &changed,
+        cli.no_start,
+    ) {
+        let rollback = activations.iter().rev().try_for_each(activation::rollback);
+        restart_restored_services(cli, &mut system, &activations);
+        bail!(
+            "Services failed activation health checks: {error}; rollback {}.",
+            if rollback.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
             }
-        }
+        );
     }
     record_release_source(cli, state, &client, &manifest)?;
     state.installed_version = manifest.release_version;
@@ -579,7 +575,7 @@ fn restart_restored_services(
     system: &mut RealSystem,
     activations: &[activation::Activation],
 ) {
-    if cli.root != Path::new("/") {
+    if cli.no_start || cli.root != Path::new("/") {
         return;
     }
     for restored in activations {
