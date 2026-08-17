@@ -39,7 +39,7 @@ Options:
   --release-dir PATH     Install verified release assets from a local directory
   --root PATH            Alternate installation root (testing/recovery only)
   --yes                  Confirm planned host changes non-interactively
-  --no-start             Install and enable without starting services
+  --no-start             Apply files/configuration without starting or restarting services
   --dry-run              Print the resolved plan without changing the machine
   --json                 Emit stable machine-readable JSON
   --quiet                Print errors only
@@ -349,7 +349,7 @@ fn validate_options(command: &Command, options: &ValidationOptions<'_>) -> Resul
     if options.no_start
         && !matches!(
             command,
-            Command::Install { .. } | Command::Add(_) | Command::Upgrade(_)
+            Command::Install { .. } | Command::Add(_) | Command::Upgrade(_) | Command::Configure(_)
         )
     {
         bail!("--no-start is only valid for install, add and upgrade.");
@@ -387,13 +387,8 @@ fn validate_options(command: &Command, options: &ValidationOptions<'_>) -> Resul
     if let Some(value) = options.cage_args {
         crate::config::validate_cage_args(value)?;
     }
-    if options.secret.is_some()
-        && !matches!(
-            command,
-            Command::Configure(None | Some(Component::Telephony))
-        )
-    {
-        bail!("Secure secret input is only valid when configuring Telephony.");
+    if options.secret.is_some() && !command_uses_telephony(command) {
+        bail!("Secure secret input is only valid when installing or configuring Telephony.");
     }
     if options.purge && !matches!(command, Command::Remove(_) | Command::Uninstall(_)) {
         bail!("--purge is only valid for remove and uninstall.");
@@ -409,6 +404,18 @@ fn command_uses_display(command: &Command) -> bool {
         }
         Command::Add(components) => components.contains(&Component::Display),
         Command::Configure(Some(Component::Display)) => true,
+        _ => false,
+    }
+}
+
+fn command_uses_telephony(command: &Command) -> bool {
+    match command {
+        Command::Install { role, components } => {
+            matches!(role, Some(Role::Full | Role::Server))
+                || components.contains(&Component::Telephony)
+        }
+        Command::Add(components) => components.contains(&Component::Telephony),
+        Command::Configure(None | Some(Component::Telephony)) => true,
         _ => false,
     }
 }
@@ -574,6 +581,33 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn telephony_install_accepts_protected_secret_input_and_configure_accepts_no_start() {
+        assert!(
+            parse(&[
+                "bts-install",
+                "install",
+                "full",
+                "--secret-file",
+                "/root/telephony.env",
+                "--yes",
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse(&[
+                "bts-install",
+                "add",
+                "telephony",
+                "--secret-fd",
+                "3",
+                "--yes",
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["bts-install", "configure", "telephony", "--no-start",]).is_ok());
     }
 
     #[test]

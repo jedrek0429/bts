@@ -48,7 +48,35 @@ impl InstallationPlan {
         let before = state
             .map(|value| value.installed_components.clone())
             .unwrap_or_default();
-        reconcile(before, desired, role, platform, false, no_start)
+        let retained: Vec<_> = desired.intersection(&before).copied().collect();
+        let mut plan = reconcile(before, desired, role, platform, false, no_start)?;
+        if !retained.is_empty() {
+            if matches!(plan.actions.last(), Some(Action::SaveState)) {
+                plan.actions.pop();
+            }
+            if retained.contains(&Component::Telephony) {
+                for package in platform.packages_for("ffmpeg")? {
+                    plan.actions.push(Action::InstallPackage {
+                        package: (*package).into(),
+                    });
+                }
+            }
+            for component in retained {
+                plan.actions.push(Action::Download { component });
+                plan.actions.push(Action::Stage { component });
+                plan.actions.push(Action::Activate { component });
+                if let Some(unit) = component.unit() {
+                    plan.actions
+                        .push(Action::EnableService { unit: unit.into() });
+                    if !no_start {
+                        plan.actions
+                            .push(Action::StartService { unit: unit.into() });
+                    }
+                }
+            }
+            plan.actions.push(Action::SaveState);
+        }
+        Ok(plan)
     }
 
     pub fn add(
@@ -211,11 +239,14 @@ mod tests {
         assert!(!plan.actions.iter().any(
             |value| matches!(value, Action::InstallPackage { package } if package.contains("cabin"))
         ));
+        assert!(!plan.actions.iter().any(
+            |value| matches!(value, Action::InstallPackage { package } if package == "ffmpeg")
+        ));
         assert!(!format!("{plan:?}").contains("core.service"));
     }
 
     #[test]
-    fn reconciliation_is_idempotent() {
+    fn install_rechecks_an_existing_component_against_the_selected_release() {
         let state = state([Component::Display]);
         let plan = InstallationPlan::install(
             Some(&state),
@@ -225,7 +256,9 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(plan.actions.is_empty());
+        assert!(plan.actions.contains(&Action::Activate {
+            component: Component::Display
+        }));
     }
 
     #[test]

@@ -130,7 +130,7 @@ Common options:
 
 ## Persistent state
 
-Installer state is stored at `/var/lib/bts-install/state.json` with mode `0600`. It records schema and installer versions, the overall and per-component BTS versions, selected role, authoritative component set, repository, canonical release track or exact-version pin, platform/architecture, timestamps and whether tty1 was installer-managed. Local source paths and credentials are never stored. Writes use a fully synced temporary file, atomic rename and parent-directory sync. Schema 1 is migrated to schema 2 when read; legacy candidate tags are normalised to bounded tracks, and newer schemas are rejected.
+Installer state is stored at `/var/lib/bts-install/state.json` with mode `0644` in a non-writable `0755` directory. It records public release metadata only: schema and installer versions, the overall and per-component BTS versions, selected role, authoritative component set, repository, canonical release track or exact-version pin, platform/architecture, timestamps and whether tty1 was installer-managed. Local source paths and credentials are never stored; secrets remain in the protected component files under `/etc/bts`. This separation lets `status` and `doctor` read installation metadata without root. Writes use a fully synced temporary file, atomic rename and parent-directory sync. Schema 1 is migrated to schema 2 when read; legacy candidate tags are normalised to bounded tracks, and newer schemas are rejected.
 
 ## Configuration
 
