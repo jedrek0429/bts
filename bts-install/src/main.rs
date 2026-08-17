@@ -230,6 +230,10 @@ async fn execute_plan(
             }
         })
         .collect();
+    let packages = packages
+        .into_iter()
+        .filter(|package| package != "ffmpeg" || !Path::new("/usr/bin/ffmpeg").is_file())
+        .collect::<Vec<_>>();
     if !packages.is_empty() && cli.root == Path::new("/") {
         let command = platform.package_command(&packages, cli.yes);
         system.run(&command[0], &command[1..])?;
@@ -288,6 +292,9 @@ async fn execute_plan(
             if component == Component::Display && added.contains(&component) {
                 prepare_display_host(cli, &mut system, state)?;
             }
+            if component == Component::Telephony {
+                migrate_legacy_voice_assets(cli)?;
+            }
             if component.config_name().is_some() && added.contains(&component) {
                 ensure_default_configuration(
                     cli,
@@ -299,10 +306,27 @@ async fn execute_plan(
                 systemctl(&mut system, &cli.root, "enable", &[unit])?;
             }
         }
+        let mut desired_services = plan.after.clone();
+        if desired_services.contains(&Component::Telephony)
+            && !component_configuration_is_valid(&cli.root, Component::Telephony)
+        {
+            desired_services.remove(&Component::Telephony);
+            if changed.contains(&Component::Telephony)
+                && !cli.no_start
+                && cli.root == Path::new("/")
+            {
+                systemctl(
+                    &mut system,
+                    &cli.root,
+                    "stop",
+                    &[Component::Telephony.unit().expect("Telephony has a unit")],
+                )?;
+            }
+        }
         services::reconcile(
             &mut system,
             &cli.root,
-            &plan.after,
+            &desired_services,
             &changed,
             cli.no_start,
         )?;
@@ -426,7 +450,7 @@ async fn upgrade(
             pending.insert(*component, activation_id);
         }
     }
-    let actions: Vec<_> = pending
+    let mut actions: Vec<_> = pending
         .keys()
         .flat_map(|component| {
             let mut actions = vec![
@@ -446,6 +470,14 @@ async fn upgrade(
             actions
         })
         .collect();
+    if selected.contains(&Component::Telephony) && !Path::new("/usr/bin/ffmpeg").is_file() {
+        actions.insert(
+            0,
+            Action::InstallPackage {
+                package: "ffmpeg".into(),
+            },
+        );
+    }
     let plan = InstallationPlan {
         role: state.selected_role,
         before: state.installed_components.clone(),
@@ -463,6 +495,18 @@ async fn upgrade(
     }
     if cli.dry_run {
         return Ok(());
+    }
+    if selected.contains(&Component::Telephony)
+        && cli.root == Path::new("/")
+        && !Path::new("/usr/bin/ffmpeg").is_file()
+    {
+        let packages = platform
+            .packages_for("ffmpeg")?
+            .iter()
+            .map(|package| (*package).to_owned())
+            .collect::<Vec<_>>();
+        let command = platform.package_command(&packages, cli.yes);
+        RealSystem.run(&command[0], &command[1..])?;
     }
     let mut staged = Vec::new();
     for (component, activation_id) in &pending {
@@ -513,15 +557,38 @@ async fn upgrade(
             }
         }
     }
+    if staged
+        .iter()
+        .any(|(component, _)| *component == Component::Telephony)
+    {
+        migrate_legacy_voice_assets(cli)?;
+    }
     let changed = activations
         .iter()
         .filter(|activation| activation.changed)
         .map(|activation| activation.component)
         .collect::<BTreeSet<_>>();
+    let mut desired_services = state.installed_components.clone();
+    if desired_services.contains(&Component::Telephony)
+        && !component_configuration_is_valid(&cli.root, Component::Telephony)
+    {
+        desired_services.remove(&Component::Telephony);
+        if changed.contains(&Component::Telephony)
+            && !cli.no_start
+            && cli.root == Path::new("/")
+        {
+            systemctl(
+                &mut system,
+                &cli.root,
+                "stop",
+                &[Component::Telephony.unit().expect("Telephony has a unit")],
+            )?;
+        }
+    }
     if let Err(error) = services::reconcile(
         &mut system,
         &cli.root,
-        &state.installed_components,
+        &desired_services,
         &changed,
         cli.no_start,
     ) {
@@ -667,6 +734,57 @@ fn ensure_default_configuration(
                     "BTS_CORE_URL".into(),
                     resolve_core_http(cli, local_core_selected)?,
                 );
+            }
+            let valid = config::validate_telephony(&values).and_then(|()| {
+                config::validate_http_url(
+                    values
+                        .get("BTS_CORE_URL")
+                        .expect("Telephony Core URL was populated"),
+                    "BTS_CORE_URL",
+                )
+            });
+            if valid.is_err() {
+                if let Some(input) = &cli.secret_input {
+                    values.extend(config::read_secret_input(input)?);
+                } else if interactive(cli) {
+                    let url = prompt(
+                        "ARI URL",
+                        values
+                            .get("BTS_ARI_URL")
+                            .map(String::as_str)
+                            .unwrap_or("http://localhost:8088"),
+                    )?;
+                    let username = prompt(
+                        "ARI username",
+                        values
+                            .get("BTS_ARI_USERNAME")
+                            .map(String::as_str)
+                            .unwrap_or("bts"),
+                    )?;
+                    let core_url = prompt(
+                        "Core HTTP URL",
+                        values
+                            .get("BTS_CORE_URL")
+                            .map(String::as_str)
+                            .unwrap_or("http://127.0.0.1:3100"),
+                    )?;
+                    let password = rpassword::prompt_password("ARI password: ")?;
+                    let confirmation = rpassword::prompt_password("Confirm ARI password: ")?;
+                    ensure!(password == confirmation, "ARI passwords did not match.");
+                    values.insert("BTS_ARI_URL".into(), url);
+                    values.insert("BTS_ARI_USERNAME".into(), username);
+                    values.insert("BTS_CORE_URL".into(), core_url);
+                    values.insert("BTS_ARI_PASSWORD".into(), password);
+                }
+            }
+            if values.contains_key("BTS_ARI_PASSWORD") {
+                config::validate_telephony(&values)?;
+                config::validate_http_url(
+                    values
+                        .get("BTS_CORE_URL")
+                        .expect("Telephony Core URL was populated"),
+                    "BTS_CORE_URL",
+                )?;
             }
             values
         }
@@ -839,11 +957,14 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
         .ok()
         .and_then(|value| config::parse_environment(&value).ok())
         .unwrap_or_default();
+    let previous = existing.clone();
     let values = match component {
         Component::Display => resolve_display_configuration(cli, existing, None)?,
         Component::Telephony => {
             let mut values = if let Some(input) = &cli.secret_input {
-                config::read_secret_input(input)?
+                let mut values = existing;
+                values.extend(config::read_secret_input(input)?);
+                values
             } else {
                 ensure!(
                     io::stdin().is_terminal(),
@@ -876,12 +997,12 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
                 let password = rpassword::prompt_password("ARI password: ")?;
                 let confirmation = rpassword::prompt_password("Confirm ARI password: ")?;
                 ensure!(password == confirmation, "ARI passwords did not match.");
-                BTreeMap::from([
-                    ("BTS_ARI_URL".into(), url),
-                    ("BTS_ARI_USERNAME".into(), user),
-                    ("BTS_ARI_PASSWORD".into(), password),
-                    ("BTS_CORE_URL".into(), core_url),
-                ])
+                let mut values = existing;
+                values.insert("BTS_ARI_URL".into(), url);
+                values.insert("BTS_ARI_USERNAME".into(), user);
+                values.insert("BTS_ARI_PASSWORD".into(), password);
+                values.insert("BTS_CORE_URL".into(), core_url);
+                values
             };
             values
                 .entry("BTS_ARI_URL".into())
@@ -964,8 +1085,9 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
         }
         Component::Cli => unreachable!("CLI has no service configuration"),
     };
+    let changed = previous != values;
     if cli.dry_run {
-        if !cli.quiet {
+        if !cli.quiet && !cli.json {
             println!(
                 "Would write {} configuration.\n{}",
                 component,
@@ -974,20 +1096,62 @@ async fn configure_component(cli: &Cli, component: Component) -> Result<()> {
         }
         return Ok(());
     }
+    if !changed {
+        if !cli.quiet && !cli.json {
+            println!("{} configuration is already current.", component);
+        }
+        return Ok(());
+    }
     config::write_secure(&path, &values)?;
     secure_config_ownership(cli, &path, component)?;
-    if cli.root == Path::new("/") && component.unit().is_some() {
+    if !cli.no_start && cli.root == Path::new("/") && component.unit().is_some() {
+        let unit = component.unit().expect("checked service component");
         systemctl(
             &mut RealSystem,
             &cli.root,
-            "try-restart",
-            &[component.unit().expect("checked service component")],
+            "restart",
+            &[unit],
         )?;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        systemctl(&mut RealSystem, &cli.root, "is-active", &[unit])
+            .with_context(|| format!("{component} did not remain active after configuration"))?;
+        if component == Component::Telephony {
+            verify_ari(&values).await?;
+        }
     }
-    if !cli.quiet {
-        println!("Updated {component} configuration at {}.", path.display());
+    if !cli.quiet && !cli.json {
+        println!("✓ {component} configuration updated.");
+        if !cli.no_start && cli.root == Path::new("/") && component.unit().is_some() {
+            println!("✓ bts-{component} restarted.");
+            if component == Component::Telephony {
+                println!("✓ ARI endpoint and credentials verified.");
+            }
+        } else {
+            println!("  {}", path.display());
+        }
     }
     Ok(())
+}
+
+fn component_configuration_is_valid(root: &Path, component: Component) -> bool {
+    let Some(name) = component.config_name() else {
+        return true;
+    };
+    let Ok(text) = fs::read_to_string(root.join("etc/bts").join(name)) else {
+        return false;
+    };
+    let Ok(values) = config::parse_environment(&text) else {
+        return false;
+    };
+    match component {
+        Component::Telephony => {
+            config::validate_telephony(&values).is_ok()
+                && values.get("BTS_CORE_URL").is_some_and(|url| {
+                    config::validate_http_url(url, "BTS_CORE_URL").is_ok()
+                })
+        }
+        _ => true,
+    }
 }
 
 async fn verify_ari(values: &BTreeMap<String, String>) -> Result<()> {
@@ -1019,6 +1183,39 @@ async fn verify_ari(values: &BTreeMap<String, String>) -> Result<()> {
         ),
         Err(error) => bail!("ARI configuration could not be verified: {error}"),
     }
+}
+
+async fn verify_tts(values: &BTreeMap<String, String>) -> Result<()> {
+    let endpoint = values
+        .get("BTS_KOKORO_URL")
+        .map(String::as_str)
+        .unwrap_or("http://127.0.0.1:8880/v1/audio/speech");
+    let speed = values
+        .get("BTS_KOKORO_SPEED")
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(1.05);
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?
+        .post(endpoint)
+        .json(&serde_json::json!({
+            "model": values.get("BTS_KOKORO_MODEL").map(String::as_str).unwrap_or("kokoro"),
+            "voice": values.get("BTS_KOKORO_VOICE").map(String::as_str).unwrap_or("bf_emma"),
+            "input": "Welcome to Bansleben Telephone Services.",
+            "response_format": "wav",
+            "speed": speed,
+        }))
+        .send()
+        .await
+        .context("TTS endpoint is unreachable")?
+        .error_for_status()
+        .context("TTS endpoint rejected the configured voice")?;
+    let bytes = response.bytes().await.context("TTS response could not be read")?;
+    ensure!(
+        bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
+        "TTS endpoint returned malformed WAV audio."
+    );
+    Ok(())
 }
 
 async fn extend_remote_diagnostics(
@@ -1072,6 +1269,127 @@ async fn extend_remote_diagnostics(
         }
     }
 
+    if cli.root == Path::new("/") && state.installed_components.contains(&Component::Core) {
+        let url = format!(
+            "{}{}",
+            bts_compat::LOCAL_CORE_HTTP_URL.trim_end_matches('/'),
+            bts_compat::CORE_API_DISCOVERY_PATH
+        );
+        let runtime: Result<bts_protocol::ApiDiscovery> = async {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()?;
+            let response = client.get(url).send().await?.error_for_status()?;
+            Ok(response.json().await?)
+        }
+        .await;
+        match runtime {
+            Ok(discovery) => {
+                let installed = state
+                    .component_versions
+                    .get(&Component::Core)
+                    .unwrap_or(&state.installed_version);
+                report
+                    .diagnostics
+                    .push(diagnostics::runtime_version_diagnostic(
+                        Component::Core,
+                        installed,
+                        &discovery.product_version.to_string(),
+                    ));
+            }
+            Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+                component: Some(Component::Core),
+                severity: diagnostics::Severity::Error,
+                message: format!("Core runtime version could not be verified: {error}"),
+                suggested_action: Some("Run: sudo systemctl restart bts-core.service".into()),
+            }),
+        }
+    }
+
+    if cli.root == Path::new("/") && state.installed_components.contains(&Component::Addons) {
+        let endpoint = format!(
+            "{}{}",
+            bts_compat::LOCAL_CORE_HTTP_URL.trim_end_matches('/'),
+            bts_compat::CORE_ADDONS_PATH
+        );
+        let manifests = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(anyhow::Error::from);
+        let manifests: Result<Vec<bts_protocol::addons::v2::AddonManifest>> = match manifests {
+            Ok(client) => async {
+                Ok(client
+                    .get(endpoint)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?)
+            }
+            .await,
+            Err(error) => Err(error),
+        };
+        match manifests {
+            Ok(manifests) => {
+                let registered: BTreeSet<_> = manifests
+                    .iter()
+                    .map(|manifest| manifest.id.as_str())
+                    .collect();
+                for (id, name) in [
+                    ("clock", "clock"),
+                    ("weather", "weather"),
+                    ("message", "clear-display"),
+                ] {
+                    let present = registered.contains(id);
+                    report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Addons),
+                        severity: if present {
+                            diagnostics::Severity::Ok
+                        } else {
+                            diagnostics::Severity::Error
+                        },
+                        message: if present {
+                            format!("{name} addon is registered with Core.")
+                        } else {
+                            format!("{name} addon is installed but not registered with Core.")
+                        },
+                        suggested_action: (!present)
+                            .then(|| "Run: sudo systemctl restart bts-addons.service".into()),
+                    });
+                }
+                let entries = manifests
+                    .iter()
+                    .flat_map(|manifest| &manifest.menu)
+                    .collect::<Vec<_>>();
+                let unique_digits = entries
+                    .iter()
+                    .map(|entry| entry.digit)
+                    .collect::<BTreeSet<_>>();
+                report.diagnostics.push(diagnostics::Diagnostic {
+                    component: Some(Component::Telephony),
+                    severity: if entries.len() == unique_digits.len() && !entries.is_empty() {
+                        diagnostics::Severity::Ok
+                    } else {
+                        diagnostics::Severity::Error
+                    },
+                    message: if entries.len() == unique_digits.len() && !entries.is_empty() {
+                        format!("Telephony menu contains {} unique addon entries.", entries.len())
+                    } else {
+                        "Telephony menu is empty or contains duplicate digits.".into()
+                    },
+                    suggested_action: (entries.len() != unique_digits.len() || entries.is_empty())
+                        .then(|| "Review addon menu assignments, then restart bts-addons.service.".into()),
+                });
+            }
+            Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+                component: Some(Component::Addons),
+                severity: diagnostics::Severity::Error,
+                message: format!("Core addon registration could not be verified: {error}"),
+                suggested_action: Some("Run: sudo systemctl restart bts-addons.service".into()),
+            }),
+        }
+    }
+
     if state.installed_components.contains(&Component::Display) {
         let result =
             read_component_configuration(&cli.root, Component::Display).and_then(|values| {
@@ -1115,9 +1433,21 @@ async fn extend_remote_diagnostics(
             }
             Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
                 component: Some(Component::Display),
-                severity: diagnostics::Severity::Error,
-                message: error.to_string(),
-                suggested_action: Some("Run: sudo bts-install configure display".into()),
+                severity: if diagnostics::is_permission_denied(&error) {
+                    diagnostics::Severity::Warning
+                } else {
+                    diagnostics::Severity::Error
+                },
+                message: if diagnostics::is_permission_denied(&error) {
+                    "Display endpoint check requires access to protected configuration.".into()
+                } else {
+                    error.to_string()
+                },
+                suggested_action: Some(if diagnostics::is_permission_denied(&error) {
+                    "Run: sudo bts-install doctor for protected endpoint checks.".into()
+                } else {
+                    "Run: sudo bts-install configure display".into()
+                }),
             }),
         }
     }
@@ -1129,25 +1459,57 @@ async fn extend_remote_diagnostics(
                 Ok(values)
             });
         match result {
-            Ok(values) => match verify_ari(&values).await {
-                Ok(()) => report.diagnostics.push(diagnostics::Diagnostic {
-                    component: Some(Component::Telephony),
-                    severity: diagnostics::Severity::Ok,
-                    message: "ARI endpoint and credentials were verified.".into(),
-                    suggested_action: None,
-                }),
-                Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
-                    component: Some(Component::Telephony),
-                    severity: diagnostics::Severity::Error,
-                    message: error.to_string(),
-                    suggested_action: Some("Run: sudo bts-install configure telephony".into()),
-                }),
-            },
+            Ok(values) => {
+                match verify_ari(&values).await {
+                    Ok(()) => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Ok,
+                        message: "ARI endpoint and credentials were verified.".into(),
+                        suggested_action: None,
+                    }),
+                    Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Error,
+                        message: error.to_string(),
+                        suggested_action: Some("Run: sudo bts-install configure telephony".into()),
+                    }),
+                }
+                match verify_tts(&values).await {
+                    Ok(()) => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Ok,
+                        message: "Configured TTS voice produced valid WAV audio.".into(),
+                        suggested_action: None,
+                    }),
+                    Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: diagnostics::Severity::Error,
+                        message: format!("Telephony voice rendering is unavailable: {error}"),
+                        suggested_action: Some(
+                            "Check Kokoro and BTS_KOKORO_URL, then restart bts-telephony.service."
+                                .into(),
+                        ),
+                    }),
+                }
+            }
             Err(error) => report.diagnostics.push(diagnostics::Diagnostic {
                 component: Some(Component::Telephony),
-                severity: diagnostics::Severity::Error,
-                message: error.to_string(),
-                suggested_action: Some("Run: sudo bts-install configure telephony".into()),
+                severity: if diagnostics::is_permission_denied(&error) {
+                    diagnostics::Severity::Warning
+                } else {
+                    diagnostics::Severity::Error
+                },
+                message: if diagnostics::is_permission_denied(&error) {
+                    "ARI credential check requires access to protected Telephony configuration."
+                        .into()
+                } else {
+                    error.to_string()
+                },
+                suggested_action: Some(if diagnostics::is_permission_denied(&error) {
+                    "Run: sudo bts-install doctor for protected ARI checks.".into()
+                } else {
+                    "Run: sudo bts-install configure telephony".into()
+                }),
             }),
         }
     }
@@ -1209,6 +1571,38 @@ fn prepare_display_host(
     Ok(())
 }
 
+fn migrate_legacy_voice_assets(cli: &Cli) -> Result<()> {
+    // These exact names were created by BTS's former static prompt generator.
+    // Do not scan or remove any other Asterisk sounds: operators may own them.
+    const LEGACY_BTS_PROMPTS: &[&str] = &[
+        "welcome.wav",
+        "press-0-clear.wav",
+        "press-2-time.wav",
+        "press-3-weather.wav",
+        "press-4-clear.wav",
+        "configuration.wav",
+        "press-1-change-terminal.wav",
+        "press-star-return.wav",
+        "press-0-configuration.wav",
+        "press-hash-confirm.wav",
+        "no-terminals-online.wav",
+        "select-terminal.wav",
+        "target-selected.wav",
+        "target-unavailable.wav",
+        "invalid-selection.wav",
+        "returned-to-addon.wav",
+    ];
+    let directory = rooted(&cli.root, "/var/lib/asterisk/sounds/en/bts");
+    for name in LEGACY_BTS_PROMPTS {
+        let path = directory.join(name);
+        if path.is_file() {
+            fs::remove_file(&path)
+                .with_context(|| format!("Could not remove legacy BTS prompt {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn restore_tty1(cli: &Cli, system: &mut impl SystemAdapter) -> Result<()> {
     if cli.root == Path::new("/") {
         systemctl(system, &cli.root, "unmask", &["getty@tty1.service"])?;
@@ -1243,6 +1637,19 @@ fn remove_component(cli: &Cli, component: Component, purge: bool) -> Result<()> 
             .config_name()
             .expect("checked configured component");
         fs::remove_file(rooted(&cli.root, &format!("/etc/bts/{config_name}"))).ok();
+    }
+    if purge && component == Component::Telephony {
+        for path in [
+            "/var/cache/bts/voice",
+            "/var/lib/asterisk/sounds/en/bts-generated",
+        ] {
+            let path = rooted(&cli.root, path);
+            if path.is_dir() {
+                fs::remove_dir_all(&path).with_context(|| {
+                    format!("Could not remove BTS-owned voice data {}", path.display())
+                })?;
+            }
+        }
     }
     Ok(())
 }
@@ -1480,6 +1887,7 @@ fn confirm(label: &str) -> Result<bool> {
 fn interactive(cli: &Cli) -> bool {
     !cli.quiet && !cli.json && io::stdin().is_terminal() && io::stdout().is_terminal()
 }
+
 fn require_root_or_alternate(root: &Path) -> Result<()> {
     if root == Path::new("/") {
         ensure!(unsafe { libc::geteuid() } == 0, "Run bts-install as root.");
@@ -1560,6 +1968,58 @@ mod tests {
         assert!(contents.contains("BTS_TERMINAL_ID=\"bedroom-display\""));
         assert!(contents.contains("BTS_TERMINAL_NAME=\"Bedroom\""));
         assert!(contents.contains("BTS_CAGE_ARGS=\"-m last\""));
+    }
+
+    #[test]
+    fn telephony_install_uses_protected_secret_input_and_preserves_valid_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = root.path().join("telephony-secret.env");
+        fs::write(&secret, "BTS_ARI_PASSWORD=first-secret\n").unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "install",
+            "server",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--secret-file",
+            secret.to_str().unwrap(),
+            "--yes",
+        ])
+        .unwrap();
+        ensure_default_configuration(&cli, Component::Telephony, true).unwrap();
+        let path = root.path().join("etc/bts/telephony.env");
+        let first = config::parse_environment(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(first["BTS_ARI_PASSWORD"], "first-secret");
+        assert_eq!(first["BTS_CORE_URL"], "http://127.0.0.1:3100");
+
+        fs::write(&secret, "BTS_ARI_PASSWORD=replacement\n").unwrap();
+        ensure_default_configuration(&cli, Component::Telephony, true).unwrap();
+        let preserved = config::parse_environment(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(preserved["BTS_ARI_PASSWORD"], "first-secret");
+    }
+
+    #[test]
+    fn legacy_voice_migration_removes_only_proven_bts_assets() {
+        let root = tempfile::tempdir().unwrap();
+        let sounds = root.path().join("var/lib/asterisk/sounds/en/bts");
+        fs::create_dir_all(&sounds).unwrap();
+        fs::write(sounds.join("press-0-clear.wav"), b"legacy").unwrap();
+        fs::write(sounds.join("press-3-weather.wav"), b"legacy").unwrap();
+        fs::write(sounds.join("operator-custom.wav"), b"custom").unwrap();
+        let cli = Cli::parse([
+            "bts-install",
+            "install",
+            "server",
+            "--root",
+            root.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .unwrap();
+        migrate_legacy_voice_assets(&cli).unwrap();
+        assert!(!sounds.join("press-0-clear.wav").exists());
+        assert!(!sounds.join("press-3-weather.wav").exists());
+        assert!(sounds.join("operator-custom.wav").exists());
     }
 
     #[test]

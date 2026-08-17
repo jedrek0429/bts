@@ -63,7 +63,7 @@ impl Component {
         match self {
             Self::Core => &["ca-certificates"],
             Self::Display => &["ca-certificates", "cage", "seatd"],
-            Self::Telephony => &["ca-certificates"],
+            Self::Telephony => &["ca-certificates", "ffmpeg"],
             Self::Addons => &["ca-certificates"],
             Self::Cli => &["ca-certificates"],
         }

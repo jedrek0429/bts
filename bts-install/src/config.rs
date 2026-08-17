@@ -350,6 +350,25 @@ pub fn validate_telephony(values: &BTreeMap<String, String>) -> Result<()> {
             .is_some_and(|value| !value.is_empty() && value != "CHANGE_ME"),
         "BTS_ARI_PASSWORD is not configured."
     );
+    if let Some(url) = values.get("BTS_KOKORO_URL") {
+        validate_http_url(url, "BTS_KOKORO_URL")?;
+    }
+    if let Some(speed) = values.get("BTS_KOKORO_SPEED") {
+        ensure!(
+            speed.parse::<f32>().is_ok_and(|speed| speed > 0.0),
+            "BTS_KOKORO_SPEED must be a positive number."
+        );
+    }
+    for key in [
+        "BTS_KOKORO_VOICE",
+        "BTS_KOKORO_MODEL",
+        "BTS_KOKORO_MODEL_VERSION",
+        "BTS_VOICE_LANGUAGE",
+    ] {
+        if let Some(value) = values.get(key) {
+            ensure!(!value.trim().is_empty(), "{key} must not be empty.");
+        }
+    }
     Ok(())
 }
 
@@ -395,6 +414,9 @@ mod tests {
             ("BTS_ARI_PASSWORD".into(), "secret".into()),
         ]);
         validate_telephony(&values).unwrap();
+        let mut invalid_voice = values.clone();
+        invalid_voice.insert("BTS_KOKORO_SPEED".into(), "0".into());
+        assert!(validate_telephony(&invalid_voice).is_err());
         assert!(validate_cage_args("-m extend -- bts-display").is_err());
         validate_cage_args("-m extend -s").unwrap();
         assert!(validate_cage_args("-m 'unterminated").is_err());

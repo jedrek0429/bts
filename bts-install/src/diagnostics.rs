@@ -49,6 +49,32 @@ pub enum Severity {
     Error,
 }
 
+pub fn runtime_version_diagnostic(
+    component: Component,
+    installed_version: &str,
+    running_version: &str,
+) -> Diagnostic {
+    let installed = installed_version.trim_start_matches('v');
+    let running = running_version.trim_start_matches('v');
+    if installed == running {
+        Diagnostic {
+            component: Some(component),
+            severity: Severity::Ok,
+            message: format!("{component} runtime matches installed version {installed}."),
+            suggested_action: None,
+        }
+    } else {
+        Diagnostic {
+            component: Some(component),
+            severity: Severity::Error,
+            message: format!("{component} is running {running} while {installed} is installed."),
+            suggested_action: component
+                .unit()
+                .map(|unit| format!("Run: sudo systemctl restart {unit}")),
+        }
+    }
+}
+
 pub fn status<S: SystemAdapter>(
     root: &Path,
     state: Option<&InstallerState>,
@@ -158,11 +184,27 @@ pub fn doctor<S: SystemAdapter>(
                     suggested_action: Some(format!("Run: sudo chmod 0640 {}", config.display())),
                 });
             } else if let Err(error) = validate_component_configuration(&config, *component) {
+                let permission_denied = is_permission_denied(&error);
                 diagnostics.push(Diagnostic {
                     component: Some(*component),
-                    severity: Severity::Error,
-                    message: format!("{} configuration is invalid: {error}", component),
-                    suggested_action: Some(format!("Run: sudo bts-install configure {component}")),
+                    severity: if permission_denied {
+                        Severity::Warning
+                    } else {
+                        Severity::Error
+                    },
+                    message: if permission_denied {
+                        format!(
+                            "{} configuration is protected; syntax validation requires root.",
+                            component
+                        )
+                    } else {
+                        format!("{} configuration is invalid: {error}", component)
+                    },
+                    suggested_action: Some(if permission_denied {
+                        "Run: sudo bts-install doctor for protected configuration checks.".into()
+                    } else {
+                        format!("Run: sudo bts-install configure {component}")
+                    }),
                 });
             } else {
                 diagnostics.push(Diagnostic {
@@ -195,6 +237,34 @@ pub fn doctor<S: SystemAdapter>(
                     message: format!("{} service unit is missing.", component),
                     suggested_action: Some(format!("Run: sudo bts-install upgrade {component}")),
                 });
+            }
+        }
+
+        if *component == Component::Telephony {
+            for (path, description) in [
+                ("var/cache/bts/voice", "voice cache"),
+                (
+                    "var/lib/asterisk/sounds/en/bts-generated",
+                    "Asterisk generated-sound namespace",
+                ),
+            ] {
+                if !root.join(path).is_dir() {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!("Telephony {description} is unavailable."),
+                        suggested_action: Some(
+                            "Run: sudo systemctl restart bts-telephony.service".into(),
+                        ),
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Ok,
+                        message: format!("Telephony {description} is available."),
+                        suggested_action: None,
+                    });
+                }
             }
         }
 
@@ -288,6 +358,14 @@ pub fn doctor<S: SystemAdapter>(
     }
 }
 
+pub fn is_permission_denied(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
+    })
+}
+
 fn validate_component_configuration(path: &Path, component: Component) -> anyhow::Result<()> {
     let values = crate::config::parse_environment(&fs::read_to_string(path)?)?;
     match component {
@@ -352,6 +430,17 @@ fn read_endpoint(root: &Path, component: Component) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_version_divergence_is_actionable() {
+        let diagnostic = runtime_version_diagnostic(Component::Core, "0.3.0-rc.3", "0.3.0-rc.2");
+        assert_eq!(diagnostic.severity, Severity::Error);
+        assert!(diagnostic.message.contains("running 0.3.0-rc.2"));
+        assert_eq!(
+            diagnostic.suggested_action.as_deref(),
+            Some("Run: sudo systemctl restart bts-core.service")
+        );
+    }
     use crate::{
         platform::{Architecture, Platform},
         system::RecordingSystem,
@@ -407,5 +496,12 @@ mod tests {
             diagnostic.message.contains("requires migration")
                 && diagnostic.severity == Severity::Error
         }));
+    }
+
+    #[test]
+    fn permission_denied_is_recognised_through_context() {
+        let error = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            .context("protected configuration");
+        assert!(is_permission_denied(&error));
     }
 }

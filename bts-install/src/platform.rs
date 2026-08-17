@@ -75,9 +75,11 @@ impl Platform {
             (Self::Debian, "cage") => Ok(&["cage"]),
             (Self::Debian, "seatd") => Ok(&["seatd"]),
             (Self::Debian, "ca-certificates") => Ok(&["ca-certificates"]),
+            (Self::Debian, "ffmpeg") => Ok(&["ffmpeg"]),
             (Self::Arch, "cage") => Ok(&["cage"]),
             (Self::Arch, "seatd") => Ok(&["seatd"]),
             (Self::Arch, "ca-certificates") => Ok(&["ca-certificates"]),
+            (Self::Arch, "ffmpeg") => Ok(&["ffmpeg"]),
             (_, other) => bail!("No package mapping exists for runtime dependency '{other}'."),
         }
     }

@@ -108,13 +108,16 @@ impl InstallerState {
             .context("State path has no parent directory")?;
         fs::create_dir_all(parent)
             .with_context(|| format!("Could not create {}", parent.display()))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o750))?;
+        // Installer state contains release metadata only. Keep the directory
+        // traversable and the state readable so status and doctor do not need
+        // root; component secrets remain in the protected /etc/bts files.
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
         let temporary = temporary_path(path);
         let result = (|| -> Result<()> {
             let mut file = OpenOptions::new()
                 .create_new(true)
                 .write(true)
-                .mode(0o600)
+                .mode(0o644)
                 .open(&temporary)
                 .with_context(|| format!("Could not create {}", temporary.display()))?;
             serde_json::to_writer_pretty(&mut file, self)?;
@@ -203,8 +206,16 @@ mod tests {
         state.write_atomic(&path).unwrap();
         assert_eq!(InstallerState::load(&path).unwrap(), Some(state));
         assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
+            0o644
         );
         assert!(!temporary_path(&path).exists());
     }
