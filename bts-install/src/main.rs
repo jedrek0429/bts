@@ -2324,12 +2324,17 @@ mod tests {
     #[test]
     fn telephony_install_requires_non_empty_ari_password() {
         let root = tempfile::tempdir().unwrap();
+        let secret = root.path().join("telephony-secret.env");
+        fs::write(&secret, "BTS_ARI_PASSWORD=\n").unwrap();
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
         let cli = Cli::parse([
             "bts-install",
             "install",
             "telephony",
             "--root",
             root.path().to_str().unwrap(),
+            "--secret-file",
+            secret.to_str().unwrap(),
             "--yes",
         ])
         .unwrap();
