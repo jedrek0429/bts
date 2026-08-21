@@ -78,13 +78,14 @@ jobs:
           path: ${{ env.ASSET_DIRECTORY }}
           if-no-files-found: error
 
-  linux-aarch64-display-cli-and-installer:
+  linux-aarch64:
     needs: validate-version
     runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -93,23 +94,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev libfontconfig1-dev zstd
-      - name: Build ARM64 Display, CLI and installer
-        run: cargo build --locked --release -p bts-display -p bts-cli -p bts-install
-      - name: Build ARM64 release assets
+      - name: Build installer and components
+        run: cargo build --locked --release --workspace
+      - name: Build release assets
         run: |
           assets="$RUNNER_TEMP/release-assets"
-          scripts/build-release component display aarch64 target/release/bts-display "$assets"
-          scripts/build-release component cli aarch64 target/release/btscli "$assets"
+          install -d "$assets"
+          for component in core display telephony addons cli; do
+            binary="bts-$component"
+            [[ "$component" == cli ]] && binary=btscli
+            scripts/build-release component "$component" aarch64 "target/release/$binary" "$assets"
+          done
           scripts/build-release installer aarch64 target/release/bts-install "$assets"
           printf 'ASSET_DIRECTORY=%s\n' "$assets" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
-          name: bts-linux-aarch64-display-cli-and-installer
+          name: bts-linux-aarch64
           path: ${{ env.ASSET_DIRECTORY }}
           if-no-files-found: error
 
   publish-release:
-    needs: [linux-x86_64, linux-aarch64-display-cli-and-installer]
+    needs: [linux-x86_64, linux-aarch64]
     runs-on: ubuntu-latest
     environment: release
     steps:

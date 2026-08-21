@@ -24,7 +24,7 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Open release candidate PR
+      - name: Open and validate release candidate PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -56,14 +56,31 @@ jobs:
           git push origin "HEAD:refs/heads/$candidate_branch"
 
           pr_url=$(gh pr create \
+            --draft \
             --base "$RELEASE_BRANCH" \
             --head "$candidate_branch" \
             --title "chore(release): prepare $version" \
-            --body "Prepares BTS $version. Merge this PR after CI passes; publication starts automatically after the resulting release-branch CI succeeds.")
+            --body "Prepares BTS $version. This PR remains draft until canonical CI passes. Once ready, merge it; publication is part of the resulting release-branch CI run.")
 
           gh workflow run ci.yml \
             --ref "$candidate_branch" \
             -f ref="$candidate_branch" \
             -f base="$base_commit"
 
-          echo "Created $pr_url"
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id=$(gh run list \
+              --workflow ci.yml \
+              --branch "$candidate_branch" \
+              --event workflow_dispatch \
+              --json databaseId \
+              --jq '.[0].databaseId // empty' \
+              --limit 1)
+            [[ -n "$run_id" ]] && break
+            sleep 2
+          done
+          [[ -n "$run_id" ]] || { echo "Could not locate canonical CI run for $candidate_branch." >&2; exit 1; }
+
+          gh run watch "$run_id" --exit-status
+          gh pr ready "$pr_url"
+          echo "Created and validated $pr_url"
