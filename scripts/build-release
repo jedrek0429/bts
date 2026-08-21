@@ -8,7 +8,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage:
   build-release component COMPONENT ARCH BINARY OUTPUT_DIRECTORY
-  build-release installer BINARY OUTPUT_DIRECTORY
+  build-release installer ARCH BINARY OUTPUT_DIRECTORY
   build-release assemble OUTPUT_DIRECTORY
   build-release all [OUTPUT_DIRECTORY]
 EOF
@@ -38,12 +38,24 @@ case "$command" in
         "$repository_root/scripts/build-component-bundle" "$1" "$version" "$2" "$3" "$4"
         ;;
     installer)
-        (($# == 2)) || usage
+        (($# == 3)) || usage
         require_workspace_version
-        [[ -x "$1" ]] || { echo "Installer binary is not executable: $1" >&2; exit 1; }
-        install -d "$2"
-        install -m755 "$1" "$2/bts-install"
-        install -m644 "$repository_root/LICENSE" "$2/LICENSE"
+        architecture=$1
+        binary=$2
+        output_directory=$3
+        [[ "$architecture" == x86_64 || "$architecture" == aarch64 ]] || {
+            echo "Unsupported installer architecture: $architecture" >&2
+            exit 1
+        }
+        [[ -x "$binary" ]] || { echo "Installer binary is not executable: $binary" >&2; exit 1; }
+        install -d "$output_directory"
+        install -m755 "$binary" "$output_directory/bts-install-linux-$architecture"
+        if [[ "$architecture" == x86_64 ]]; then
+            # Compatibility asset for Installer v2 clients released before
+            # architecture-specific installer metadata was added.
+            install -m755 "$binary" "$output_directory/bts-install"
+        fi
+        install -m644 "$repository_root/LICENSE" "$output_directory/LICENSE"
         ;;
     assemble)
         (($# == 1)) || usage
@@ -63,7 +75,7 @@ case "$command" in
             "$0" component "$component" "$architecture" \
                 "$repository_root/target/release/$binary" "$output_directory"
         done
-        "$0" installer "$repository_root/target/release/bts-install" "$output_directory"
+        "$0" installer "$architecture" "$repository_root/target/release/bts-install" "$output_directory"
         "$0" assemble "$output_directory"
         printf '%s\n' "$output_directory"
         ;;
