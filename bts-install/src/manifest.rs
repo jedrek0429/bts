@@ -19,6 +19,8 @@ pub struct ReleaseManifest {
     pub schema_version: u32,
     pub release_version: String,
     pub installer: ReleaseAsset,
+    #[serde(default)]
+    pub installers: Vec<InstallerAsset>,
     pub components: BTreeMap<Component, Vec<ComponentAsset>>,
     #[serde(default)]
     pub licence_asset: Option<ReleaseAsset>,
@@ -26,6 +28,14 @@ pub struct ReleaseManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseAsset {
+    pub filename: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallerAsset {
+    pub platform: String,
+    pub architecture: String,
     pub filename: String,
     pub sha256: String,
 }
@@ -65,6 +75,29 @@ impl ReleaseManifest {
         }
         let mut filenames = BTreeSet::new();
         filenames.insert(self.installer.filename.as_str());
+        for asset in &self.installers {
+            ensure!(
+                asset.platform == "linux",
+                "Installer asset '{}' has unsupported platform '{}'.",
+                asset.filename,
+                asset.platform
+            );
+            ensure!(
+                matches!(asset.architecture.as_str(), "x86_64" | "aarch64"),
+                "Installer asset '{}' has unsupported architecture '{}'.",
+                asset.filename,
+                asset.architecture
+            );
+            validate_asset(&ReleaseAsset {
+                filename: asset.filename.clone(),
+                sha256: asset.sha256.clone(),
+            })?;
+            ensure!(
+                filenames.insert(asset.filename.as_str()),
+                "Release manifest contains duplicate asset '{}'.",
+                asset.filename
+            );
+        }
         for assets in self.components.values() {
             for asset in assets {
                 ensure!(
@@ -84,6 +117,25 @@ impl ReleaseManifest {
             }
         }
         Ok(())
+    }
+
+    pub fn select_installer(&self, architecture: Architecture) -> Result<ReleaseAsset> {
+        if let Some(asset) = self.installers.iter().find(|asset| {
+            asset.platform == "linux" && asset.architecture == architecture.as_manifest_str()
+        }) {
+            return Ok(ReleaseAsset {
+                filename: asset.filename.clone(),
+                sha256: asset.sha256.clone(),
+            });
+        }
+        if self.installers.is_empty() && architecture == Architecture::X86_64 {
+            return Ok(self.installer.clone());
+        }
+        anyhow::bail!(
+            "Release {} does not provide bts-install for linux/{}.",
+            self.release_version,
+            architecture.as_manifest_str()
+        )
     }
 
     pub fn select(
@@ -116,6 +168,9 @@ impl ReleaseManifest {
             "release-manifest.json",
             "SHA256SUMS",
         ]);
+        for asset in &self.installers {
+            files.insert(asset.filename.as_str());
+        }
         if let Some(asset) = &self.licence_asset {
             files.insert(asset.filename.as_str());
         }
@@ -158,6 +213,12 @@ pub fn validate_release_assets(
             .with_context(|| format!("Release asset '{filename}' is missing."))?;
         let expected = if filename == manifest.installer.filename {
             Some(&manifest.installer.sha256)
+        } else if let Some(asset) = manifest
+            .installers
+            .iter()
+            .find(|value| value.filename == filename)
+        {
+            Some(&asset.sha256)
         } else if manifest
             .licence_asset
             .as_ref()
@@ -194,6 +255,20 @@ mod tests {
                 filename: "bts-install".into(),
                 sha256: "a".repeat(64),
             },
+            installers: vec![
+                InstallerAsset {
+                    platform: "linux".into(),
+                    architecture: "x86_64".into(),
+                    filename: "bts-install-linux-x86_64".into(),
+                    sha256: "d".repeat(64),
+                },
+                InstallerAsset {
+                    platform: "linux".into(),
+                    architecture: "aarch64".into(),
+                    filename: "bts-install-linux-aarch64".into(),
+                    sha256: "e".repeat(64),
+                },
+            ],
             components: BTreeMap::from([(
                 Component::Display,
                 vec![ComponentAsset {
@@ -222,6 +297,10 @@ mod tests {
                 .filename,
             "display.tar.zst"
         );
+        assert_eq!(
+            parsed.select_installer(Architecture::Aarch64).unwrap().filename,
+            "bts-install-linux-aarch64"
+        );
         assert!(
             parsed
                 .select(Component::Core, Platform::Debian, Architecture::Aarch64)
@@ -229,6 +308,17 @@ mod tests {
         );
         assert!(is_release_version("v0.4.0-rc.1"));
         assert!(!is_release_version("v0.4.0+local"));
+    }
+
+    #[test]
+    fn legacy_manifest_installer_is_x86_only() {
+        let mut value = manifest();
+        value.installers.clear();
+        assert_eq!(
+            value.select_installer(Architecture::X86_64).unwrap(),
+            value.installer
+        );
+        assert!(value.select_installer(Architecture::Aarch64).is_err());
     }
 
     #[test]
