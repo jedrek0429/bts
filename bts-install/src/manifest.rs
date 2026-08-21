@@ -298,7 +298,10 @@ mod tests {
             "display.tar.zst"
         );
         assert_eq!(
-            parsed.select_installer(Architecture::Aarch64).unwrap().filename,
+            parsed
+                .select_installer(Architecture::Aarch64)
+                .unwrap()
+                .filename,
             "bts-install-linux-aarch64"
         );
         assert!(
