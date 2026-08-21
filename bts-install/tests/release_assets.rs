@@ -61,11 +61,7 @@ fn local_release_reinstalls_and_reconciles_offline() {
     fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
     fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => panic!("unsupported test architecture {other}"),
-    };
+    let architecture = test_architecture();
     release_command(&[
         "component",
         "core",
@@ -73,12 +69,7 @@ fn local_release_reinstalls_and_reconciles_offline() {
         "/usr/bin/true",
         assets.to_str().unwrap(),
     ]);
-    release_command(&[
-        "installer",
-        architecture,
-        env!("CARGO_BIN_EXE_bts-install"),
-        assets.to_str().unwrap(),
-    ]);
+    stage_test_installers(&assets);
     release_command(&["assemble", assets.to_str().unwrap()]);
 
     let install = [
@@ -207,11 +198,7 @@ fn local_release_installs_cli_without_runtime_components() {
     let systemctl = fake_bin.join("systemctl");
     fs::write(&systemctl, "#!/bin/sh\nexit 99\n").unwrap();
     fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => panic!("unsupported test architecture {other}"),
-    };
+    let architecture = test_architecture();
     release_command(&[
         "component",
         "cli",
@@ -219,12 +206,7 @@ fn local_release_installs_cli_without_runtime_components() {
         "/usr/bin/true",
         assets.to_str().unwrap(),
     ]);
-    release_command(&[
-        "installer",
-        architecture,
-        env!("CARGO_BIN_EXE_bts-install"),
-        assets.to_str().unwrap(),
-    ]);
+    stage_test_installers(&assets);
     release_command(&["assemble", assets.to_str().unwrap()]);
 
     assert!(
@@ -283,11 +265,7 @@ fn fresh_telephony_install_configures_unavailable_external_services() {
     )
     .unwrap();
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => panic!("unsupported test architecture {other}"),
-    };
+    let architecture = test_architecture();
     release_command(&[
         "component",
         "telephony",
@@ -295,12 +273,7 @@ fn fresh_telephony_install_configures_unavailable_external_services() {
         "/usr/bin/true",
         assets.to_str().unwrap(),
     ]);
-    release_command(&[
-        "installer",
-        architecture,
-        env!("CARGO_BIN_EXE_bts-install"),
-        assets.to_str().unwrap(),
-    ]);
+    stage_test_installers(&assets);
     release_command(&["assemble", assets.to_str().unwrap()]);
 
     let output = installer_command(
@@ -333,6 +306,25 @@ fn fresh_telephony_install_configures_unavailable_external_services() {
     assert!(values.contains("BTS_ARI_URL=\"http://127.0.0.1:1\""));
     assert!(values.contains("BTS_KOKORO_URL=\"http://127.0.0.1:2/v1/audio/speech\""));
     assert!(values.contains("BTS_ARI_PASSWORD=\"installation-secret\""));
+}
+
+fn test_architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => panic!("unsupported test architecture {other}"),
+    }
+}
+
+fn stage_test_installers(assets: &Path) {
+    for architecture in ["x86_64", "aarch64"] {
+        release_command(&[
+            "installer",
+            architecture,
+            env!("CARGO_BIN_EXE_bts-install"),
+            assets.to_str().unwrap(),
+        ]);
+    }
 }
 
 fn release_command(arguments: &[&str]) {
