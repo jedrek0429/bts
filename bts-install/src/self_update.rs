@@ -8,7 +8,12 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use semver::Version;
 
-use crate::{INSTALLER_VERSION, manifest::ReleaseManifest, release::ReleaseClient};
+use crate::{
+    INSTALLER_VERSION,
+    manifest::ReleaseManifest,
+    platform::Architecture,
+    release::ReleaseClient,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelfUpdateOutcome {
@@ -48,12 +53,10 @@ pub async fn update_from_manifest(
         target
     );
 
+    let architecture = Architecture::detect(std::env::consts::ARCH)?;
+    let installer = manifest.select_installer(architecture)?;
     let bytes = client
-        .download_asset(
-            urls,
-            &manifest.installer.filename,
-            &manifest.installer.sha256,
-        )
+        .download_asset(urls, &installer.filename, &installer.sha256)
         .await?;
     ensure!(!bytes.is_empty(), "Downloaded bts-install asset is empty.");
     replace_executable_atomically(executable, &bytes)?;
@@ -165,6 +168,8 @@ mod tests {
         fs::write(&executable, b"old installer").unwrap();
         let replacement = b"new installer";
         let digest = hex::encode(Sha256::digest(replacement));
+        let installer_filename = native_installer_filename();
+        fs::write(release.join(&installer_filename), replacement).unwrap();
         fs::write(release.join("bts-install"), replacement).unwrap();
         fs::write(release.join("LICENSE"), b"licence").unwrap();
         fs::write(release.join("SHA256SUMS"), b"checksums").unwrap();
@@ -173,6 +178,12 @@ mod tests {
             "schema_version": crate::manifest::MANIFEST_SCHEMA_VERSION,
             "release_version": next_test_version(),
             "installer": { "filename": "bts-install", "sha256": digest },
+            "installers": [{
+                "platform": "linux",
+                "architecture": Architecture::detect(std::env::consts::ARCH).unwrap().as_manifest_str(),
+                "filename": installer_filename,
+                "sha256": digest
+            }],
             "components": {},
             "licence_asset": { "filename": "LICENSE", "sha256": licence_digest }
         });
@@ -254,6 +265,8 @@ mod tests {
 
     fn write_local_release(release: &Path, replacement: &[u8], digest: Option<String>) {
         let installer_digest = digest.unwrap_or_else(|| hex::encode(Sha256::digest(replacement)));
+        let installer_filename = native_installer_filename();
+        fs::write(release.join(&installer_filename), replacement).unwrap();
         fs::write(release.join("bts-install"), replacement).unwrap();
         fs::write(release.join("LICENSE"), b"licence").unwrap();
         fs::write(release.join("SHA256SUMS"), b"checksums").unwrap();
@@ -265,19 +278,35 @@ mod tests {
     }
 
     fn manifest(version: &str, installer_digest: String) -> ReleaseManifest {
+        let architecture = Architecture::detect(std::env::consts::ARCH).unwrap();
         ReleaseManifest {
             schema_version: crate::manifest::MANIFEST_SCHEMA_VERSION,
             release_version: version.into(),
             installer: crate::manifest::ReleaseAsset {
                 filename: "bts-install".into(),
-                sha256: installer_digest,
+                sha256: installer_digest.clone(),
             },
+            installers: vec![crate::manifest::InstallerAsset {
+                platform: "linux".into(),
+                architecture: architecture.as_manifest_str().into(),
+                filename: native_installer_filename(),
+                sha256: installer_digest,
+            }],
             components: std::collections::BTreeMap::new(),
             licence_asset: Some(crate::manifest::ReleaseAsset {
                 filename: "LICENSE".into(),
                 sha256: hex::encode(Sha256::digest(b"licence")),
             }),
         }
+    }
+
+    fn native_installer_filename() -> String {
+        format!(
+            "bts-install-linux-{}",
+            Architecture::detect(std::env::consts::ARCH)
+                .unwrap()
+                .as_manifest_str()
+        )
     }
 
     fn next_test_version() -> String {
