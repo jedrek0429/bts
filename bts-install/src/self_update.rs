@@ -9,10 +9,7 @@ use anyhow::{Context, Result, ensure};
 use semver::Version;
 
 use crate::{
-    INSTALLER_VERSION,
-    manifest::ReleaseManifest,
-    platform::Architecture,
-    release::ReleaseClient,
+    INSTALLER_VERSION, manifest::ReleaseManifest, platform::Architecture, release::ReleaseClient,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
