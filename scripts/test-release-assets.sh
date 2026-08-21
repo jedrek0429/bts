@@ -18,7 +18,8 @@ for component in core display telephony addons cli; do
     "$repository_root/scripts/build-release" component "$component" x86_64 "$test_root/bin/$binary" "$assets" >/dev/null
 done
 "$repository_root/scripts/build-release" component display aarch64 "$test_root/bin/bts-display" "$assets" >/dev/null
-"$repository_root/scripts/build-release" installer /usr/bin/true "$assets"
+"$repository_root/scripts/build-release" installer x86_64 /usr/bin/true "$assets"
+"$repository_root/scripts/build-release" installer aarch64 /usr/bin/true "$assets"
 "$repository_root/scripts/build-release" assemble "$assets" >/dev/null
 
 python3 - "$assets" "$version" "$repository_root/compatibility.json" <<'PY'
@@ -34,10 +35,27 @@ assert manifest["schema_version"] == compatibility["release_manifest_schema"]
 assert manifest["release_version"] == sys.argv[2]
 assert {"core", "display", "telephony", "addons", "cli"} == set(manifest["components"])
 assert {item["architecture"] for item in manifest["components"]["display"]} == {"x86_64", "aarch64"}
-for item in [manifest["installer"], manifest["licence_asset"], *[asset for assets in manifest["components"].values() for asset in assets]]:
+assert {item["architecture"] for item in manifest["installers"]} == {"x86_64", "aarch64"}
+assert {item["filename"] for item in manifest["installers"]} == {
+    "bts-install-linux-x86_64",
+    "bts-install-linux-aarch64",
+}
+for item in [
+    manifest["installer"],
+    *manifest["installers"],
+    manifest["licence_asset"],
+    *[asset for assets in manifest["components"].values() for asset in assets],
+]:
     path = root / item["filename"]
     assert path.is_file(), item["filename"]
     assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"]
+for architecture in ("x86_64", "aarch64"):
+    filename = f"bts-install-linux-{architecture}"
+    checksum_file = root / f"{filename}.sha256"
+    assert checksum_file.is_file()
+    checksum, recorded = checksum_file.read_text().split()
+    assert recorded == filename
+    assert checksum == hashlib.sha256((root / filename).read_bytes()).hexdigest()
 for assets in manifest["components"].values():
     assert all(item["bundle_format_version"] == compatibility["component_bundle_format"] for item in assets)
 checksums = dict(line.split(maxsplit=1)[::-1] for line in (root / "SHA256SUMS").read_text().splitlines())
