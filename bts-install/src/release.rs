@@ -470,6 +470,7 @@ mod tests {
                 filename: "bts-install".into(),
                 sha256: "0".repeat(64),
             },
+            installers: Vec::new(),
             components: BTreeMap::new(),
             licence_asset: None,
         }
@@ -678,6 +679,7 @@ mod tests {
                 filename: "bts-install".into(),
                 sha256: digest(installer),
             },
+            installers: Vec::new(),
             components: BTreeMap::from([(
                 Component::Core,
                 vec![ComponentAsset {
