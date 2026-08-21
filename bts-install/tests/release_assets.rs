@@ -75,6 +75,7 @@ fn local_release_reinstalls_and_reconciles_offline() {
     ]);
     release_command(&[
         "installer",
+        architecture,
         env!("CARGO_BIN_EXE_bts-install"),
         assets.to_str().unwrap(),
     ]);
@@ -220,6 +221,7 @@ fn local_release_installs_cli_without_runtime_components() {
     ]);
     release_command(&[
         "installer",
+        architecture,
         env!("CARGO_BIN_EXE_bts-install"),
         assets.to_str().unwrap(),
     ]);
@@ -295,6 +297,7 @@ fn fresh_telephony_install_configures_unavailable_external_services() {
     ]);
     release_command(&[
         "installer",
+        architecture,
         env!("CARGO_BIN_EXE_bts-install"),
         assets.to_str().unwrap(),
     ]);
