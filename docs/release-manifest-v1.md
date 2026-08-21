@@ -1,6 +1,6 @@
 # BTS release manifest schema 1
 
-Every tagged BTS release contains `bts-install`, `bts-install.sha256`, `release-manifest.json`, `SHA256SUMS`, `LICENSE` and component bundles. Checksums are generated after final asset naming. CI rebuilds representative assets and verifies that every manifest entry names an existing file with the matching SHA-256 digest.
+Every tagged BTS release contains the legacy x86_64 `bts-install` compatibility asset, architecture-specific installer binaries and checksums, `release-manifest.json`, `SHA256SUMS`, `LICENSE` and component bundles. Checksums are generated after final asset naming. CI rebuilds representative assets and verifies that every manifest entry names an existing file with the matching SHA-256 digest.
 
 The current manifest and bundle compatibility numbers are defined only in [`compatibility.json`](../compatibility.json). This document describes their current layouts.
 
@@ -14,6 +14,20 @@ The current manifest and bundle compatibility numbers are defined only in [`comp
     "filename": "bts-install",
     "sha256": "<64 lowercase hexadecimal characters>"
   },
+  "installers": [
+    {
+      "platform": "linux",
+      "architecture": "x86_64",
+      "filename": "bts-install-linux-x86_64",
+      "sha256": "<64 lowercase hexadecimal characters>"
+    },
+    {
+      "platform": "linux",
+      "architecture": "aarch64",
+      "filename": "bts-install-linux-aarch64",
+      "sha256": "<64 lowercase hexadecimal characters>"
+    }
+  ],
   "components": {
     "display": [
       {
@@ -31,6 +45,8 @@ The current manifest and bundle compatibility numbers are defined only in [`comp
   }
 }
 ```
+
+The singular `installer` entry is retained as the historical x86_64 compatibility asset so Installer v2 binaries published before architecture-specific selection can still consume newer 0.3.x releases. New installers select from `installers` using their running architecture and refuse self-update when a matching entry is absent. This prevents an ARM64 host from atomically replacing itself with an x86_64 executable.
 
 Component keys are `core`, `display`, `telephony`, `addons` and `cli`. Platform is currently `linux`; architectures are `x86_64` and `aarch64`. Unsupported component/architecture pairs are absent. The installer must not infer filenames. Schema and bundle-format mismatches are hard errors before download activation.
 
