@@ -13,6 +13,7 @@ import sys
 BUNDLE = re.compile(
     r"^bts-(core|display|telephony|addons|cli)-v([0-9A-Za-z.-]+)-linux-(x86_64|aarch64)\.tar\.zst$"
 )
+INSTALLER = re.compile(r"^bts-install-linux-(x86_64|aarch64)$")
 
 
 def digest(path: pathlib.Path) -> str:
@@ -42,8 +43,20 @@ def main() -> int:
     if not installer.is_file() or not licence.is_file():
         raise SystemExit("bts-install and LICENSE must exist before generating the manifest")
 
+    installers: list[dict[str, str]] = []
     components: dict[str, list[dict[str, object]]] = {}
     for path in sorted(root.iterdir()):
+        installer_match = INSTALLER.fullmatch(path.name)
+        if installer_match:
+            installers.append(
+                {
+                    "platform": "linux",
+                    "architecture": installer_match.group(1),
+                    "filename": path.name,
+                    "sha256": digest(path),
+                }
+            )
+            continue
         match = BUNDLE.fullmatch(path.name)
         if not match:
             continue
@@ -61,11 +74,19 @@ def main() -> int:
         )
     if not components:
         raise SystemExit("No portable component bundles were found")
+    installer_architectures = {item["architecture"] for item in installers}
+    if installer_architectures != {"x86_64", "aarch64"}:
+        raise SystemExit(
+            "Release must contain architecture-specific x86_64 and aarch64 installers"
+        )
 
     manifest = {
         "schema_version": compatibility["release_manifest_schema"],
         "release_version": version,
+        # Keep the historical x86_64 asset for Installer v2 clients that predate
+        # architecture-specific installer selection. New clients use installers.
         "installer": {"filename": "bts-install", "sha256": digest(installer)},
+        "installers": installers,
         "components": components,
         "licence_asset": {"filename": "LICENSE", "sha256": digest(licence)},
     }
@@ -74,6 +95,11 @@ def main() -> int:
     (root / "bts-install.sha256").write_text(
         f"{digest(installer)}  bts-install\n", encoding="utf-8"
     )
+    for item in installers:
+        filename = item["filename"]
+        (root / f"{filename}.sha256").write_text(
+            f"{item['sha256']}  {filename}\n", encoding="utf-8"
+        )
     checksummed = [
         path
         for path in root.iterdir()
