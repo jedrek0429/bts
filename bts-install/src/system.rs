@@ -143,12 +143,30 @@ pub fn create_service_account<S: SystemAdapter>(
             ],
         )?;
     }
-    if account == "bts"
-        && system
+    if account == "bts" {
+        let detected = system
+            .output(
+                "stat",
+                &[
+                    "-c".into(),
+                    "%G".into(),
+                    "/var/lib/asterisk".into(),
+                ],
+            )
+            .ok()
+            .map(|group| group.trim().to_owned())
+            .filter(|group| !group.is_empty() && !matches!(group.as_str(), "root" | "bts" | "UNKNOWN"));
+        let fallback = system
             .output("getent", &["group".into(), "asterisk".into()])
             .is_ok()
-    {
-        system.run("usermod", &["-aG".into(), "asterisk".into(), "bts".into()])?;
+            .then(|| "asterisk".to_owned());
+        if let Some(group) = detected.or(fallback)
+            && system
+                .output("getent", &["group".into(), group.clone()])
+                .is_ok()
+        {
+            system.run("usermod", &["-aG".into(), group, "bts".into()])?;
+        }
     }
     Ok(())
 }
