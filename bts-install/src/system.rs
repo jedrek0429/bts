@@ -120,13 +120,6 @@ pub fn create_service_account<S: SystemAdapter>(
         return Ok(());
     }
     ensure_system_group(system, account)?;
-    if account == "bts-display" {
-        // The shipped display unit names `seat` in SupplementaryGroups. Debian's
-        // seatd package does not create that group consistently, so make the
-        // unit's runtime contract explicit instead of letting systemd fail with
-        // 216/GROUP before the display process can start.
-        ensure_system_group(system, "seat")?;
-    }
     if system.output("id", &["-u".into(), account.into()]).is_err() {
         system.run(
             "useradd",
@@ -142,13 +135,6 @@ pub fn create_service_account<S: SystemAdapter>(
                 account.into(),
             ],
         )?;
-    }
-    if account == "bts"
-        && system
-            .output("getent", &["group".into(), "asterisk".into()])
-            .is_ok()
-    {
-        system.run("usermod", &["-aG".into(), "asterisk".into(), "bts".into()])?;
     }
     Ok(())
 }
@@ -182,13 +168,22 @@ mod tests {
     }
 
     #[test]
-    fn display_account_reconciles_the_seat_group() {
+    fn display_account_does_not_invent_a_distribution_specific_seat_group() {
         let mut system = MissingSeatSystem::default();
         create_service_account(&mut system, Path::new("/"), "bts-display").unwrap();
         assert!(
-            system
+            !system
                 .commands
                 .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
         );
+    }
+
+    #[test]
+    fn generic_service_account_creation_does_not_grant_asterisk_access() {
+        let mut system = MissingSeatSystem::default();
+        create_service_account(&mut system, Path::new("/"), "bts").unwrap();
+        assert!(!system.commands.iter().any(|(program, arguments)| {
+            program == "usermod" && arguments == &["-aG", "asterisk", "bts"]
+        }));
     }
 }

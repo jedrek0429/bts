@@ -8,6 +8,23 @@ use std::{
 use tempfile::tempdir;
 
 #[test]
+fn installer_documentation_defines_the_transaction_boundary() {
+    let documentation = include_str!("../../docs/installer-v2.md");
+    for required in [
+        "durable transaction journal",
+        "staged release directories",
+        "service enablement and activity",
+        "Package-manager operations, service-account creation and supplementary-group membership",
+        "outside this atomic boundary",
+    ] {
+        assert!(
+            documentation.contains(required),
+            "installer transaction documentation omitted {required:?}"
+        );
+    }
+}
+
+#[test]
 fn generated_release_assets_and_manifest_are_consistent() {
     let status = Command::new("bash")
         .arg("../scripts/test-release-assets.sh")
@@ -28,6 +45,12 @@ fn display_unit_expands_installer_managed_cage_arguments() {
             < unit.find("EnvironmentFile=-/etc/bts/display.env"),
         "display.env must be able to override the default Cage arguments"
     );
+}
+
+#[test]
+fn display_unit_does_not_require_optional_distribution_groups() {
+    let unit = std::fs::read_to_string("../deploy/systemd/bts-display.service").unwrap();
+    assert!(!unit.contains("SupplementaryGroups="));
 }
 
 #[test]
@@ -184,6 +207,163 @@ fn local_release_reinstalls_and_reconciles_offline() {
                     .is_some_and(|message| message.contains("verified local release"))
             })
     );
+}
+
+#[test]
+fn failed_install_rolls_back_all_installer_owned_state() {
+    let temporary = tempdir().unwrap();
+    let assets = temporary.path().join("assets");
+    let root = temporary.path().join("root");
+    let fake_bin = temporary.path().join("bin");
+    fs::create_dir_all(root.join("etc")).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::copy("/etc/os-release", root.join("etc/os-release")).unwrap();
+    let systemctl = fake_bin.join("systemctl");
+    fs::write(&systemctl, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let architecture = test_architecture();
+    release_command(&[
+        "component",
+        "core",
+        architecture,
+        "/usr/bin/true",
+        assets.to_str().unwrap(),
+    ]);
+    stage_test_installers(&assets);
+    release_command(&["assemble", assets.to_str().unwrap()]);
+
+    let output = installer_command(
+        &[
+            "--root",
+            root.to_str().unwrap(),
+            "--release-dir",
+            assets.to_str().unwrap(),
+            "--yes",
+            "--no-start",
+            "install",
+            "custom",
+            "--component",
+            "core",
+        ],
+        &fake_bin,
+    )
+    .output()
+    .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "the injected systemctl failure must surface"
+    );
+    for path in [
+        "etc/bts/core.env",
+        "usr/lib/bts/components/core/releases",
+        "usr/lib/bts/components/core/current",
+        "usr/lib/systemd/system/bts-core.service",
+        "usr/lib/systemd/system/bts.target",
+        "usr/lib/systemd/system/bts-server.target",
+        "usr/lib/systemd/system/bts-display.target",
+        "usr/share/licenses/bts/LICENSE",
+        "var/lib/bts-install/state.json",
+        "var/lib/bts-install/transaction.json",
+    ] {
+        assert!(
+            !root.join(path).exists(),
+            "failed install retained installer-owned path {path}"
+        );
+    }
+
+    fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+    assert!(
+        installer_command(
+            &[
+                "--root",
+                root.to_str().unwrap(),
+                "--release-dir",
+                assets.to_str().unwrap(),
+                "--yes",
+                "--no-start",
+                "install",
+                "custom",
+                "--component",
+                "core",
+            ],
+            &fake_bin,
+        )
+        .status()
+        .unwrap()
+        .success(),
+        "the same operation must succeed when rerun after rollback"
+    );
+}
+
+#[test]
+fn failed_final_state_persistence_rolls_back_the_completed_deployment() {
+    let temporary = tempdir().unwrap();
+    let assets = temporary.path().join("assets");
+    let root = temporary.path().join("root");
+    let fake_bin = temporary.path().join("bin");
+    fs::create_dir_all(root.join("etc")).unwrap();
+    fs::create_dir_all(&fake_bin).unwrap();
+    fs::copy("/etc/os-release", root.join("etc/os-release")).unwrap();
+    let systemctl = fake_bin.join("systemctl");
+    fs::write(
+        &systemctl,
+        format!(
+            "#!/bin/sh\nmkdir -p '{}/var/lib/bts-install/state.json'\nexit 0\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let architecture = test_architecture();
+    release_command(&[
+        "component",
+        "core",
+        architecture,
+        "/usr/bin/true",
+        assets.to_str().unwrap(),
+    ]);
+    stage_test_installers(&assets);
+    release_command(&["assemble", assets.to_str().unwrap()]);
+
+    let output = installer_command(
+        &[
+            "--root",
+            root.to_str().unwrap(),
+            "--release-dir",
+            assets.to_str().unwrap(),
+            "--yes",
+            "--no-start",
+            "install",
+            "custom",
+            "--component",
+            "core",
+        ],
+        &fake_bin,
+    )
+    .output()
+    .unwrap();
+
+    assert!(!output.status.success());
+    for path in [
+        "etc/bts/core.env",
+        "usr/lib/bts/components/core/releases",
+        "usr/lib/bts/components/core/current",
+        "usr/lib/systemd/system/bts-core.service",
+        "usr/lib/systemd/system/bts.target",
+        "usr/lib/systemd/system/bts-server.target",
+        "usr/lib/systemd/system/bts-display.target",
+        "usr/share/licenses/bts/LICENSE",
+        "var/lib/bts-install/state.json",
+        "var/lib/bts-install/transaction.json",
+    ] {
+        assert!(
+            !root.join(path).exists(),
+            "state persistence failure retained installer-owned path {path}"
+        );
+    }
 }
 
 #[test]

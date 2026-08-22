@@ -245,14 +245,20 @@ pub fn doctor<S: SystemAdapter>(
         }
 
         if *component == Component::Telephony {
+            let configured = fs::read_to_string(root.join("etc/bts/telephony.env"))
+                .ok()
+                .and_then(|text| crate::config::parse_environment(&text).ok());
+            let generated = configured
+                .as_ref()
+                .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated"));
+            let generated_on_root = root.join(generated.strip_prefix("/").unwrap_or(&generated));
             for (path, description) in [
-                ("var/cache/bts/voice", "voice cache"),
-                (
-                    "var/lib/asterisk/sounds/en/bts-generated",
-                    "Asterisk generated-sound namespace",
-                ),
+                (root.join("var/cache/bts/voice"), "voice cache"),
+                (generated_on_root, "Asterisk generated-sound namespace"),
             ] {
-                if !root.join(path).is_dir() {
+                if !path.is_dir() {
                     diagnostics.push(Diagnostic {
                         component: Some(Component::Telephony),
                         severity: Severity::Error,
@@ -271,14 +277,6 @@ pub fn doctor<S: SystemAdapter>(
                 }
             }
             if root == Path::new("/") {
-                let configured = fs::read_to_string(root.join("etc/bts/telephony.env"))
-                    .ok()
-                    .and_then(|text| crate::config::parse_environment(&text).ok());
-                let generated = configured
-                    .as_ref()
-                    .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated"));
                 let inaccessible = generated
                     .parent()
                     .into_iter()
@@ -416,8 +414,11 @@ pub fn doctor<S: SystemAdapter>(
                     }
                 }
                 if system
-                    .output("getent", &["passwd".into(), "bts-display".into()])
+                    .output("getent", &["group".into(), "seat".into()])
                     .is_ok()
+                    && system
+                        .output("getent", &["passwd".into(), "bts-display".into()])
+                        .is_ok()
                     && system
                         .output("id", &["-nG".into(), "bts-display".into()])
                         .is_ok_and(|groups| !groups.split_whitespace().any(|group| group == "seat"))
@@ -611,6 +612,40 @@ mod tests {
     }
 
     #[test]
+    fn doctor_does_not_require_a_seat_group_when_the_distribution_has_none() {
+        struct NoSeatGroup(RecordingSystem);
+        impl SystemAdapter for NoSeatGroup {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                if program == "getent" && arguments == ["group", "seat"] {
+                    anyhow::bail!("seat group is absent");
+                }
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+        let mut system = NoSeatGroup(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::Aarch64);
+        state.installed_components.insert(Component::Display);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("seat group")
+                || diagnostic
+                    .suggested_action
+                    .as_deref()
+                    .is_some_and(|action| action.contains("usermod -aG seat"))
+        }));
+    }
+
+    #[test]
     fn doctor_checks_asterisk_namespace_as_telephony_runtime_identity() {
         let mut system = RecordingSystem::default();
         let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
@@ -621,6 +656,74 @@ mod tests {
         assert!(system.commands.iter().any(|(program, arguments)| {
             program == "runuser"
                 && arguments.starts_with(&["-u".into(), "bts".into(), "--".into(), "test".into()])
+        }));
+    }
+
+    #[test]
+    fn doctor_reports_the_first_parent_the_runtime_identity_cannot_traverse() {
+        struct RestrictedParent(RecordingSystem);
+        impl SystemAdapter for RestrictedParent {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn run_quiet(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                if program == "runuser"
+                    && arguments.ends_with(&["-x".into(), "/var/lib/asterisk".into()])
+                {
+                    anyhow::bail!("injected traversal denial");
+                }
+                self.0.run_quiet(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+        let mut system = RestrictedParent(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot traverse /var/lib/asterisk on the way")
+        }));
+    }
+
+    #[test]
+    fn doctor_uses_the_configured_generated_sound_namespace() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(
+            root.path().join("etc/bts/telephony.env"),
+            concat!(
+                "BTS_ARI_URL=http://127.0.0.1:8088\n",
+                "BTS_ARI_USERNAME=bts\n",
+                "BTS_ARI_PASSWORD=secret\n",
+                "BTS_CORE_URL=http://127.0.0.1:3100\n",
+                "BTS_KOKORO_URL=http://127.0.0.1:8880/v1/audio/speech\n",
+                "BTS_ASTERISK_GENERATED_SOUNDS_DIR=/srv/asterisk/custom/bts-generated\n",
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("var/cache/bts/voice")).unwrap();
+        fs::create_dir_all(root.path().join("srv/asterisk/custom/bts-generated")).unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(root.path(), Some(&state), &mut RecordingSystem::default());
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generated-sound namespace is unavailable")
         }));
     }
 }

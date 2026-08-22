@@ -248,7 +248,11 @@ Complete component releases are staged beneath:
 /usr/lib/bts/components/<component>/current -> releases/<version>
 ```
 
-The `current` link is replaced atomically only after bundle validation. An upgrade defaults to the installed component set and rejects explicit uninstalled components. Only affected services are stopped and started. If required startup fails, activation links are restored to their previous targets and rollback success is reported. Configuration and installer state are not replaced by a failed activation.
+The `current` link is replaced atomically only after bundle validation. An upgrade defaults to the installed component set and rejects explicit uninstalled components. Only affected services are stopped and started.
+
+Every mutating command creates a durable transaction journal before changing the host. The journal covers installer-owned configuration, staged release directories, activation links, packaged units and targets, generated Telephony sounds, the CLI and licence, tty/getty links, installer state, and managed service enablement and activity. Paths learned from a release manifest or Telephony configuration are enrolled durably before their first mutation. A failed command restores the complete snapshot; an interrupted command is recovered before the next mutation, and recovery is idempotent. The journal is removed only after final installer state has been persisted.
+
+Package-manager operations, service-account creation and supplementary-group membership are host integration operations outside this atomic boundary: distribution package databases and identity databases cannot be safely rewound as BTS-owned files. They are deliberately idempotent and may remain after a failed install. The installer reports rollback failure rather than claiming success when any owned path or service state could not be restored. Real-host release acceptance must inject a late failure and inspect both sides of this boundary.
 
 ## Status and doctor
 

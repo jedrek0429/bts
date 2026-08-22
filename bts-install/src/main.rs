@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    future::Future,
     io::{self, Cursor, IsTerminal, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -18,9 +19,11 @@ use bts_install::{
     plan::{Action, InstallationPlan},
     platform::{Platform, detect_host},
     release::ReleaseClient,
+    runtime_access,
     services,
     state::InstallerState,
     system::{RealSystem, SystemAdapter, create_service_account, systemctl},
+    transaction,
 };
 
 const LICENCE: &str = include_str!("../../LICENSE");
@@ -57,6 +60,13 @@ async fn run() -> Result<()> {
             return Ok(());
         }
         _ => {}
+    }
+
+    if command_mutates(&cli.command) {
+        require_root_or_alternate(&cli.root)?;
+        if transaction::recover_pending(&cli.root)? && !cli.quiet && !cli.json {
+            println!("Recovered an interrupted installer transaction before continuing.");
+        }
     }
 
     let state_path = rooted(&cli.root, "/var/lib/bts-install/state.json");
@@ -97,14 +107,18 @@ async fn run() -> Result<()> {
             )?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
-                migrate_legacy_configuration(&cli, &plan.after)?;
                 let mut next = state.unwrap_or_else(|| {
                     InstallerState::new(INSTALLER_VERSION, platform, architecture)
                 });
-                execute_plan(&cli, &plan, &mut next, platform, architecture, true).await?;
-                next.selected_role = plan.role;
-                next.installed_components = plan.after.clone();
-                next.write_atomic(&state_path)?;
+                next = host_transaction(&cli.root, async {
+                    migrate_legacy_configuration(&cli, &plan.after)?;
+                    execute_plan(&cli, &plan, &mut next, platform, architecture, true).await?;
+                    next.selected_role = plan.role;
+                    next.installed_components = plan.after.clone();
+                    next.write_atomic(&state_path)?;
+                    Ok(next)
+                })
+                .await?;
                 state = Some(next);
             }
         }
@@ -115,12 +129,16 @@ async fn run() -> Result<()> {
             let plan = InstallationPlan::add(current, components, platform, cli.no_start)?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
-                migrate_legacy_configuration(&cli, &plan.after)?;
                 let mut next = current.clone();
-                execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
-                next.selected_role = Some(Role::Custom);
-                next.installed_components = plan.after.clone();
-                next.write_atomic(&state_path)?;
+                next = host_transaction(&cli.root, async {
+                    migrate_legacy_configuration(&cli, &plan.after)?;
+                    execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
+                    next.selected_role = Some(Role::Custom);
+                    next.installed_components = plan.after.clone();
+                    next.write_atomic(&state_path)?;
+                    Ok(next)
+                })
+                .await?;
                 state = Some(next);
             }
         }
@@ -131,12 +149,16 @@ async fn run() -> Result<()> {
             let plan = InstallationPlan::remove(current, components, platform, cli.purge)?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
-                migrate_legacy_configuration(&cli, &plan.before)?;
                 let mut next = current.clone();
-                execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
-                next.selected_role = Some(Role::Custom);
-                next.installed_components = plan.after.clone();
-                next.write_atomic(&state_path)?;
+                next = host_transaction(&cli.root, async {
+                    migrate_legacy_configuration(&cli, &plan.before)?;
+                    execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
+                    next.selected_role = Some(Role::Custom);
+                    next.installed_components = plan.after.clone();
+                    next.write_atomic(&state_path)?;
+                    Ok(next)
+                })
+                .await?;
                 state = Some(next);
             }
         }
@@ -145,18 +167,23 @@ async fn run() -> Result<()> {
                 .as_mut()
                 .context("No managed BTS installation exists.")?;
             let selected = select_upgrade_components(current, components)?;
-            if !cli.dry_run {
-                migrate_legacy_configuration(&cli, &current.installed_components)?;
-            } else {
+            if cli.dry_run {
                 config::plan_legacy_environment_migration(
                     &cli.root,
                     &current.installed_components,
                 )?;
             }
             require_display_migration_before_upgrade(&cli, &selected)?;
-            upgrade(&cli, current, &selected, platform, architecture).await?;
             if !cli.dry_run {
-                current.write_atomic(&state_path)?;
+                host_transaction(&cli.root, async {
+                    migrate_legacy_configuration(&cli, &current.installed_components)?;
+                    upgrade(&cli, current, &selected, platform, architecture).await?;
+                    current.write_atomic(&state_path)?;
+                    Ok(())
+                })
+                .await?;
+            } else {
+                upgrade(&cli, current, &selected, platform, architecture).await?;
             }
         }
         Command::Configure(component) => {
@@ -164,15 +191,21 @@ async fn run() -> Result<()> {
                 .as_ref()
                 .context("No managed BTS installation exists.")?;
             let selected = choose_configuration_component(*component, current, &cli)?;
-            if !cli.dry_run {
-                migrate_legacy_configuration(&cli, &current.installed_components)?;
-            } else {
+            if cli.dry_run {
                 config::plan_legacy_environment_migration(
                     &cli.root,
                     &current.installed_components,
                 )?;
             }
-            configure_component(&cli, selected).await?;
+            if !cli.dry_run {
+                host_transaction(&cli.root, async {
+                    migrate_legacy_configuration(&cli, &current.installed_components)?;
+                    configure_component(&cli, selected).await
+                })
+                .await?;
+            } else {
+                configure_component(&cli, selected).await?;
+            }
         }
         Command::Uninstall(components) => {
             let current = state
@@ -186,11 +219,16 @@ async fn run() -> Result<()> {
             let plan = InstallationPlan::remove(current, &selected, platform, cli.purge)?;
             confirm_plan(&cli, &plan)?;
             if !cli.dry_run {
-                migrate_legacy_configuration(&cli, &plan.before)?;
                 let mut next = current.clone();
-                execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
-                next.installed_components = plan.after.clone();
-                persist_uninstall_state(&state_path, &mut state, next)?;
+                let mut next_state = state.clone();
+                host_transaction(&cli.root, async {
+                    migrate_legacy_configuration(&cli, &plan.before)?;
+                    execute_plan(&cli, &plan, &mut next, platform, architecture, false).await?;
+                    next.installed_components = plan.after.clone();
+                    persist_uninstall_state(&state_path, &mut next_state, next)
+                })
+                .await?;
+                state = next_state;
             }
         }
         _ => unreachable!(),
@@ -253,6 +291,32 @@ async fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn command_mutates(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Install { .. }
+            | Command::Add(_)
+            | Command::Remove(_)
+            | Command::Upgrade(_)
+            | Command::Configure(_)
+            | Command::Uninstall(_)
+    )
+}
+
+async fn host_transaction<T>(root: &Path, operation: impl Future<Output = Result<T>>) -> Result<T> {
+    let transaction = transaction::HostTransaction::begin(root)?;
+    match operation.await {
+        Ok(value) => {
+            transaction.commit()?;
+            Ok(value)
+        }
+        Err(error) => match transaction.rollback() {
+            Ok(()) => Err(error),
+            Err(rollback) => bail!("{error:#}; rollback also failed: {rollback:#}"),
+        },
+    }
 }
 
 fn telephony_service_check(diagnostic: &diagnostics::Diagnostic) -> bool {
@@ -369,6 +433,17 @@ async fn execute_plan(
                     println!("Telephony configuration saved.");
                 }
             }
+            if component == Component::Telephony {
+                let generated = telephony_generated_sounds_path(&cli.root)?;
+                if reconcile_component_runtime_access(
+                    &mut system,
+                    &cli.root,
+                    component,
+                    &generated,
+                )? {
+                    changed.insert(Component::Telephony);
+                }
+            }
             if let Some(unit) = component.unit() {
                 systemctl(&mut system, &cli.root, "enable", &[unit])?;
             }
@@ -455,13 +530,15 @@ async fn install_component(
     asset: &ComponentAsset,
     urls: &BTreeMap<String, String>,
 ) -> Result<activation::Activation> {
-    let base = rooted(
-        &cli.root,
-        &format!("/usr/lib/bts/components/{component}/releases"),
-    );
+    let releases_path = PathBuf::from(format!(
+        "/usr/lib/bts/components/{component}/releases"
+    ));
+    transaction::track_path(&cli.root, &releases_path)?;
+    let base = rooted(&cli.root, releases_path.to_str().expect("static UTF-8 path"));
     fs::create_dir_all(&base)?;
     let activation_id = activation_id(version, &asset.sha256);
     let destination = base.join(&activation_id);
+    transaction::track_path(&cli.root, &releases_path.join(&activation_id))?;
     if destination.exists() {
         ensure!(
             destination.is_dir(),
@@ -587,10 +664,11 @@ async fn upgrade(
         let bytes = client
             .download_asset(&urls, &asset.filename, &asset.sha256)
             .await?;
-        let base = rooted(
-            &cli.root,
-            &format!("/usr/lib/bts/components/{component}/releases"),
-        );
+        let releases_path = PathBuf::from(format!(
+            "/usr/lib/bts/components/{component}/releases"
+        ));
+        transaction::track_path(&cli.root, &releases_path)?;
+        let base = rooted(&cli.root, releases_path.to_str().expect("static UTF-8 path"));
         fs::create_dir_all(&base)?;
         let temporary = tempfile::Builder::new()
             .prefix(".stage-")
@@ -599,6 +677,7 @@ async fn upgrade(
         let bundle = temporary.path().join(component.bundle_root());
         validate_bundle_metadata(&bundle, *component, &manifest.release_version)?;
         let destination = base.join(activation_id);
+        transaction::track_path(&cli.root, &releases_path.join(activation_id))?;
         if destination.exists() {
             fs::remove_dir_all(&destination)?;
         }
@@ -636,11 +715,25 @@ async fn upgrade(
     {
         migrate_legacy_voice_assets(cli)?;
     }
-    let changed = activations
+    let mut changed = activations
         .iter()
         .filter(|activation| activation.changed)
         .map(|activation| activation.component)
         .collect::<BTreeSet<_>>();
+    if staged
+        .iter()
+        .any(|(component, _)| *component == Component::Telephony)
+    {
+        let generated = telephony_generated_sounds_path(&cli.root)?;
+        if reconcile_component_runtime_access(
+            &mut system,
+            &cli.root,
+            Component::Telephony,
+            &generated,
+        )? {
+            changed.insert(Component::Telephony);
+        }
+    }
     let mut desired_services = state.installed_components.clone();
     if desired_services.contains(&Component::Telephony)
         && !component_configuration_is_valid(&cli.root, Component::Telephony)
@@ -1269,6 +1362,18 @@ enum TtsProbe {
     Unreachable,
 }
 
+fn tts_probe_failure_message(probe: TtsProbe) -> &'static str {
+    match probe {
+        TtsProbe::InvalidResponse => {
+            "Kokoro TTS returned HTTP 200 with an unusable TTS response: the decoded body was not a RIFF/WAVE stream."
+        }
+        TtsProbe::UnreadableResponse => {
+            "Kokoro TTS returned HTTP 200 with an unusable TTS response because its body could not be read."
+        }
+        _ => "Kokoro TTS did not render test speech.",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoreProbe {
     Reachable,
@@ -1731,7 +1836,7 @@ async fn extend_remote_diagnostics(
                             suggested_action: Some(telephony_diagnostic_action()),
                         });
                     }
-                    TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse => {
+                    probe @ (TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse) => {
                         report.diagnostics.push(diagnostics::Diagnostic {
                             component: Some(Component::Telephony),
                             severity: diagnostics::Severity::Ok,
@@ -1744,7 +1849,8 @@ async fn extend_remote_diagnostics(
                             component: Some(Component::Telephony),
                             severity: diagnostics::Severity::Error,
                             message: format!(
-                                "Kokoro TTS responded but returned an unusable TTS response.\n  Endpoint: {tts_endpoint}"
+                                "{}\n  Endpoint: {tts_endpoint}",
+                                tts_probe_failure_message(probe)
                             ),
                             suggested_action: Some(telephony_diagnostic_action()),
                         });
@@ -1873,6 +1979,28 @@ fn migrate_legacy_voice_assets(cli: &Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn telephony_generated_sounds_path(root: &Path) -> Result<PathBuf> {
+    let configured = read_component_configuration(root, Component::Telephony).ok();
+    Ok(configured
+        .as_ref()
+        .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated")))
+}
+
+fn reconcile_component_runtime_access<S: SystemAdapter>(
+    system: &mut S,
+    root: &Path,
+    component: Component,
+    generated_sounds: &Path,
+) -> Result<bool> {
+    if component != Component::Telephony {
+        return Ok(false);
+    }
+    transaction::track_path(root, generated_sounds)?;
+    runtime_access::reconcile_telephony_runtime_access(system, root, generated_sounds)
 }
 
 fn restore_tty1(cli: &Cli, system: &mut impl SystemAdapter) -> Result<()> {
@@ -2225,6 +2353,18 @@ mod tests {
         format!("http://{address}")
     }
 
+    async fn serve_owned_once(response: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(&response).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
     fn telephony_values(ari_url: String, kokoro_url: String) -> BTreeMap<String, String> {
         BTreeMap::from([
             ("BTS_ARI_URL".into(), ari_url),
@@ -2251,6 +2391,34 @@ mod tests {
         assert!(bts_install::warranty_notice().contains("NO WARRANTY"));
         assert!(bts_install::COPYRIGHT.contains("BTS contributors"));
         assert_eq!(INSTALLER_VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn telephony_component_reconciliation_includes_runtime_filesystem_access() {
+        let mut system = RecordingSystem::default();
+        system.outputs.insert("stat".into(), "asterisk".into());
+        system
+            .outputs
+            .insert("getent".into(), "asterisk:x:995:".into());
+        system.outputs.insert("id".into(), "bts".into());
+
+        let changed = reconcile_component_runtime_access(
+            &mut system,
+            Path::new("/"),
+            Component::Telephony,
+            Path::new("/srv/asterisk/sounds/custom/bts-generated"),
+        )
+        .unwrap();
+
+        assert!(changed);
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "usermod" && arguments == &["-aG", "asterisk", "bts"]
+        }));
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "install"
+                && arguments.last().map(String::as_str)
+                    == Some("/srv/asterisk/sounds/custom/bts-generated")
+        }));
     }
 
     #[test]
@@ -2418,6 +2586,43 @@ mod tests {
         assert_eq!(ari_result, AriProbe::AuthenticationFailed);
         assert_eq!(probe_tts(&values).await, TtsProbe::InvalidResponse);
         assert!(!format!("{ari_result:?}").contains("never-print-this"));
+    }
+
+    #[tokio::test]
+    async fn tts_probe_accepts_ordinary_and_streamed_riff_wave() {
+        for wave in [
+            b"RIFF\x04\0\0\0WAVEdata".as_slice(),
+            b"RIFF\xff\xff\xff\xffWAVEdata".as_slice(),
+        ] {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\n\r\n",
+                wave.len()
+            );
+            let mut bytes = response.into_bytes();
+            bytes.extend_from_slice(wave);
+            let kokoro_url = serve_owned_once(bytes).await;
+            let values = telephony_values("http://127.0.0.1:1".into(), kokoro_url);
+            assert_eq!(probe_tts(&values).await, TtsProbe::Rendered);
+        }
+    }
+
+    #[tokio::test]
+    async fn tts_probe_accepts_chunked_streamed_riff_wave() {
+        let kokoro_url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nRIFF\xff\xff\xff\xffWAVEdata\r\n0\r\n\r\n",
+        )
+        .await;
+        let values = telephony_values("http://127.0.0.1:1".into(), kokoro_url);
+        assert_eq!(probe_tts(&values).await, TtsProbe::Rendered);
+    }
+
+    #[test]
+    fn invalid_audio_and_response_read_failures_have_distinct_diagnostics() {
+        let invalid = tts_probe_failure_message(TtsProbe::InvalidResponse);
+        let unreadable = tts_probe_failure_message(TtsProbe::UnreadableResponse);
+        assert!(invalid.contains("not a RIFF/WAVE stream"));
+        assert!(unreadable.contains("could not be read"));
+        assert_ne!(invalid, unreadable);
     }
 
     #[tokio::test]

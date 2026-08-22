@@ -175,6 +175,17 @@ The BTS Telephony configuration then uses:
 BTS_KOKORO_URL=http://192.168.1.50:8880/v1/audio/speech
 ```
 
+Generated speech defaults to `/var/lib/asterisk/sounds/en/bts-generated`. If
+Asterisk uses another sound tree, set an absolute namespace owned only by BTS:
+
+```env
+BTS_ASTERISK_GENERATED_SOUNDS_DIR=/srv/asterisk/sounds/en/bts-generated
+```
+
+`bts-install` reconciles traversal of the configured parents for the
+Telephony service identity and creates only this generated namespace as
+writable by BTS. `doctor` checks the same configured path as that identity.
+
 The Kokoro computer must listen on an address reachable from the BTS computer.
 Limit firewall access to the BTS host or trusted LAN; remote TTS does not need
 to be Internet-facing.
