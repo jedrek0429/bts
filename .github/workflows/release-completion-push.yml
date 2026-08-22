@@ -16,8 +16,13 @@ jobs:
         with:
           ref: fix/release-0.3-completion
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - name: Apply patch
         run: python3 scripts/apply-release-completion.py
+      - name: Format source
+        run: cargo fmt --all
       - name: Remove temporary tooling and commit
         run: |
           rm -f scripts/apply-release-completion.py .github/workflows/release-completion-push.yml .github/workflows/release-completion-apply.yml
