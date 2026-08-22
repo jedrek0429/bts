@@ -30,5 +30,8 @@ fn startup_warms_static_speech_before_starting_ari() {
         .find("AriClient::with_config")
         .expect("ARI startup must exist");
 
-    assert!(warm < ari, "static speech must be ready before ARI starts accepting calls");
+    assert!(
+        warm < ari,
+        "static speech must be ready before ARI starts accepting calls"
+    );
 }
