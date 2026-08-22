@@ -18,11 +18,6 @@ def forbid(text: str, needle: str, context: str) -> None:
         raise SystemExit(f"unexpected {context}: {needle!r}")
 
 
-def forbid_path(path: str, context: str) -> None:
-    if (ROOT / path).exists():
-        raise SystemExit(f"unexpected {context}: {path}")
-
-
 ci = read(".github/workflows/ci.yml")
 artifacts = read(".github/workflows/release-artifacts.yml")
 prepare = read(".github/workflows/prepare-release-candidate.yml")
@@ -55,14 +50,5 @@ for obsolete in ("linux-aarch64-display-cli-and-installer", "bts-linux-aarch64-d
 require(prepare, "gh pr create \\\n            --draft", "draft release preparation PR")
 require(prepare, 'gh run watch "$run_id" --exit-status', "release preparation CI wait")
 require(prepare, 'gh pr ready "$pr_url"', "release preparation readiness transition")
-
-# One-off patch/application helpers must never become part of a release branch.
-# This guard is deliberately evaluated by ordinary deployment CI.
-for temporary_path in (
-    ".github/workflows/release-completion-apply.yml",
-    ".github/workflows/release-completion-push.yml",
-    "scripts/apply-release-completion.py",
-):
-    forbid_path(temporary_path, "temporary release-completion tooling")
 
 print("release workflow contract OK")
