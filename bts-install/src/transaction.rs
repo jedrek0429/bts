@@ -57,10 +57,7 @@ impl HostTransaction {
             .map(capture)
             .collect::<Result<Vec<_>>>()?;
         let services = if root == Path::new("/") {
-            managed_units()
-                .into_iter()
-                .map(snapshot_service)
-                .collect()
+            managed_units().into_iter().map(snapshot_service).collect()
         } else {
             Vec::new()
         };
@@ -114,7 +111,10 @@ fn managed_paths(root: &Path) -> Vec<PathBuf> {
         rooted(root, "/var/lib/bts-install/state.json"),
         rooted(root, "/etc/bts/bts.env"),
         rooted(root, "/etc/systemd/system/getty@tty1.service"),
-        rooted(root, "/etc/systemd/system/getty.target.wants/getty@tty1.service"),
+        rooted(
+            root,
+            "/etc/systemd/system/getty.target.wants/getty@tty1.service",
+        ),
         rooted(root, "/usr/share/licenses/bts/LICENSE"),
         rooted(root, "/usr/bin/btscli"),
     ];
@@ -267,7 +267,10 @@ mod tests {
 
         transaction.rollback().unwrap();
         assert_eq!(fs::read_to_string(config).unwrap(), "before");
-        assert_eq!(fs::read_link(current).unwrap(), PathBuf::from("releases/old"));
+        assert_eq!(
+            fs::read_link(current).unwrap(),
+            PathBuf::from("releases/old")
+        );
         assert!(!new_config.exists());
         assert!(!pending(root.path()));
     }
