@@ -309,12 +309,18 @@ pub fn doctor<S: SystemAdapter>(
                 });
             }
             if *component == Component::Display {
-                for executable in ["/usr/bin/cage", "/usr/bin/seatd"] {
-                    if !system.exists(Path::new(executable)) {
+                for (name, candidates) in [
+                    ("cage", &["/usr/bin/cage", "/usr/local/bin/cage"][..]),
+                    ("seatd", &["/usr/bin/seatd", "/usr/sbin/seatd"][..]),
+                ] {
+                    if !candidates.iter().any(|path| system.exists(Path::new(path))) {
                         diagnostics.push(Diagnostic {
                             component: Some(*component),
                             severity: Severity::Error,
-                            message: format!("Display runtime dependency {executable} is missing."),
+                            message: format!(
+                                "Display runtime dependency {name} is missing (checked {}).",
+                                candidates.join(", ")
+                            ),
                             suggested_action: Some("Re-run: sudo bts-install add display".into()),
                         });
                     }
@@ -503,5 +509,26 @@ mod tests {
         let error = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
             .context("protected configuration");
         assert!(is_permission_denied(&error));
+    }
+
+    #[test]
+    fn doctor_accepts_debian_usr_sbin_seatd() {
+        let fake_root = tempdir().unwrap();
+        fs::create_dir_all(fake_root.path().join("usr/sbin")).unwrap();
+        fs::write(fake_root.path().join("usr/sbin/seatd"), "").unwrap();
+        fs::create_dir_all(fake_root.path().join("usr/bin")).unwrap();
+        fs::write(fake_root.path().join("usr/bin/cage"), "").unwrap();
+        let mut system = RecordingSystem {
+            root: fake_root.path().to_path_buf(),
+            ..RecordingSystem::default()
+        };
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::Aarch64);
+        state.installed_components.insert(Component::Display);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == Severity::Error && diagnostic.message.contains("seatd")
+        }));
     }
 }
