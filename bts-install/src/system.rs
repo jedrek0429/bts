@@ -157,9 +157,33 @@ pub fn create_service_account<S: SystemAdapter>(
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct MissingSeatSystem {
+        commands: Vec<(String, Vec<String>)>,
+    }
+
+    impl SystemAdapter for MissingSeatSystem {
+        fn run(&mut self, program: &str, arguments: &[String]) -> Result<()> {
+            self.commands.push((program.into(), arguments.to_vec()));
+            Ok(())
+        }
+
+        fn output(&mut self, program: &str, arguments: &[String]) -> Result<String> {
+            self.commands.push((program.into(), arguments.to_vec()));
+            if program == "getent" && arguments == ["group", "seat"] {
+                bail!("seat group missing");
+            }
+            Ok(String::new())
+        }
+
+        fn exists(&self, _path: &Path) -> bool {
+            false
+        }
+    }
+
     #[test]
     fn display_account_reconciles_the_seat_group() {
-        let mut system = RecordingSystem::default();
+        let mut system = MissingSeatSystem::default();
         create_service_account(&mut system, Path::new("/"), "bts-display").unwrap();
         assert!(
             system
