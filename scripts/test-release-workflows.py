@@ -57,6 +57,7 @@ require(prepare, 'gh run watch "$run_id" --exit-status', "release preparation CI
 require(prepare, 'gh pr ready "$pr_url"', "release preparation readiness transition")
 
 # One-off patch/application helpers must never become part of a release branch.
+# This guard is deliberately evaluated by ordinary deployment CI.
 for temporary_path in (
     ".github/workflows/release-completion-apply.yml",
     ".github/workflows/release-completion-push.yml",
