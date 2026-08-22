@@ -309,12 +309,18 @@ pub fn doctor<S: SystemAdapter>(
                 });
             }
             if *component == Component::Display {
-                for executable in ["/usr/bin/cage", "/usr/bin/seatd"] {
-                    if !system.exists(Path::new(executable)) {
+                for (name, candidates) in [
+                    ("cage", &["/usr/bin/cage", "/usr/local/bin/cage"][..]),
+                    ("seatd", &["/usr/bin/seatd", "/usr/sbin/seatd"][..]),
+                ] {
+                    if !candidates.iter().any(|path| system.exists(Path::new(path))) {
                         diagnostics.push(Diagnostic {
                             component: Some(*component),
                             severity: Severity::Error,
-                            message: format!("Display runtime dependency {executable} is missing."),
+                            message: format!(
+                                "Display runtime dependency {name} is missing (checked {}).",
+                                candidates.join(", ")
+                            ),
                             suggested_action: Some("Re-run: sudo bts-install add display".into()),
                         });
                     }
