@@ -21,12 +21,13 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import textwrap
 
           workflow = Path('.github/workflows/release-completion-patch.yml').read_text()
-          start = workflow.index("          from pathlib import Path\n")
-          end = workflow.index("          PY\n", start)
-          program = textwrap.dedent(workflow[start:end])
+          block = workflow.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+          program = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in block.splitlines()
+          )
           exec(compile(program, 'release-completion-patch', 'exec'))
           for path in [
               '.github/workflows/release-completion-kick.yml',
