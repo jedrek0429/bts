@@ -13,8 +13,9 @@ use bts_protocol::addons::v2::{
 };
 use bts_protocol::{
     AssetRef, AssetUpload, BtsState, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
-    DtmfMenuKey, EventKind, NewEvent, PresentationId, PresentationRequest, TerminalCapabilities,
-    TerminalCapability, TerminalTarget,
+    DtmfMenuKey, EventKind, NewEvent, PresentationId, PresentationRequest, TagMatch, TargetScope,
+    TerminalCapabilities, TerminalCapability, TerminalListResource, TerminalResource,
+    TerminalTarget,
 };
 use reqwest::Client;
 
@@ -153,8 +154,22 @@ impl HttpAddonContext {
     }
 
     pub async fn update(&self, lease_id: DisplayLeaseId, display: DisplayState) -> Result<()> {
-        if let Some(event) = self.presentation_event(display.clone()) {
-            return self.publish(event).await;
+        if let Some(target) = &self.selected_target {
+            for target in self.owned_terminal_targets(target).await? {
+                self.publish(EventKind::PresentationRequested {
+                    request: PresentationRequest {
+                        id: PresentationId::new(),
+                        target,
+                        required_capabilities: TerminalCapabilities::new([
+                            TerminalCapability::new(TerminalCapability::RENDER_TEXT)
+                                .expect("the built-in capability identifier is valid"),
+                        ]),
+                        display: display.clone(),
+                    },
+                })
+                .await?;
+            }
+            return Ok(());
         }
         self.publish(EventKind::DisplayRequested {
             command: DisplayCommand::Update {
@@ -164,6 +179,40 @@ impl HttpAddonContext {
             },
         })
         .await
+    }
+
+    async fn owned_terminal_targets(&self, target: &TerminalTarget) -> Result<Vec<TerminalTarget>> {
+        let endpoint = format!(
+            "{}{}",
+            self.core_http_url.trim_end_matches('/'),
+            bts_protocol::core::CORE_ADMIN_TERMINALS_PATH
+        );
+        let terminals: TerminalListResource = self
+            .http
+            .get(endpoint)
+            .send()
+            .await
+            .context("failed to inspect terminal presentation ownership")?
+            .error_for_status()
+            .context("BTS Core rejected terminal presentation inspection")?
+            .json()
+            .await
+            .context("failed to decode terminal presentation ownership")?;
+        Ok(terminals
+            .terminals
+            .into_iter()
+            .filter(|terminal| target_matches_terminal(target, terminal))
+            .filter(|terminal| {
+                terminal
+                    .presentation
+                    .as_ref()
+                    .is_some_and(|presentation| presentation.source == self.addon_id.as_str())
+            })
+            .map(|terminal| TerminalTarget::Terminal {
+                id: terminal.id,
+                scope: target.scope(),
+            })
+            .collect())
     }
 
     pub async fn release(&self, lease_id: DisplayLeaseId) -> Result<()> {
@@ -218,6 +267,22 @@ impl HttpAddonContext {
             .json()
             .await
             .context("failed to decode BTS Core asset reference")
+    }
+}
+
+fn target_matches_terminal(target: &TerminalTarget, terminal: &TerminalResource) -> bool {
+    let online = terminal.presence.is_some();
+    if target.scope() == TargetScope::Online && !online {
+        return false;
+    }
+    match target {
+        TerminalTarget::Terminal { id, .. } => terminal.id == *id,
+        TerminalTarget::Group { id, .. } => terminal.groups.contains(id),
+        TerminalTarget::Tags { query, .. } => match query.match_kind {
+            TagMatch::All => query.tags.iter().all(|tag| terminal.tags.contains(tag)),
+            TagMatch::Any => query.tags.iter().any(|tag| terminal.tags.contains(tag)),
+        },
+        TerminalTarget::All { .. } => true,
     }
 }
 
@@ -365,8 +430,17 @@ impl AddonRegistry {
 mod tests {
     use super::*;
     use bts_protocol::addons::v2::{API_VERSION, ActionRegistration, AddonVersion, MenuEntry};
-    use bts_protocol::{DtmfMenuKey, Event};
-    use bts_protocol::{TargetScope, TerminalId};
+    use bts_protocol::{
+        DtmfMenuKey, Event, PresentationGeneration, TargetScope, TerminalId,
+        TerminalImplementationId, TerminalListResource, TerminalName, TerminalPresentationResource,
+        TerminalResource,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
 
     struct Stub(AddonManifest);
     #[async_trait]
@@ -472,5 +546,109 @@ mod tests {
         );
         assert!(context.selected_target().is_none());
         assert!(context.presentation_event(DisplayState::Blank).is_none());
+    }
+
+    fn terminal(id: &str, presentation_source: &str) -> TerminalResource {
+        TerminalResource {
+            id: TerminalId::new(id).unwrap(),
+            name: TerminalName::new(id).unwrap(),
+            description: None,
+            implementation: TerminalImplementationId::new("test-terminal").unwrap(),
+            approved_capabilities: TerminalCapabilities::default(),
+            tags: Default::default(),
+            groups: Default::default(),
+            first_seen: None,
+            last_seen: None,
+            presence: None,
+            presentation: Some(TerminalPresentationResource {
+                presentation_id: PresentationId::new(),
+                generation: PresentationGeneration::new(1),
+                display: DisplayState::Clock {
+                    time: "12:00".into(),
+                    seconds: "00".into(),
+                    date: "Saturday, 22 August 2026".into(),
+                },
+                source: presentation_source.into(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_targeted_update_cannot_reclaim_a_superseded_terminal() {
+        let terminals = TerminalListResource {
+            terminals: vec![
+                terminal("terminal-a", "clock"),
+                terminal("terminal-b", "message"),
+            ],
+        };
+        let response_body = serde_json::to_vec(&terminals).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 8192];
+                let size = socket.read(&mut request).await.unwrap();
+                request.truncate(size);
+                requests_tx.send(request.clone()).unwrap();
+                let body = if request.starts_with(b"GET ") {
+                    response_body.as_slice()
+                } else {
+                    b"".as_slice()
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                socket.write_all(body).await.unwrap();
+            }
+        });
+
+        let context = HttpAddonContext::new(
+            format!("http://{address}"),
+            AddonId::new("clock"),
+            Path::new("/tmp"),
+        )
+        .with_selected_target(Some(TerminalTarget::All {
+            scope: TargetScope::Registered,
+        }));
+        context
+            .update(
+                DisplayLeaseId::new(),
+                DisplayState::Clock {
+                    time: "12:00".into(),
+                    seconds: "01".into(),
+                    date: "Saturday, 22 August 2026".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let inspection = timeout(Duration::from_secs(1), requests_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let update = timeout(Duration::from_secs(1), requests_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(inspection.starts_with(b"GET "));
+        assert!(update.starts_with(b"POST "));
+        let update = String::from_utf8_lossy(&update);
+        assert!(update.contains("terminal-a"));
+        assert!(!update.contains("terminal-b"));
+        assert!(
+            timeout(Duration::from_millis(50), requests_rx.recv())
+                .await
+                .is_err()
+        );
+        server.abort();
     }
 }
