@@ -253,4 +253,66 @@ mod tests {
         assert!(host.handle(&event).await.is_empty());
         assert_eq!(*seen.lock().unwrap(), Some(target));
     }
+
+    struct SupersessionAddon {
+        manifest: AddonManifest,
+        superseded: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Addon for SupersessionAddon {
+        fn manifest(&self) -> AddonManifest {
+            self.manifest.clone()
+        }
+
+        async fn presentation_superseded(
+            &self,
+            _: &dyn AddonContext,
+            _: &bts_protocol::TerminalTarget,
+        ) -> Result<()> {
+            self.superseded.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn targeted_action_supersedes_other_addons_on_that_target() {
+        let owner_calls = Arc::new(AtomicUsize::new(0));
+        let superseded = Arc::new(AtomicUsize::new(0));
+        let observer_manifest = AddonManifest {
+            api_version: API_VERSION,
+            id: AddonId::new("observer"),
+            name: "observer".into(),
+            version: AddonVersion::new(1, 0, 0),
+            actions: vec![],
+            menu: vec![],
+            capabilities: vec![],
+            screens: vec![],
+        };
+        let host = Addons {
+            registry: AddonRegistry::new(vec![
+                addon("owner", "owner.run", owner_calls, false),
+                Box::new(SupersessionAddon {
+                    manifest: observer_manifest,
+                    superseded: superseded.clone(),
+                }),
+            ])
+            .unwrap(),
+            core_url: "http://127.0.0.1:1".into(),
+            data_root: PathBuf::new(),
+        };
+        let event = Event::new(
+            "test",
+            EventKind::ActionRequested {
+                request: ActionRequest {
+                    action: ActionId::new("owner.run"),
+                    parameters: serde_json::Value::Null,
+                    target: Some(bts_protocol::TerminalTarget::all()),
+                },
+            },
+        );
+
+        assert!(host.handle(&event).await.is_empty());
+        assert_eq!(superseded.load(Ordering::SeqCst), 1);
+    }
 }
