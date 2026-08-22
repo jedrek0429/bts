@@ -1269,6 +1269,18 @@ enum TtsProbe {
     Unreachable,
 }
 
+fn tts_probe_failure_message(probe: TtsProbe) -> &'static str {
+    match probe {
+        TtsProbe::InvalidResponse => {
+            "Kokoro TTS returned HTTP 200 with an unusable TTS response: the decoded body was not a RIFF/WAVE stream."
+        }
+        TtsProbe::UnreadableResponse => {
+            "Kokoro TTS returned HTTP 200 with an unusable TTS response because its body could not be read."
+        }
+        _ => "Kokoro TTS did not render test speech.",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoreProbe {
     Reachable,
@@ -1731,7 +1743,7 @@ async fn extend_remote_diagnostics(
                             suggested_action: Some(telephony_diagnostic_action()),
                         });
                     }
-                    TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse => {
+                    probe @ (TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse) => {
                         report.diagnostics.push(diagnostics::Diagnostic {
                             component: Some(Component::Telephony),
                             severity: diagnostics::Severity::Ok,
@@ -1744,7 +1756,8 @@ async fn extend_remote_diagnostics(
                             component: Some(Component::Telephony),
                             severity: diagnostics::Severity::Error,
                             message: format!(
-                                "Kokoro TTS responded but returned an unusable TTS response.\n  Endpoint: {tts_endpoint}"
+                                "{}\n  Endpoint: {tts_endpoint}",
+                                tts_probe_failure_message(probe)
                             ),
                             suggested_action: Some(telephony_diagnostic_action()),
                         });
@@ -2225,6 +2238,18 @@ mod tests {
         format!("http://{address}")
     }
 
+    async fn serve_owned_once(response: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream.write_all(&response).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
     fn telephony_values(ari_url: String, kokoro_url: String) -> BTreeMap<String, String> {
         BTreeMap::from([
             ("BTS_ARI_URL".into(), ari_url),
@@ -2418,6 +2443,43 @@ mod tests {
         assert_eq!(ari_result, AriProbe::AuthenticationFailed);
         assert_eq!(probe_tts(&values).await, TtsProbe::InvalidResponse);
         assert!(!format!("{ari_result:?}").contains("never-print-this"));
+    }
+
+    #[tokio::test]
+    async fn tts_probe_accepts_ordinary_and_streamed_riff_wave() {
+        for wave in [
+            b"RIFF\x04\0\0\0WAVEdata".as_slice(),
+            b"RIFF\xff\xff\xff\xffWAVEdata".as_slice(),
+        ] {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\n\r\n",
+                wave.len()
+            );
+            let mut bytes = response.into_bytes();
+            bytes.extend_from_slice(wave);
+            let kokoro_url = serve_owned_once(bytes).await;
+            let values = telephony_values("http://127.0.0.1:1".into(), kokoro_url);
+            assert_eq!(probe_tts(&values).await, TtsProbe::Rendered);
+        }
+    }
+
+    #[tokio::test]
+    async fn tts_probe_accepts_chunked_streamed_riff_wave() {
+        let kokoro_url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nRIFF\xff\xff\xff\xffWAVEdata\r\n0\r\n\r\n",
+        )
+        .await;
+        let values = telephony_values("http://127.0.0.1:1".into(), kokoro_url);
+        assert_eq!(probe_tts(&values).await, TtsProbe::Rendered);
+    }
+
+    #[test]
+    fn invalid_audio_and_response_read_failures_have_distinct_diagnostics() {
+        let invalid = tts_probe_failure_message(TtsProbe::InvalidResponse);
+        let unreadable = tts_probe_failure_message(TtsProbe::UnreadableResponse);
+        assert!(invalid.contains("not a RIFF/WAVE stream"));
+        assert!(unreadable.contains("could not be read"));
+        assert_ne!(invalid, unreadable);
     }
 
     #[tokio::test]
