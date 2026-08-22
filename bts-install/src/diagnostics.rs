@@ -1,4 +1,8 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -266,6 +270,82 @@ pub fn doctor<S: SystemAdapter>(
                     });
                 }
             }
+            if root == Path::new("/") {
+                let configured = fs::read_to_string(root.join("etc/bts/telephony.env"))
+                    .ok()
+                    .and_then(|text| crate::config::parse_environment(&text).ok());
+                let generated = configured
+                    .as_ref()
+                    .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated")
+                    });
+                let inaccessible = generated
+                    .parent()
+                    .into_iter()
+                    .flat_map(Path::ancestors)
+                    .take_while(|path| *path != Path::new("/"))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .find(|path| {
+                        system
+                            .run_quiet(
+                                "runuser",
+                                &[
+                                    "-u".into(),
+                                    "bts".into(),
+                                    "--".into(),
+                                    "test".into(),
+                                    "-x".into(),
+                                    path.display().to_string(),
+                                ],
+                            )
+                            .is_err()
+                    });
+                if let Some(path) = inaccessible {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Telephony runtime account cannot traverse {} on the way to generated Asterisk sounds.",
+                            path.display()
+                        ),
+                        suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                    });
+                } else if system
+                    .run_quiet(
+                        "runuser",
+                        &[
+                            "-u".into(),
+                            "bts".into(),
+                            "--".into(),
+                            "test".into(),
+                            "-w".into(),
+                            generated.display().to_string(),
+                        ],
+                    )
+                    .is_err()
+                {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Telephony runtime account cannot write generated Asterisk sounds at {}.",
+                            generated.display()
+                        ),
+                        suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Ok,
+                        message: "Telephony Asterisk generated-sound namespace is accessible to the runtime account.".into(),
+                        suggested_action: None,
+                    });
+                }
+            }
         }
 
         if root == Path::new("/") && component.unit().is_some() {
@@ -309,12 +389,18 @@ pub fn doctor<S: SystemAdapter>(
                 });
             }
             if *component == Component::Display {
-                for executable in ["/usr/bin/cage", "/usr/bin/seatd"] {
-                    if !system.exists(Path::new(executable)) {
+                for (name, candidates) in [
+                    ("cage", &["/usr/bin/cage", "/usr/local/bin/cage"][..]),
+                    ("seatd", &["/usr/bin/seatd", "/usr/sbin/seatd"][..]),
+                ] {
+                    if !candidates.iter().any(|path| system.exists(Path::new(path))) {
                         diagnostics.push(Diagnostic {
                             component: Some(*component),
                             severity: Severity::Error,
-                            message: format!("Display runtime dependency {executable} is missing."),
+                            message: format!(
+                                "Display runtime dependency {name} is missing (checked {}).",
+                                candidates.join(", ")
+                            ),
                             suggested_action: Some("Re-run: sudo bts-install add display".into()),
                         });
                     }
