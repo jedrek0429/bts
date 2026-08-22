@@ -66,8 +66,7 @@ manual release gate; automate every deterministic layer beneath them.
 
 - One fix or one feature gets exactly one dedicated branch and one pull request.
 - Base pull requests on the designated working branch whenever possible. For
-  release work this is normally `release/X.Y.x`; otherwise it is normally
-  `main`. Prefer that shared integration branch over a stack whenever the change
+  release work this is normally `release/X.Y.x`. Prefer that shared integration branch over a stack whenever the change
   can stand on its own.
 - A branch and its pull request must have one specific, reviewable purpose. Keep
   the diff small enough that a reviewer can identify every design choice,
@@ -88,7 +87,7 @@ manual release gate; automate every deterministic layer beneath them.
   each of those independently on the designated working branch.
 - When a direct dependency requires a stack, keep each change in a focused pull
   request. Each dependent PR targets the branch immediately below it; the
-  bottom PR targets `main` or the required long-lived release branch.
+  bottom PR targets the required long-lived release branch.
 - A stack has strict linear history. Finish each lower branch before building
   its child, create only one child at each level, and update descendants in
   order if an ancestor changes. Prefer forward, linear development over
