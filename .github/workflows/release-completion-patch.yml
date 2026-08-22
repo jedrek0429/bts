@@ -1,0 +1,683 @@
+name: Apply release completion patch
+
+on:
+  push:
+    branches: [fix/release-0.3-completion]
+    paths: [.github/workflows/release-completion-patch.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/release-0.3-completion
+          fetch-depth: 0
+      - name: Apply audited release fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"missing patch anchor in {path}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # #92: notify background addons when an explicit action supersedes a target.
+          replace(
+              "bts-addons/src/addons/mod.rs",
+              '''    pub(crate) async fn handle(&self, event: &Event) -> Vec<AddonFailure> {
+        let targets: Vec<_> = match &event.kind {
+            EventKind::ActionRequested { request } => self
+                .registry
+                .action_owner(&request.action)
+                .into_iter()
+                .cloned()
+                .collect(),
+            _ => self.registry.entries().map(|(id, _)| id.clone()).collect(),
+        };
+        let mut failures = Vec::new();
+''',
+              '''    pub(crate) async fn handle(&self, event: &Event) -> Vec<AddonFailure> {
+        let mut failures = Vec::new();
+        if let EventKind::ActionRequested { request } = &event.kind
+            && let Some(target) = &request.target
+        {
+            let owner = self.registry.action_owner(&request.action).cloned();
+            for (id, addon) in self.registry.entries() {
+                if owner.as_ref() == Some(id) {
+                    continue;
+                }
+                let context = self
+                    .context(id)
+                    .with_selected_target(Some(target.clone()));
+                if let Err(error) = addon.presentation_superseded(&context, target).await {
+                    failures.push(failure(id, "presentation supersession", error));
+                }
+            }
+        }
+        let targets: Vec<_> = match &event.kind {
+            EventKind::ActionRequested { request } => self
+                .registry
+                .action_owner(&request.action)
+                .into_iter()
+                .cloned()
+                .collect(),
+            _ => self.registry.entries().map(|(id, _)| id.clone()).collect(),
+        };
+'''
+          )
+
+          # #95: expose deterministic session speech so it can be warmed before ARI accepts calls.
+          replace(
+              "bts-telephony/src/session.rs",
+              '''fn target_choices(targets: &TelephonyTargets) -> Vec<TargetChoice> {''',
+              '''pub fn static_speech_prompts() -> Vec<String> {
+    let mut prompts = Vec::new();
+    for encoded in [
+        CONFIGURATION_PROMPT,
+        NO_TERMINALS_PROMPT,
+        SELECT_TARGET_PROMPT,
+        TARGET_UNAVAILABLE_PROMPT,
+        INVALID_SELECTION_PROMPT,
+    ] {
+        for item in media_items(encoded) {
+            if let MediaItem::Speech(text) = item
+                && !prompts.contains(&text)
+            {
+                prompts.push(text);
+            }
+        }
+    }
+    for text in ["Returning to the previous service.", "Press hash to confirm."] {
+        if !prompts.iter().any(|value| value == text) {
+            prompts.push(text.to_owned());
+        }
+    }
+    prompts
+}
+
+fn target_choices(targets: &TelephonyTargets) -> Vec<TargetChoice> {'''
+          )
+
+          # #95: warm static speech before registering the ARI event listener and keep
+          # synthesis off the live call path. Dynamic misses warm asynchronously.
+          replace(
+              "bts-telephony/src/main.rs",
+              '''    session::{CallerIdentity, MediaItem, TelephonySession},''',
+              '''    session::{CallerIdentity, MediaItem, TelephonySession, static_speech_prompts},'''
+          )
+          replace(
+              "bts-telephony/src/main.rs",
+              '''    let voice = Arc::new(runtime_voice_cache());
+''',
+              '''    let voice = Arc::new(runtime_voice_cache());
+    warm_static_speech(&menu_media_uris, &voice)
+        .await
+        .context("required Telephony speech could not be warmed")?;
+'''
+          )
+          replace(
+              "bts-telephony/src/main.rs",
+              '''async fn play_media_queue(
+    client: &AriClient,
+    channel_id: &str,
+    media: &[MediaItem],
+    voice: &VoiceCache<KokoroSynthesizer>,
+) {''',
+              '''async fn play_media_queue(
+    client: &AriClient,
+    channel_id: &str,
+    media: &[MediaItem],
+    voice: &Arc<VoiceCache<KokoroSynthesizer>>,
+) {'''
+          )
+          replace(
+              "bts-telephony/src/main.rs",
+              '''            MediaItem::Speech(text) => match voice.render(text).await {
+                Ok(prompt) => prompt.media_uri,
+                Err(error) => {
+                    warn!(
+                        %channel_id,
+                        %error,
+                        "failed to render voice prompt; playing the emergency error tone and abandoning the incomplete queue"
+                    );
+                    stop_after_item = true;
+                    "sound:beeperr".to_owned()
+                }
+            },''',
+              '''            MediaItem::Speech(text) => match voice.cached(text).await {
+                Ok(Some(prompt)) => prompt.media_uri,
+                Ok(None) => {
+                    let voice = Arc::clone(voice);
+                    let text = text.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = voice.render(&text).await {
+                            warn!(%error, prompt = %text, "background voice-cache warm failed");
+                        }
+                    });
+                    warn!(
+                        %channel_id,
+                        prompt = %text,
+                        "uncached dynamic speech skipped on live call; warming in background"
+                    );
+                    stop_after_item = true;
+                    "sound:beeperr".to_owned()
+                }
+                Err(error) => {
+                    warn!(
+                        %channel_id,
+                        %error,
+                        "failed to read cached voice prompt; playing the emergency error tone and abandoning the incomplete queue"
+                    );
+                    stop_after_item = true;
+                    "sound:beeperr".to_owned()
+                }
+            },'''
+          )
+          replace(
+              "bts-telephony/src/main.rs",
+              '''fn runtime_voice_cache() -> VoiceCache<KokoroSynthesizer> {''',
+              '''async fn warm_static_speech(
+    menu: &[MediaItem],
+    voice: &VoiceCache<KokoroSynthesizer>,
+) -> anyhow::Result<()> {
+    let mut prompts = static_speech_prompts();
+    for item in menu {
+        if let MediaItem::Speech(text) = item
+            && !prompts.contains(text)
+        {
+            prompts.push(text.clone());
+        }
+    }
+    for prompt in prompts {
+        voice
+            .render(&prompt)
+            .await
+            .with_context(|| format!("failed to warm static speech {prompt:?}"))?;
+    }
+    Ok(())
+}
+
+fn runtime_voice_cache() -> VoiceCache<KokoroSynthesizer> {'''
+          )
+
+          # #101/#102/#93/#94/#89/#96 installer release gates.
+          replace(
+              "bts-install/src/main.rs",
+              '''    services,
+    state::InstallerState,
+    system::{RealSystem, SystemAdapter, create_service_account, systemctl},
+};''',
+              '''    services,
+    state::InstallerState,
+    system::{RealSystem, SystemAdapter, create_service_account, systemctl},
+    transaction,
+};'''
+          )
+          replace(
+              "bts-install/src/main.rs",
+              '''    let (platform, architecture) = detect_host(&cli.root)?;
+
+    match &cli.command {''',
+              '''    let (platform, architecture) = detect_host(&cli.root)?;
+    if transaction::recover_pending(&cli.root)? {
+        state = InstallerState::load(&state_path)?;
+        if !cli.quiet && !cli.json {
+            println!("Recovered an interrupted installer transaction before applying the new operation.");
+        }
+    }
+
+    match &cli.command {'''
+          )
+          # Move legacy migration inside the transaction for plan-based operations.
+          for old in [
+              '''                migrate_legacy_configuration(&cli, &plan.after)?;\n''',
+              '''                migrate_legacy_configuration(&cli, &plan.before)?;\n''',
+          ]:
+              while old in Path("bts-install/src/main.rs").read_text():
+                  replace("bts-install/src/main.rs", old, "")
+          replace(
+              "bts-install/src/main.rs",
+              '''                next.write_atomic(&state_path)?;
+                state = Some(next);''',
+              '''                next.write_atomic(&state_path)?;
+                transaction::commit_pending(&cli.root)?;
+                state = Some(next);'''
+          )
+          # Same state persistence sequence occurs in Add; patch the next occurrence.
+          replace(
+              "bts-install/src/main.rs",
+              '''                next.write_atomic(&state_path)?;
+                state = Some(next);''',
+              '''                next.write_atomic(&state_path)?;
+                transaction::commit_pending(&cli.root)?;
+                state = Some(next);'''
+          )
+          replace(
+              "bts-install/src/main.rs",
+              '''                persist_uninstall_state(&state_path, &mut state, next)?;''',
+              '''                persist_uninstall_state(&state_path, &mut state, next)?;
+                transaction::commit_pending(&cli.root)?;'''
+          )
+          replace(
+              "bts-install/src/main.rs",
+              '''            if !cli.dry_run {
+                current.write_atomic(&state_path)?;
+            }''',
+              '''            if !cli.dry_run {
+                current.write_atomic(&state_path)?;
+                transaction::commit_pending(&cli.root)?;
+            }'''
+          )
+
+          # Wrap plan execution in a durable rollback journal. The journal remains
+          # pending until the caller has atomically saved installer state.
+          replace(
+              "bts-install/src/main.rs",
+              '''async fn execute_plan(
+    cli: &Cli,
+    plan: &InstallationPlan,
+    state: &mut InstallerState,
+    platform: Platform,
+    architecture: bts_install::platform::Architecture,
+    refresh_existing: bool,
+) -> Result<()> {
+    let added: Vec<_> = plan.after.difference(&plan.before).copied().collect();''',
+              '''async fn execute_plan(
+    cli: &Cli,
+    plan: &InstallationPlan,
+    state: &mut InstallerState,
+    platform: Platform,
+    architecture: bts_install::platform::Architecture,
+    refresh_existing: bool,
+) -> Result<()> {
+    let transaction = transaction::HostTransaction::begin(&cli.root)?;
+    match execute_plan_inner(cli, plan, state, platform, architecture, refresh_existing).await {
+        Ok(()) => {
+            drop(transaction);
+            Ok(())
+        }
+        Err(error) => {
+            let rollback = transaction.rollback();
+            anyhow::bail!(
+                "Installer transaction failed: {error:#}; rollback {}.",
+                if rollback.is_ok() { "succeeded" } else { "failed" }
+            )
+        }
+    }
+}
+
+async fn execute_plan_inner(
+    cli: &Cli,
+    plan: &InstallationPlan,
+    state: &mut InstallerState,
+    platform: Platform,
+    architecture: bts_install::platform::Architecture,
+    refresh_existing: bool,
+) -> Result<()> {
+    let migration_components = if plan
+        .actions
+        .iter()
+        .any(|action| matches!(action, Action::RemoveComponent { .. }))
+    {
+        &plan.before
+    } else {
+        &plan.after
+    };
+    migrate_legacy_configuration(cli, migration_components)?;
+    let added: Vec<_> = plan.after.difference(&plan.before).copied().collect();'''
+          )
+
+          # Reconcile Telephony access after its configuration exists and on every refresh.
+          replace(
+              "bts-install/src/main.rs",
+              '''            if let Some(unit) = component.unit() {
+                systemctl(&mut system, &cli.root, "enable", &[unit])?;
+            }''',
+              '''            if component == Component::Telephony {
+                reconcile_telephony_runtime_access(cli)?;
+            }
+            if let Some(unit) = component.unit() {
+                systemctl(&mut system, &cli.root, "enable", &[unit])?;
+            }'''
+          )
+          replace(
+              "bts-install/src/main.rs",
+              '''    if staged
+        .iter()
+        .any(|(component, _)| *component == Component::Telephony)
+    {
+        migrate_legacy_voice_assets(cli)?;
+    }
+    let changed = activations''',
+              '''    if staged
+        .iter()
+        .any(|(component, _)| *component == Component::Telephony)
+    {
+        migrate_legacy_voice_assets(cli)?;
+        reconcile_telephony_runtime_access(cli)?;
+    }
+    let changed = activations'''
+          )
+          replace(
+              "bts-install/src/main.rs",
+              '''fn migrate_legacy_voice_assets(cli: &Cli) -> Result<()> {''',
+              '''fn reconcile_telephony_runtime_access(cli: &Cli) -> Result<()> {
+    if cli.root != Path::new("/") {
+        return Ok(());
+    }
+    let configured = read_component_configuration(&cli.root, Component::Telephony).ok();
+    let generated = PathBuf::from(
+        configured
+            .as_ref()
+            .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+            .map(String::as_str)
+            .unwrap_or("/var/lib/asterisk/sounds/en/bts-generated"),
+    );
+
+    if let Some(parent) = generated.parent() {
+        for ancestor in parent.ancestors() {
+            if ancestor == Path::new("/") {
+                break;
+            }
+            let output = std::process::Command::new("stat")
+                .args(["-c", "%G"])
+                .arg(ancestor)
+                .output();
+            let Ok(output) = output else { continue };
+            if !output.status.success() {
+                continue;
+            }
+            let group = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            if group.is_empty() || group == "root" || group == "bts" || group == "UNKNOWN" {
+                continue;
+            }
+            let exists = std::process::Command::new("getent")
+                .args(["group", &group])
+                .status()
+                .is_ok_and(|status| status.success());
+            if exists {
+                let status = std::process::Command::new("usermod")
+                    .args(["-aG", &group, "bts"])
+                    .status()?;
+                ensure!(status.success(), "Could not grant bts access through group {group}.");
+                break;
+            }
+        }
+    }
+    let status = std::process::Command::new("install")
+        .args(["-d", "-o", "bts", "-g", "bts", "-m", "0755"])
+        .arg(&generated)
+        .status()?;
+    ensure!(
+        status.success(),
+        "Could not reconcile the BTS generated Asterisk sound namespace."
+    );
+    Ok(())
+}
+
+fn migrate_legacy_voice_assets(cli: &Cli) -> Result<()> {'''
+          )
+
+          # Upgrade gets the same transaction safety as install/add/remove.
+          replace(
+              "bts-install/src/main.rs",
+              '''async fn upgrade(
+    cli: &Cli,
+    state: &mut InstallerState,
+    selected: &BTreeSet<Component>,
+    platform: Platform,
+    architecture: bts_install::platform::Architecture,
+) -> Result<()> {
+    let client = release_client(cli)?;''',
+              '''async fn upgrade(
+    cli: &Cli,
+    state: &mut InstallerState,
+    selected: &BTreeSet<Component>,
+    platform: Platform,
+    architecture: bts_install::platform::Architecture,
+) -> Result<()> {
+    if cli.dry_run {
+        return upgrade_inner(cli, state, selected, platform, architecture).await;
+    }
+    let transaction = transaction::HostTransaction::begin(&cli.root)?;
+    match upgrade_inner(cli, state, selected, platform, architecture).await {
+        Ok(()) => {
+            drop(transaction);
+            Ok(())
+        }
+        Err(error) => {
+            let rollback = transaction.rollback();
+            anyhow::bail!(
+                "Upgrade transaction failed: {error:#}; rollback {}.",
+                if rollback.is_ok() { "succeeded" } else { "failed" }
+            )
+        }
+    }
+}
+
+async fn upgrade_inner(
+    cli: &Cli,
+    state: &mut InstallerState,
+    selected: &BTreeSet<Component>,
+    platform: Platform,
+    architecture: bts_install::platform::Architecture,
+) -> Result<()> {
+    let client = release_client(cli)?;'''
+          )
+
+          # #102 and #94 doctor checks.
+          replace(
+              "bts-install/src/diagnostics.rs",
+              '''            for (path, description) in [
+                ("var/cache/bts/voice", "voice cache"),
+                (
+                    "var/lib/asterisk/sounds/en/bts-generated",
+                    "Asterisk generated-sound namespace",
+                ),
+            ] {
+                if !root.join(path).is_dir() {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!("Telephony {description} is unavailable."),
+                        suggested_action: Some(
+                            "Run: sudo systemctl restart bts-telephony.service".into(),
+                        ),
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Ok,
+                        message: format!("Telephony {description} is available."),
+                        suggested_action: None,
+                    });
+                }
+            }''',
+              '''            let voice_cache = root.join("var/cache/bts/voice");
+            if !voice_cache.is_dir() {
+                diagnostics.push(Diagnostic {
+                    component: Some(Component::Telephony),
+                    severity: Severity::Error,
+                    message: "Telephony voice cache is unavailable.".into(),
+                    suggested_action: Some("Run: sudo systemctl restart bts-telephony.service".into()),
+                });
+            } else {
+                diagnostics.push(Diagnostic {
+                    component: Some(Component::Telephony),
+                    severity: Severity::Ok,
+                    message: "Telephony voice cache is available.".into(),
+                    suggested_action: None,
+                });
+            }
+            let configured = fs::read_to_string(root.join("etc/bts/telephony.env"))
+                .ok()
+                .and_then(|text| crate::config::parse_environment(&text).ok());
+            let generated = configured
+                .as_ref()
+                .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated"));
+            let generated = if root == Path::new("/") {
+                generated
+            } else {
+                root.join(generated.strip_prefix("/").unwrap_or(&generated))
+            };
+            if !generated.is_dir() {
+                diagnostics.push(Diagnostic {
+                    component: Some(Component::Telephony),
+                    severity: Severity::Error,
+                    message: format!(
+                        "Telephony Asterisk generated-sound namespace {} is unavailable.",
+                        generated.display()
+                    ),
+                    suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                });
+            } else if root == Path::new("/") {
+                let inaccessible = generated
+                    .parent()
+                    .into_iter()
+                    .flat_map(Path::ancestors)
+                    .take_while(|path| *path != Path::new("/"))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .find(|path| {
+                        system
+                            .run_quiet(
+                                "runuser",
+                                &[
+                                    "-u".into(),
+                                    "bts".into(),
+                                    "--".into(),
+                                    "test".into(),
+                                    "-x".into(),
+                                    path.display().to_string(),
+                                ],
+                            )
+                            .is_err()
+                    });
+                if let Some(path) = inaccessible {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Telephony runtime account cannot traverse {} on the way to generated Asterisk sounds.",
+                            path.display()
+                        ),
+                        suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                    });
+                } else if system
+                    .run_quiet(
+                        "runuser",
+                        &[
+                            "-u".into(),
+                            "bts".into(),
+                            "--".into(),
+                            "test".into(),
+                            "-w".into(),
+                            generated.display().to_string(),
+                        ],
+                    )
+                    .is_err()
+                {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Telephony runtime account cannot write generated Asterisk sounds at {}.",
+                            generated.display()
+                        ),
+                        suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Ok,
+                        message: "Telephony Asterisk generated-sound namespace is accessible to the runtime account.".into(),
+                        suggested_action: None,
+                    });
+                }
+            } else {
+                diagnostics.push(Diagnostic {
+                    component: Some(Component::Telephony),
+                    severity: Severity::Ok,
+                    message: "Telephony Asterisk generated-sound namespace is available.".into(),
+                    suggested_action: None,
+                });
+            }'''
+          )
+          replace(
+              "bts-install/src/diagnostics.rs",
+              '''                for executable in ["/usr/bin/cage", "/usr/bin/seatd"] {
+                    if !system.exists(Path::new(executable)) {
+                        diagnostics.push(Diagnostic {
+                            component: Some(*component),
+                            severity: Severity::Error,
+                            message: format!("Display runtime dependency {executable} is missing."),
+                            suggested_action: Some("Re-run: sudo bts-install add display".into()),
+                        });
+                    }
+                }''',
+              '''                for (name, candidates) in [
+                    ("cage", &["/usr/bin/cage", "/usr/local/bin/cage"][..]),
+                    ("seatd", &["/usr/bin/seatd", "/usr/sbin/seatd"][..]),
+                ] {
+                    if !candidates.iter().any(|path| system.exists(Path::new(path))) {
+                        diagnostics.push(Diagnostic {
+                            component: Some(*component),
+                            severity: Severity::Error,
+                            message: format!(
+                                "Display runtime dependency {name} is missing (checked {}).",
+                                candidates.join(", ")
+                            ),
+                            suggested_action: Some("Re-run: sudo bts-install add display".into()),
+                        });
+                    }
+                }'''
+          )
+
+          # #96: safe diagnostic detail plus chunked streamed-WAV regression.
+          replace(
+              "bts-install/src/main.rs",
+              '''                            message: format!(
+                                "Kokoro TTS responded but returned an unusable TTS response.\\n  Endpoint: {tts_endpoint}"
+                            ),''',
+              '''                            message: format!(
+                                "Kokoro TTS returned HTTP 200, but the decoded response body was not a RIFF/WAVE stream.\\n  Endpoint: {tts_endpoint}"
+                            ),'''
+          )
+          replace(
+              "bts-install/src/main.rs",
+              '''    #[tokio::test]
+    async fn telephony_probes_distinguish_unreachable_services() {''',
+              '''    #[tokio::test]
+    async fn tts_probe_accepts_chunked_streamed_riff_wave() {
+        let kokoro_url = serve_once(
+            b"HTTP/1.1 200 OK\\r\\nContent-Type: audio/wav\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n10\\r\\nRIFF\\xff\\xff\\xff\\xffWAVEdata\\r\\n0\\r\\n\\r\\n",
+        )
+        .await;
+        let values = telephony_values("http://127.0.0.1:1".into(), kokoro_url);
+        assert_eq!(probe_tts(&values).await, TtsProbe::Rendered);
+    }
+
+    #[tokio::test]
+    async fn telephony_probes_distinguish_unreachable_services() {'''
+          )
+
+          # Keep the temporary patch workflow out of the finished branch.
+          Path(".github/workflows/release-completion-patch.yml").unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(release): complete 0.3 release gates"
+          git push origin HEAD:fix/release-0.3-completion
