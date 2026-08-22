@@ -17,6 +17,18 @@ use tracing_subscriber::EnvFilter;
 const APPLICATION_NAME: &str = "bts";
 const EVENT_SOURCE: &str = "bts-telephony";
 const WELCOME_PROMPT: &str = "Welcome to Bansleben Telephone Services.";
+const STATIC_SESSION_PROMPTS: &[&str] = &[
+    "Configuration.",
+    "Press one to change terminal.",
+    "Press star to return.",
+    "No terminals are online.",
+    "Press zero for configuration.",
+    "Select a terminal target.",
+    "The selected target is unavailable.",
+    "That selection is not valid.",
+    "Returning to the previous service.",
+    "Press hash to confirm.",
+];
 
 #[derive(Clone)]
 struct EventPublisher {
@@ -90,13 +102,16 @@ async fn main() -> anyhow::Result<()> {
 
     let (menu_media_uris, menu_actions) = load_menu(&core_url).await?;
     let menu_actions = Arc::new(menu_actions);
+    let voice = Arc::new(runtime_voice_cache());
+    warm_static_speech(&menu_media_uris, &voice)
+        .await
+        .context("required Telephony speech could not be warmed")?;
 
     let config = Config::new(&ari_url, &ari_username, &ari_password);
     let mut ari = AriClient::with_config(config);
 
     let publisher = EventPublisher::new(&core_url);
     let sessions = Arc::new(Mutex::new(HashMap::<String, TelephonySession>::new()));
-    let voice = Arc::new(runtime_voice_cache());
     let playbacks = Arc::new(Mutex::new(HashMap::<String, Vec<String>>::new()));
 
     /*
@@ -347,17 +362,37 @@ async fn play_media_queue(
     client: &asterisk_ari::apis::client::Client,
     channel_id: &str,
     media: &[MediaItem],
-    voice: &VoiceCache<KokoroSynthesizer>,
+    voice: &Arc<VoiceCache<KokoroSynthesizer>>,
 ) -> Vec<String> {
     let mut playback_ids = Vec::new();
     for item in media {
         let mut stop_after_item = false;
         let media_uri = match item {
             MediaItem::Uri(uri) => uri.clone(),
-            MediaItem::Speech(text) => match voice.render(text).await {
-                Ok(prompt) => prompt.media_uri,
+            MediaItem::Speech(text) => match voice.cached(text).await {
+                Ok(Some(prompt)) => prompt.media_uri,
+                Ok(None) => {
+                    let voice = Arc::clone(voice);
+                    let prompt_text = text.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = voice.render(&prompt_text).await {
+                            warn!(%error, prompt = %prompt_text, "background voice-cache warm failed");
+                        }
+                    });
+                    warn!(
+                        %channel_id,
+                        prompt = %text,
+                        "uncached dynamic speech skipped on live call; warming in background"
+                    );
+                    stop_after_item = true;
+                    "sound:beeperr".to_owned()
+                }
                 Err(error) => {
-                    warn!(channel_id = %channel_id, prompt_text = %text, %error, "failed to render voice prompt; playing the emergency error tone and abandoning the incomplete queue");
+                    warn!(
+                        %channel_id,
+                        %error,
+                        "failed to read cached voice prompt; playing the emergency error tone and abandoning the incomplete queue"
+                    );
                     stop_after_item = true;
                     "sound:beeperr".to_owned()
                 }
@@ -382,6 +417,30 @@ async fn play_media_queue(
         }
     }
     playback_ids
+}
+
+async fn warm_static_speech(
+    menu: &[MediaItem],
+    voice: &VoiceCache<KokoroSynthesizer>,
+) -> anyhow::Result<()> {
+    let mut prompts = STATIC_SESSION_PROMPTS
+        .iter()
+        .map(|prompt| (*prompt).to_owned())
+        .collect::<Vec<_>>();
+    for item in menu {
+        if let MediaItem::Speech(text) = item
+            && !prompts.contains(text)
+        {
+            prompts.push(text.clone());
+        }
+    }
+    for prompt in prompts {
+        voice
+            .render(&prompt)
+            .await
+            .with_context(|| format!("failed to warm static speech {prompt:?}"))?;
+    }
+    Ok(())
 }
 
 fn runtime_voice_cache() -> VoiceCache<KokoroSynthesizer> {
