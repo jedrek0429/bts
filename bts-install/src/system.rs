@@ -148,10 +148,7 @@ pub fn create_service_account<S: SystemAdapter>(
             .output("getent", &["group".into(), "asterisk".into()])
             .is_ok()
     {
-        system.run(
-            "usermod",
-            &["-aG".into(), "asterisk".into(), "bts".into()],
-        )?;
+        system.run("usermod", &["-aG".into(), "asterisk".into(), "bts".into()])?;
     }
     Ok(())
 }
@@ -164,9 +161,10 @@ mod tests {
     fn display_account_reconciles_the_seat_group() {
         let mut system = RecordingSystem::default();
         create_service_account(&mut system, Path::new("/"), "bts-display").unwrap();
-        assert!(system.commands.contains(&(
-            "groupadd".into(),
-            vec!["--system".into(), "seat".into()]
-        )));
+        assert!(
+            system
+                .commands
+                .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
+        );
     }
 }
