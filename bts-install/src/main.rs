@@ -18,6 +18,7 @@ use bts_install::{
     plan::{Action, InstallationPlan},
     platform::{Platform, detect_host},
     release::ReleaseClient,
+    runtime_access,
     services,
     state::InstallerState,
     system::{RealSystem, SystemAdapter, create_service_account, systemctl},
@@ -367,6 +368,17 @@ async fn execute_plan(
                 )?;
                 if component == Component::Telephony && !cli.quiet && !cli.json {
                     println!("Telephony configuration saved.");
+                }
+            }
+            if component == Component::Telephony {
+                let generated = telephony_generated_sounds_path(&cli.root)?;
+                if reconcile_component_runtime_access(
+                    &mut system,
+                    &cli.root,
+                    component,
+                    &generated,
+                )? {
+                    changed.insert(Component::Telephony);
                 }
             }
             if let Some(unit) = component.unit() {
@@ -1804,6 +1816,27 @@ fn read_component_configuration(
     )
 }
 
+fn telephony_generated_sounds_path(root: &Path) -> Result<PathBuf> {
+    let configured = read_component_configuration(root, Component::Telephony).ok();
+    Ok(configured
+        .as_ref()
+        .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated")))
+}
+
+fn reconcile_component_runtime_access<S: SystemAdapter>(
+    system: &mut S,
+    root: &Path,
+    component: Component,
+    generated_sounds: &Path,
+) -> Result<bool> {
+    if component != Component::Telephony {
+        return Ok(false);
+    }
+    runtime_access::reconcile_telephony_runtime_access(system, root, generated_sounds)
+}
+
 fn prepare_display_host(
     cli: &Cli,
     system: &mut impl SystemAdapter,
@@ -2251,6 +2284,34 @@ mod tests {
         assert!(bts_install::warranty_notice().contains("NO WARRANTY"));
         assert!(bts_install::COPYRIGHT.contains("BTS contributors"));
         assert_eq!(INSTALLER_VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn telephony_component_reconciliation_includes_runtime_filesystem_access() {
+        let mut system = RecordingSystem::default();
+        system.outputs.insert("stat".into(), "asterisk".into());
+        system
+            .outputs
+            .insert("getent".into(), "asterisk:x:995:".into());
+        system.outputs.insert("id".into(), "bts".into());
+
+        let changed = reconcile_component_runtime_access(
+            &mut system,
+            Path::new("/"),
+            Component::Telephony,
+            Path::new("/srv/asterisk/sounds/custom/bts-generated"),
+        )
+        .unwrap();
+
+        assert!(changed);
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "usermod" && arguments == &["-aG", "asterisk", "bts"]
+        }));
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "install"
+                && arguments.last().map(String::as_str)
+                    == Some("/srv/asterisk/sounds/custom/bts-generated")
+        }));
     }
 
     #[test]

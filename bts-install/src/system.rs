@@ -143,13 +143,6 @@ pub fn create_service_account<S: SystemAdapter>(
             ],
         )?;
     }
-    if account == "bts"
-        && system
-            .output("getent", &["group".into(), "asterisk".into()])
-            .is_ok()
-    {
-        system.run("usermod", &["-aG".into(), "asterisk".into(), "bts".into()])?;
-    }
     Ok(())
 }
 
@@ -190,5 +183,14 @@ mod tests {
                 .commands
                 .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
         );
+    }
+
+    #[test]
+    fn generic_service_account_creation_does_not_grant_asterisk_access() {
+        let mut system = MissingSeatSystem::default();
+        create_service_account(&mut system, Path::new("/"), "bts").unwrap();
+        assert!(!system.commands.iter().any(|(program, arguments)| {
+            program == "usermod" && arguments == &["-aG", "asterisk", "bts"]
+        }));
     }
 }
