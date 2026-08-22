@@ -19,7 +19,10 @@ fn restrictive_asterisk_parent_adds_runtime_group_and_owns_only_generated_namesp
     assert!(changed);
     assert!(system.commands.iter().any(|(program, arguments)| {
         program == "usermod"
-            && arguments == &["-aG".into(), "asterisk".into(), "bts".into()]
+            && arguments
+                .iter()
+                .map(String::as_str)
+                .eq(["-aG", "asterisk", "bts"])
     }));
     assert!(system.commands.iter().any(|(program, arguments)| {
         program == "install"
