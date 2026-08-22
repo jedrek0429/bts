@@ -21,11 +21,7 @@ pub fn reconcile_telephony_runtime_access<S: SystemAdapter>(
             }
             let group = match system.output(
                 "stat",
-                &[
-                    "-c".into(),
-                    "%G".into(),
-                    ancestor.display().to_string(),
-                ],
+                &["-c".into(), "%G".into(), ancestor.display().to_string()],
             ) {
                 Ok(group) => group,
                 Err(_) => continue,
@@ -44,10 +40,7 @@ pub fn reconcile_telephony_runtime_access<S: SystemAdapter>(
                 .output("id", &["-nG".into(), "bts".into()])
                 .unwrap_or_default();
             if !memberships.split_whitespace().any(|value| value == group) {
-                system.run(
-                    "usermod",
-                    &["-aG".into(), group.into(), "bts".into()],
-                )?;
+                system.run("usermod", &["-aG".into(), group.into(), "bts".into()])?;
                 membership_changed = true;
             }
             break;
