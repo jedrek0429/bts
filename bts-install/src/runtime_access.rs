@@ -87,7 +87,11 @@ mod tests {
 
         assert!(changed);
         assert!(system.commands.iter().any(|(program, arguments)| {
-            program == "usermod" && arguments == &["-aG".into(), "asterisk".into(), "bts".into()]
+            program == "usermod"
+                && arguments
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["-aG", "asterisk", "bts"])
         }));
         assert!(system.commands.iter().any(|(program, arguments)| {
             program == "install"
