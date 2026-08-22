@@ -21,6 +21,20 @@ def forbid(text: str, needle: str, context: str) -> None:
 ci = read(".github/workflows/ci.yml")
 artifacts = read(".github/workflows/release-artifacts.yml")
 prepare = read(".github/workflows/prepare-release-candidate.yml")
+versioning = read("docs/versioning.md")
+
+temporary_completion_tools = [
+    *ROOT.glob(".github/workflows/*release-completion*"),
+    *ROOT.glob("scripts/*release-completion*"),
+]
+if temporary_completion_tools:
+    rendered = ", ".join(str(path.relative_to(ROOT)) for path in temporary_completion_tools)
+    raise SystemExit(f"temporary release-completion tooling remains: {rendered}")
+
+if (ROOT / ".github/workflows/publish-release-candidate.yml").exists():
+    raise SystemExit(
+        "duplicate candidate publisher remains outside the release-branch CI dependency graph"
+    )
 
 # Release-branch CI owns publication. This keeps validation and publication in
 # one workflow graph instead of relying on a second workflow_run event.
@@ -50,5 +64,13 @@ for obsolete in ("linux-aarch64-display-cli-and-installer", "bts-linux-aarch64-d
 require(prepare, "gh pr create \\\n            --draft", "draft release preparation PR")
 require(prepare, 'gh run watch "$run_id" --exit-status', "release preparation CI wait")
 require(prepare, 'gh pr ready "$pr_url"', "release preparation readiness transition")
+
+# The operator guide must describe the same two-stage candidate contract as
+# the workflow: preparation opens a draft PR, while a validated release-branch
+# push is the only publication trigger.
+require(versioning, "**Prepare release candidate**", "candidate preparation operation")
+require(versioning, "opens a draft pull request", "candidate preparation review gate")
+require(versioning, "successful push to `release/X.Y.x`", "candidate publication trigger")
+forbid(versioning, "**Publish release candidate** runs manually", "obsolete manual publisher")
 
 print("release workflow contract OK")

@@ -17,12 +17,13 @@ Compatibility versions are independent of product releases. Additive contract ch
 
 The Actions interface exposes release operations by intent:
 
-- **Publish release candidate** runs manually on `release/X.Y.x`. It derives the next `rc.N`, updates `Cargo.toml` and `Cargo.lock`, runs the canonical CI workflow, creates an immutable tag, builds release artifacts and publishes a GitHub prerelease.
+- **Prepare release candidate** runs manually on `release/X.Y.x`. It derives the next `rc.N`, updates only `Cargo.toml` and `Cargo.lock`, opens a draft pull request and marks that pull request ready only after its explicitly dispatched canonical CI run succeeds. It publishes nothing.
+- **CI** inspects a candidate only after a successful push to `release/X.Y.x`. Once its format, check, Clippy, test, deployment and native ARM64 jobs have succeeded, it publishes a new candidate version through the shared release-artifact workflow. Ordinary pull requests and manually dispatched validation runs never publish.
 - **Create stable release PR** runs manually on `release/X.Y.x`. The branch HEAD must be exactly a published RC. It changes the workspace to the stable version, validates that commit, and opens `release/X.Y.x -> main`. It publishes nothing.
 - **Publish stable release** runs automatically when a release-line PR is merged into `main`. It validates the merge commit, creates the immutable stable tag, builds release artifacts, publishes the stable GitHub Release, then advances the existing maintenance line to the next patch development version.
 - **Create next release line** runs manually on `main` when development of the next minor version should begin. It derives the next minor version, creates `release/X.Y.x`, updates `Cargo.toml` and `Cargo.lock`, and validates the new development state before pushing it.
 
-`Build release artifacts` is reusable implementation machinery and has no manual trigger. `CI` is read-only and keeps Cargo's `--locked` checks so inconsistent version metadata fails immediately.
+`Build release artifacts` is reusable implementation machinery and has no manual trigger. The validation jobs in `CI` are read-only and keep Cargo's `--locked` checks so inconsistent version metadata fails immediately. Its publication job is reachable only through the dependency-gated release-branch push path.
 
 ## Candidate flow
 
@@ -33,9 +34,9 @@ release/0.4.x
 0.4.0-dev.0
 ```
 
-Run **Publish release candidate** on that branch. The workflow derives `0.4.0-rc.1` when no candidate tags exist. After fixes, running it again derives `0.4.0-rc.2`, then `rc.3`, and so on. Candidate numbering is sequential and tags never move.
+Run **Prepare release candidate** on that branch. The workflow derives `0.4.0-rc.1` when no candidate tags exist and opens the version-only draft pull request. Review it and let its canonical CI run finish; the workflow then marks it ready. Merging the pull request creates the release-branch push whose own complete CI graph inspects and publishes the candidate. After fixes, preparing again derives `0.4.0-rc.2`, then `rc.3`, and so on. Candidate numbering is sequential and tags never move.
 
-If validation fails after the candidate commit is pushed, the version remains an unpublished `rc.N`. Fix the branch and rerun the same workflow; it retries that candidate number until it is successfully tagged.
+If validation fails after the candidate commit reaches the release branch, the version remains an unpublished `rc.N`. Fix the defect on the release branch using the normal pull-request path. The next successful release-branch push retries that same candidate number until it is tagged; do not prepare a new number merely to escape a failed gate.
 
 ## Stable flow
 
