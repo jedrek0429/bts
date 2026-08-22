@@ -458,8 +458,36 @@ fn initialise_logging() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asterisk_ari::apis::client::Client as AriHttpClient;
+    use async_trait::async_trait;
     use bts_protocol::DtmfMenuKey;
     use bts_protocol::addons::v2::{API_VERSION, ActionId, AddonId, AddonVersion, MenuEntry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::{Semaphore, mpsc},
+        time::{Duration, timeout},
+    };
+
+    #[derive(Clone)]
+    struct GatedSynthesizer {
+        calls: Arc<AtomicUsize>,
+        permits: Arc<Semaphore>,
+    }
+
+    #[async_trait]
+    impl SpeechSynthesizer for GatedSynthesizer {
+        async fn synthesise(
+            &self,
+            _text: &str,
+            _settings: &VoiceSettings,
+        ) -> anyhow::Result<Vec<u8>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.permits.acquire().await.unwrap().forget();
+            Ok(b"RIFF\0\0\0\0WAVEtest".to_vec())
+        }
+    }
 
     fn manifest(id: &str, digit: char, order: u16, label: &str) -> AddonManifest {
         AddonManifest {
@@ -497,5 +525,175 @@ mod tests {
         );
         assert_eq!(actions["2"], ActionId::new("first.run"));
         assert_eq!(actions["3"], ActionId::new("later.run"));
+    }
+
+    #[tokio::test]
+    async fn vanished_channel_is_not_sent_a_playback_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (requests_tx, mut requests_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let size = socket.read(&mut request).await.unwrap();
+            request.truncate(size);
+            requests_tx.send(request).unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 31\r\nConnection: close\r\n\r\n{\"message\":\"Channel not found\"}",
+                )
+                .await
+                .unwrap();
+        });
+        let config = Config::new(format!("http://{address}"), "bts", "secret");
+        let client = AriHttpClient::with_config(config);
+        let root = tempfile::tempdir().unwrap();
+        let voice = Arc::new(VoiceCache::new(
+            KokoroSynthesizer::new("http://127.0.0.1:1"),
+            VoiceSettings::default(),
+            root.path().join("cache"),
+            root.path().join("sounds"),
+        ));
+
+        let playback_ids = play_media_queue(
+            &client,
+            "departed-channel",
+            &[MediaItem::Uri("sound:already-cached".into())],
+            &voice,
+        )
+        .await;
+
+        assert!(playback_ids.is_empty());
+        let request = timeout(Duration::from_secs(1), requests_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(request.starts_with(b"GET "));
+        assert!(!request.windows(5).any(|window| window == b"/play"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_for_static_speech_and_live_lookup_never_waits_for_synthesis() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let permits = Arc::new(Semaphore::new(0));
+        let cache = Arc::new(VoiceCache::new(
+            GatedSynthesizer {
+                calls: calls.clone(),
+                permits: permits.clone(),
+            },
+            VoiceSettings::default(),
+            root.path().join("cache"),
+            root.path().join("sounds"),
+        ));
+        let menu = vec![MediaItem::Speech("Welcome before calls.".into())];
+        let warming_cache = cache.clone();
+        let warming = tokio::spawn(async move { warm_static_speech(&menu, &warming_cache).await });
+
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !warming.is_finished(),
+            "readiness must wait for the slow synthesiser"
+        );
+        assert!(
+            timeout(Duration::from_millis(20), cache.cached("Dynamic miss."))
+                .await
+                .expect("a live cache lookup must be bounded")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        permits.add_permits(100);
+        warming.await.unwrap().unwrap();
+        assert!(
+            cache
+                .cached("Welcome before calls.")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn warming_a_changed_menu_synthesises_only_new_static_speech() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let permits = Arc::new(Semaphore::new(100));
+        let cache = VoiceCache::new(
+            GatedSynthesizer {
+                calls: calls.clone(),
+                permits,
+            },
+            VoiceSettings::default(),
+            root.path().join("cache"),
+            root.path().join("sounds"),
+        );
+        warm_static_speech(
+            &[MediaItem::Speech("Press two for the time.".into())],
+            &cache,
+        )
+        .await
+        .unwrap();
+        let initial = calls.load(Ordering::SeqCst);
+
+        warm_static_speech(
+            &[
+                MediaItem::Speech("Press two for the time.".into()),
+                MediaItem::Speech("Press five for departures.".into()),
+            ],
+            &cache,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), initial + 1);
+    }
+
+    #[tokio::test]
+    async fn changed_menu_becomes_visible_only_after_its_static_speech_is_warm() {
+        let root = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let permits = Arc::new(Semaphore::new(0));
+        let cache = Arc::new(VoiceCache::new(
+            GatedSynthesizer {
+                calls: calls.clone(),
+                permits: permits.clone(),
+            },
+            VoiceSettings::default(),
+            root.path().join("cache"),
+            root.path().join("sounds"),
+        ));
+        let state = Arc::new(tokio::sync::RwLock::new(MenuState {
+            media: vec![MediaItem::Speech("Old menu.".into())],
+            actions: HashMap::from([("2".into(), ActionId::new("clock.show"))]),
+        }));
+        let replacement = MenuState {
+            media: vec![MediaItem::Speech("New menu.".into())],
+            actions: HashMap::from([("5".into(), ActionId::new("weather.show"))]),
+        };
+        let updating_state = state.clone();
+        let updating_cache = cache.clone();
+        let update = tokio::spawn(async move {
+            install_menu_update(replacement, &updating_cache, &updating_state).await
+        });
+
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            state.read().await.actions.get("2").unwrap().as_str(),
+            "clock.show"
+        );
+        assert!(!update.is_finished());
+
+        permits.add_permits(100);
+        update.await.unwrap().unwrap();
+        let state = state.read().await;
+        assert_eq!(state.actions.get("5").unwrap().as_str(), "weather.show");
+        assert!(!state.actions.contains_key("2"));
     }
 }
