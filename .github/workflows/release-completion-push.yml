@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   format:
+    # Formatting-only helper; final tree must not retain this workflow.
     if: github.event.head_commit.message != 'style(release): apply canonical rustfmt'
     runs-on: ubuntu-latest
     steps:
