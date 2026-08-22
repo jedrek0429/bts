@@ -7,16 +7,38 @@ use bts_protocol::{EventKind, NewEvent, TelephonyTargets};
 use bts_telephony::semantic_menu::render_menu;
 use bts_telephony::{
     session::{CallerIdentity, MediaItem, TelephonySession},
-    voice::{KokoroSynthesizer, VoiceCache, VoiceSettings},
+    voice::{KokoroSynthesizer, SpeechSynthesizer, VoiceCache, VoiceSettings},
 };
 use reqwest::Client;
-use tokio::sync::Mutex;
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::{Duration, sleep},
+};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const APPLICATION_NAME: &str = "bts";
 const EVENT_SOURCE: &str = "bts-telephony";
+const MENU_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const WELCOME_PROMPT: &str = "Welcome to Bansleben Telephone Services.";
+const STATIC_SESSION_PROMPTS: &[&str] = &[
+    "Configuration.",
+    "Press one to change terminal.",
+    "Press star to return.",
+    "No terminals are online.",
+    "Press zero for configuration.",
+    "Select a terminal target.",
+    "The selected target is unavailable.",
+    "That selection is not valid.",
+    "Returning to the previous service.",
+    "Press hash to confirm.",
+];
+
+#[derive(Clone)]
+struct MenuState {
+    media: Vec<MediaItem>,
+    actions: HashMap<String, ActionId>,
+}
 
 #[derive(Clone)]
 struct EventPublisher {
@@ -89,28 +111,34 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("BTS_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:3100".to_owned());
 
     let (menu_media_uris, menu_actions) = load_menu(&core_url).await?;
-    let menu_actions = Arc::new(menu_actions);
+    let voice = Arc::new(runtime_voice_cache());
+    warm_static_speech(&menu_media_uris, &voice)
+        .await
+        .context("required Telephony speech could not be warmed")?;
+    let menu = Arc::new(RwLock::new(MenuState {
+        media: menu_media_uris,
+        actions: menu_actions,
+    }));
 
     let config = Config::new(&ari_url, &ari_username, &ari_password);
     let mut ari = AriClient::with_config(config);
 
     let publisher = EventPublisher::new(&core_url);
     let sessions = Arc::new(Mutex::new(HashMap::<String, TelephonySession>::new()));
-    let voice = Arc::new(runtime_voice_cache());
     let playbacks = Arc::new(Mutex::new(HashMap::<String, Vec<String>>::new()));
 
     /*
      * A call has entered Stasis(bts).
      */
     let start_publisher = publisher.clone();
-    let start_menu_media_uris = menu_media_uris.clone();
+    let start_menu = menu.clone();
     let start_sessions = sessions.clone();
     let start_voice = voice.clone();
     let start_playbacks = playbacks.clone();
 
     ari.on_stasis_start(move |client, event| {
         let publisher = start_publisher.clone();
-        let menu_media_uris = start_menu_media_uris.clone();
+        let menu = start_menu.clone();
         let sessions = start_sessions.clone();
         let voice = start_voice.clone();
         let playbacks = start_playbacks.clone();
@@ -151,8 +179,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             };
-            let (session, outcome) =
-                TelephonySession::new(caller, &targets, menu_media_uris.clone());
+            let menu_media = menu.read().await.media.clone();
+            let (session, outcome) = TelephonySession::new(caller, &targets, menu_media);
             sessions.lock().await.insert(channel_id.clone(), session);
             let ids = play_media_queue(&client, &channel_id, &outcome.media, &voice).await;
             playbacks.lock().await.insert(channel_id.clone(), ids);
@@ -179,14 +207,14 @@ async fn main() -> anyhow::Result<()> {
      * A digit was pressed during the call.
      */
     let dtmf_publisher = publisher.clone();
-    let dtmf_actions = menu_actions.clone();
+    let dtmf_menu = menu.clone();
     let dtmf_sessions = sessions.clone();
     let dtmf_voice = voice.clone();
     let dtmf_playbacks = playbacks.clone();
 
     ari.on_channel_dtmf_received(move |client, event| {
         let publisher = dtmf_publisher.clone();
-        let actions = dtmf_actions.clone();
+        let menu = dtmf_menu.clone();
         let sessions = dtmf_sessions.clone();
         let voice = dtmf_voice.clone();
         let playbacks = dtmf_playbacks.clone();
@@ -234,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             };
+            let actions = menu.read().await.actions.clone();
             let outcome = {
                 let mut sessions = sessions.lock().await;
                 sessions
@@ -318,11 +347,32 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let menu_refresh_state = menu.clone();
+    let menu_refresh_voice = voice.clone();
+    let menu_refresh_core_url = core_url.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(MENU_REFRESH_INTERVAL).await;
+            match load_menu(&menu_refresh_core_url).await {
+                Ok((media, actions)) => {
+                    let replacement = MenuState { media, actions };
+                    if let Err(error) =
+                        install_menu_update(replacement, &menu_refresh_voice, &menu_refresh_state)
+                            .await
+                    {
+                        warn!(%error, "changed Telephony menu could not be warmed");
+                    }
+                }
+                Err(error) => warn!(%error, "failed to refresh Telephony menu"),
+            }
+        }
+    });
+
     info!(
         application = APPLICATION_NAME,
         ari_url = %ari_url,
         core_url = %core_url,
-        menu_items = ?menu_media_uris,
+        menu_items = ?menu.read().await.media,
         "starting BTS telephony"
     );
 
@@ -347,22 +397,49 @@ async fn play_media_queue(
     client: &asterisk_ari::apis::client::Client,
     channel_id: &str,
     media: &[MediaItem],
-    voice: &VoiceCache<KokoroSynthesizer>,
+    voice: &Arc<VoiceCache<KokoroSynthesizer>>,
 ) -> Vec<String> {
     let mut playback_ids = Vec::new();
     for item in media {
         let mut stop_after_item = false;
         let media_uri = match item {
             MediaItem::Uri(uri) => uri.clone(),
-            MediaItem::Speech(text) => match voice.render(text).await {
-                Ok(prompt) => prompt.media_uri,
+            MediaItem::Speech(text) => match voice.cached(text).await {
+                Ok(Some(prompt)) => prompt.media_uri,
+                Ok(None) => {
+                    let voice = Arc::clone(voice);
+                    let prompt_text = text.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = voice.render(&prompt_text).await {
+                            warn!(%error, prompt = %prompt_text, "background voice-cache warm failed");
+                        }
+                    });
+                    warn!(
+                        %channel_id,
+                        prompt = %text,
+                        "uncached dynamic speech skipped on live call; warming in background"
+                    );
+                    stop_after_item = true;
+                    "sound:beeperr".to_owned()
+                }
                 Err(error) => {
-                    warn!(channel_id = %channel_id, prompt_text = %text, %error, "failed to render voice prompt; playing the emergency error tone and abandoning the incomplete queue");
+                    warn!(
+                        %channel_id,
+                        %error,
+                        "failed to read cached voice prompt; playing the emergency error tone and abandoning the incomplete queue"
+                    );
                     stop_after_item = true;
                     "sound:beeperr".to_owned()
                 }
             },
         };
+        if client.channels().get(channel_id).await.is_err() {
+            tracing::debug!(
+                %channel_id,
+                "channel left BTS before the next prompt could be queued"
+            );
+            break;
+        }
         match client
             .channels()
             .play(channels::params::PlayRequest::new(channel_id, &media_uri))
@@ -382,6 +459,40 @@ async fn play_media_queue(
         }
     }
     playback_ids
+}
+
+async fn warm_static_speech<S: SpeechSynthesizer>(
+    menu: &[MediaItem],
+    voice: &VoiceCache<S>,
+) -> anyhow::Result<()> {
+    let mut prompts = STATIC_SESSION_PROMPTS
+        .iter()
+        .map(|prompt| (*prompt).to_owned())
+        .collect::<Vec<_>>();
+    for item in menu {
+        if let MediaItem::Speech(text) = item
+            && !prompts.contains(text)
+        {
+            prompts.push(text.clone());
+        }
+    }
+    for prompt in prompts {
+        voice
+            .render(&prompt)
+            .await
+            .with_context(|| format!("failed to warm static speech {prompt:?}"))?;
+    }
+    Ok(())
+}
+
+async fn install_menu_update<S: SpeechSynthesizer>(
+    replacement: MenuState,
+    voice: &VoiceCache<S>,
+    current: &RwLock<MenuState>,
+) -> anyhow::Result<()> {
+    warm_static_speech(&replacement.media, voice).await?;
+    *current.write().await = replacement;
+    Ok(())
 }
 
 fn runtime_voice_cache() -> VoiceCache<KokoroSynthesizer> {
