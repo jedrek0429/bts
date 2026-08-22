@@ -182,11 +182,11 @@ mod tests {
     }
 
     #[test]
-    fn display_account_reconciles_the_seat_group() {
+    fn display_account_does_not_invent_a_distribution_specific_seat_group() {
         let mut system = MissingSeatSystem::default();
         create_service_account(&mut system, Path::new("/"), "bts-display").unwrap();
         assert!(
-            system
+            !system
                 .commands
                 .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
         );

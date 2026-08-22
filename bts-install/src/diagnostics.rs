@@ -481,6 +481,41 @@ mod tests {
     }
 
     #[test]
+    fn doctor_does_not_require_a_seat_group_when_the_distribution_has_none() {
+        struct NoSeatGroup(RecordingSystem);
+        impl SystemAdapter for NoSeatGroup {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                if program == "getent" && arguments == ["group", "seat"] {
+                    anyhow::bail!("seat group is absent");
+                }
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+
+        let mut system = NoSeatGroup(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::Aarch64);
+        state.installed_components.insert(Component::Display);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("seat group")
+                || diagnostic
+                    .suggested_action
+                    .as_deref()
+                    .is_some_and(|action| action.contains("usermod -aG seat"))
+        }));
+    }
+
+    #[test]
     fn doctor_reports_legacy_shared_configuration() {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("etc/bts")).unwrap();
