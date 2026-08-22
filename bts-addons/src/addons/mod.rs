@@ -59,6 +59,21 @@ impl Addons {
         failures
     }
     pub(crate) async fn handle(&self, event: &Event) -> Vec<AddonFailure> {
+        let mut failures = Vec::new();
+        if let EventKind::ActionRequested { request } = &event.kind
+            && let Some(target) = &request.target
+        {
+            let owner = self.registry.action_owner(&request.action).cloned();
+            for (id, addon) in self.registry.entries() {
+                if owner.as_ref() == Some(id) {
+                    continue;
+                }
+                let context = self.context(id).with_selected_target(Some(target.clone()));
+                if let Err(error) = addon.presentation_superseded(&context, target).await {
+                    failures.push(failure(id, "presentation supersession", error));
+                }
+            }
+        }
         let targets: Vec<_> = match &event.kind {
             EventKind::ActionRequested { request } => self
                 .registry
@@ -68,7 +83,6 @@ impl Addons {
                 .collect(),
             _ => self.registry.entries().map(|(id, _)| id.clone()).collect(),
         };
-        let mut failures = Vec::new();
         for id in targets {
             let addon = self
                 .registry
