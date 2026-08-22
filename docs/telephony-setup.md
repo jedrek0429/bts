@@ -156,6 +156,20 @@ file /tmp/bts-kokoro-test.wav
 
 The final command should identify WAV audio.
 
+## Speech readiness and live-call fallback
+
+Telephony renders the welcome, session and current addon-menu prompts before it
+reports startup readiness. When the addon menu changes, the replacement menu is
+not exposed to callers until its newly required speech is cached. Changing the
+voice, model, model version or speed selects different cache entries, so those
+settings predictably require a new warm-up.
+
+Live calls never wait for uncached synthesis. A dynamic cache miss plays the
+short Asterisk error tone, stops the incomplete prompt queue and warms that
+speech in the background for a later call. If the caller has already left,
+Telephony treats that as cancellation and does not attempt to enqueue playback
+against the vanished channel.
+
 ## Run Kokoro on another computer
 
 Suppose the Kokoro computer's trusted LAN address is `192.168.1.50`. Bind the
