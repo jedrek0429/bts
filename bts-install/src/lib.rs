@@ -11,6 +11,7 @@ pub mod output;
 pub mod plan;
 pub mod platform;
 pub mod release;
+pub mod runtime_access;
 pub mod self_update;
 pub mod services;
 pub mod state;
