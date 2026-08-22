@@ -21,14 +21,18 @@ def forbid(text: str, needle: str, context: str) -> None:
 ci = read(".github/workflows/ci.yml")
 artifacts = read(".github/workflows/release-artifacts.yml")
 prepare = read(".github/workflows/prepare-release-candidate.yml")
+publish_candidate = read(".github/workflows/publish-release-candidate.yml")
 
-# Release-branch CI owns publication. This keeps validation and publication in
-# one workflow graph instead of relying on a second workflow_run event.
-require(ci, "inspect-candidate:", "candidate inspection job")
-require(ci, "publish-candidate:", "candidate publication job")
-require(ci, "needs: [commit-messages, rust, deployment-files, linux-aarch64]", "publication validation gate")
-require(ci, "github.event_name == 'push'", "release push publication guard")
-require(ci, "uses: ./.github/workflows/release-artifacts.yml", "release artifact publisher")
+# CI is a read-only validation runner. Candidate publication is a separate
+# post-CI workflow and therefore does not add skipped publishing checks to PRs.
+forbid(ci, "inspect-candidate:", "candidate inspection in CI")
+forbid(ci, "publish-candidate:", "candidate publication in CI")
+require(publish_candidate, "workflow_run:", "post-CI publication trigger")
+require(publish_candidate, "workflows: [CI]", "canonical CI dependency")
+require(publish_candidate, "github.event.workflow_run.conclusion == 'success'", "successful CI guard")
+require(publish_candidate, "github.event.workflow_run.event == 'push'", "release push guard")
+require(publish_candidate, "startsWith(github.event.workflow_run.head_branch, 'release/')", "release branch guard")
+require(publish_candidate, "uses: ./.github/workflows/release-artifacts.yml", "release artifact publisher")
 
 # AArch64 is a first-class Linux target, not a display-only special case.
 require(ci, "linux-aarch64:", "ARM64 CI job")
@@ -47,6 +51,7 @@ for obsolete in ("linux-aarch64-display-cli-and-installer", "bts-linux-aarch64-d
 
 # Preparation PRs remain unmergeable drafts until their explicitly dispatched
 # canonical CI run succeeds.
+require(prepare, "workflow_dispatch:", "manual candidate preparation trigger")
 require(prepare, "gh pr create \\\n            --draft", "draft release preparation PR")
 require(prepare, 'gh run watch "$run_id" --exit-status', "release preparation CI wait")
 require(prepare, 'gh pr ready "$pr_url"', "release preparation readiness transition")
