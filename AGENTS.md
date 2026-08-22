@@ -33,6 +33,10 @@ CI validates all non-merge commits introduced by a pull request or direct push t
 
 ## Development rules
 
+- Use test-driven development for behavioural changes. Define the intended behaviour in the issue or specification first, then write or update automated tests that express that behaviour before implementing production code.
+- Develop the implementation around those tests until they pass.
+- Treat tests as part of the specification. Do not alter, weaken, delete, bypass or replace tests merely to make CI green.
+- Change a test only when investigation establishes that the test itself contains a genuine mistake, encodes superseded requirements, or incorrectly models the real system. Document that reason in the commit or pull request.
 - Implement only the assigned GitHub issue.
 - Do not broaden the scope without an explicit issue update.
 - Do not change public protocol contracts unless the issue requires it.
