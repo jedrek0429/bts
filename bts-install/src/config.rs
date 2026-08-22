@@ -376,6 +376,12 @@ pub fn validate_telephony(values: &BTreeMap<String, String>) -> Result<()> {
             ensure!(!value.trim().is_empty(), "{key} must not be empty.");
         }
     }
+    if let Some(path) = values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR") {
+        ensure!(
+            Path::new(path).is_absolute(),
+            "BTS_ASTERISK_GENERATED_SOUNDS_DIR must be an absolute path."
+        );
+    }
     Ok(())
 }
 

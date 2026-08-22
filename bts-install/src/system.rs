@@ -143,13 +143,6 @@ pub fn create_service_account<S: SystemAdapter>(
             ],
         )?;
     }
-    if account == "bts"
-        && system
-            .output("getent", &["group".into(), "asterisk".into()])
-            .is_ok()
-    {
-        system.run("usermod", &["-aG".into(), "asterisk".into(), "bts".into()])?;
-    }
     Ok(())
 }
 
