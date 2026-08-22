@@ -504,4 +504,25 @@ mod tests {
             .context("protected configuration");
         assert!(is_permission_denied(&error));
     }
+
+    #[test]
+    fn doctor_accepts_debian_usr_sbin_seatd() {
+        let fake_root = tempdir().unwrap();
+        fs::create_dir_all(fake_root.path().join("usr/sbin")).unwrap();
+        fs::write(fake_root.path().join("usr/sbin/seatd"), "").unwrap();
+        fs::create_dir_all(fake_root.path().join("usr/bin")).unwrap();
+        fs::write(fake_root.path().join("usr/bin/cage"), "").unwrap();
+        let mut system = RecordingSystem {
+            root: fake_root.path().to_path_buf(),
+            ..RecordingSystem::default()
+        };
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::Aarch64);
+        state.installed_components.insert(Component::Display);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == Severity::Error && diagnostic.message.contains("seatd")
+        }));
+    }
 }
