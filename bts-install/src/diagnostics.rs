@@ -332,8 +332,11 @@ pub fn doctor<S: SystemAdapter>(
                     }
                 }
                 if system
-                    .output("getent", &["passwd".into(), "bts-display".into()])
+                    .output("getent", &["group".into(), "seat".into()])
                     .is_ok()
+                    && system
+                        .output("getent", &["passwd".into(), "bts-display".into()])
+                        .is_ok()
                     && system
                         .output("id", &["-nG".into(), "bts-display".into()])
                         .is_ok_and(|groups| !groups.split_whitespace().any(|group| group == "seat"))

@@ -43,7 +43,9 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
-SupplementaryGroups=video render input seat
+# bts-install adds the account to every available display/seat group. Keeping
+# optional distribution-specific groups here makes systemd fail with 216/GROUP
+# before Cage starts when any one of them is absent.
 
 [Install]
 WantedBy=multi-user.target bts.target bts-display.target
