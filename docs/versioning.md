@@ -17,12 +17,12 @@ Compatibility versions are independent of product releases. Additive contract ch
 
 The Actions interface exposes release operations by intent:
 
-- **Publish release candidate** runs manually on `release/X.Y.x`. It derives the next `rc.N`, updates `Cargo.toml` and `Cargo.lock`, runs the canonical CI workflow, creates an immutable tag, builds release artifacts and publishes a GitHub prerelease.
+- **Prepare release candidate** runs manually on `release/X.Y.x`. It derives the next `rc.N`, updates `Cargo.toml` and `Cargo.lock` on a dedicated branch, opens a draft PR and marks that PR ready only after canonical CI succeeds. Merging the PR causes release-branch CI to run again; a separate post-CI workflow then creates the immutable tag, builds release artifacts and publishes the GitHub prerelease.
 - **Create stable release PR** runs manually on `release/X.Y.x`. The branch HEAD must be exactly a published RC. It changes the workspace to the stable version, validates that commit, and opens `release/X.Y.x -> main`. It publishes nothing.
 - **Publish stable release** runs automatically when a release-line PR is merged into `main`. It validates the merge commit, creates the immutable stable tag, builds release artifacts, publishes the stable GitHub Release, then advances the existing maintenance line to the next patch development version.
 - **Create next release line** runs manually on `main` when development of the next minor version should begin. It derives the next minor version, creates `release/X.Y.x`, updates `Cargo.toml` and `Cargo.lock`, and validates the new development state before pushing it.
 
-`Build release artifacts` is reusable implementation machinery and has no manual trigger. `CI` is read-only and keeps Cargo's `--locked` checks so inconsistent version metadata fails immediately.
+`Build release artifacts` is reusable implementation machinery and has no manual trigger. `CI` is read-only and keeps Cargo's `--locked` checks so inconsistent version metadata fails immediately. Candidate inspection and publication are deliberately outside `CI`, so pull requests do not report irrelevant skipped publication jobs.
 
 ## Candidate flow
 
@@ -33,9 +33,9 @@ release/0.4.x
 0.4.0-dev.0
 ```
 
-Run **Publish release candidate** on that branch. The workflow derives `0.4.0-rc.1` when no candidate tags exist. After fixes, running it again derives `0.4.0-rc.2`, then `rc.3`, and so on. Candidate numbering is sequential and tags never move.
+Run **Prepare release candidate** on that branch. The workflow derives `0.4.0-rc.1` when no candidate tags exist and opens a version PR. Merge that PR after review. Publication starts only after the resulting push to the release branch passes canonical CI. After fixes, running preparation again derives `0.4.0-rc.2`, then `rc.3`, and so on. Candidate numbering is sequential and tags never move.
 
-If validation fails after the candidate commit is pushed, the version remains an unpublished `rc.N`. Fix the branch and rerun the same workflow; it retries that candidate number until it is successfully tagged.
+If validation fails before the PR is ready, fix the preparation branch and rerun CI. If post-merge validation or publication fails, the release branch remains at an unpublished `rc.N`; fix the failure through a dedicated PR. The post-CI publisher retries that candidate after the corrected release-branch push succeeds.
 
 ## Stable flow
 
