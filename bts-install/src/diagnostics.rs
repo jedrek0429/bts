@@ -504,4 +504,131 @@ mod tests {
             .context("protected configuration");
         assert!(is_permission_denied(&error));
     }
+
+    #[test]
+    fn doctor_checks_asterisk_namespace_as_telephony_runtime_identity() {
+        let mut system = RecordingSystem::default();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let _ = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "runuser"
+                && arguments
+                    .iter()
+                    .take(4)
+                    .map(String::as_str)
+                    .eq(["-u", "bts", "--", "test"])
+        }));
+    }
+
+    #[test]
+    fn doctor_reports_the_first_parent_the_runtime_identity_cannot_traverse() {
+        struct RestrictedParent(RecordingSystem);
+        impl SystemAdapter for RestrictedParent {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn run_quiet(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                if program == "runuser"
+                    && arguments
+                        .iter()
+                        .rev()
+                        .take(2)
+                        .map(String::as_str)
+                        .eq(["/var/lib/asterisk", "-x"])
+                {
+                    anyhow::bail!("injected traversal denial");
+                }
+                self.0.run_quiet(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+        let mut system = RestrictedParent(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot traverse /var/lib/asterisk on the way")
+        }));
+    }
+
+    #[test]
+    fn doctor_reports_runtime_identity_cannot_write_generated_namespace() {
+        struct ReadOnlyNamespace(RecordingSystem);
+        impl SystemAdapter for ReadOnlyNamespace {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn run_quiet(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                if program == "runuser" && arguments.iter().any(|argument| argument == "-w") {
+                    anyhow::bail!("injected write denial");
+                }
+                self.0.run_quiet(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+        let mut system = ReadOnlyNamespace(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot write generated Asterisk sounds")
+        }));
+    }
+
+    #[test]
+    fn doctor_uses_the_configured_generated_sound_namespace() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(
+            root.path().join("etc/bts/telephony.env"),
+            concat!(
+                "BTS_ARI_URL=http://127.0.0.1:8088\n",
+                "BTS_ARI_USERNAME=bts\n",
+                "BTS_ARI_PASSWORD=secret\n",
+                "BTS_CORE_URL=http://127.0.0.1:3100\n",
+                "BTS_KOKORO_URL=http://127.0.0.1:8880/v1/audio/speech\n",
+                "BTS_ASTERISK_GENERATED_SOUNDS_DIR=/srv/asterisk/custom/bts-generated\n",
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("var/cache/bts/voice")).unwrap();
+        fs::create_dir_all(root.path().join("srv/asterisk/custom/bts-generated")).unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(root.path(), Some(&state), &mut RecordingSystem::default());
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generated-sound namespace is unavailable")
+        }));
+    }
 }
