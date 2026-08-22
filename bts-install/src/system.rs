@@ -191,4 +191,21 @@ mod tests {
                 .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
         );
     }
+
+    #[test]
+    fn bts_account_uses_the_detected_asterisk_data_group() {
+        let mut system = RecordingSystem::default();
+        system.outputs.insert("stat".into(), "pbx-runtime".into());
+        system
+            .outputs
+            .insert("getent".into(), "pbx-runtime:x:995:".into());
+        system.outputs.insert("id".into(), "bts".into());
+
+        create_service_account(&mut system, Path::new("/"), "bts").unwrap();
+
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "usermod"
+                && arguments == &["-aG".into(), "pbx-runtime".into(), "bts".into()]
+        }));
+    }
 }
