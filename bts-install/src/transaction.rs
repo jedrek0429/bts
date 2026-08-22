@@ -1,4 +1,9 @@
-use std::{fs, os::unix::fs::{PermissionsExt, symlink}, path::{Path, PathBuf}, process::Command};
+use std::{
+    fs,
+    os::unix::fs::{PermissionsExt, symlink},
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -37,7 +42,6 @@ pub struct HostTransaction {
     root: PathBuf,
     journal_path: PathBuf,
     journal: Journal,
-    finished: bool,
 }
 
 impl HostTransaction {
@@ -66,22 +70,23 @@ impl HostTransaction {
             root: root.to_owned(),
             journal_path,
             journal,
-            finished: false,
         })
     }
 
-    pub fn commit(mut self) -> Result<()> {
-        remove_journal(&self.journal_path)?;
-        self.finished = true;
-        Ok(())
+    pub fn commit(self) -> Result<()> {
+        remove_journal(&self.journal_path)
     }
 
-    pub fn rollback(mut self) -> Result<()> {
+    pub fn rollback(self) -> Result<()> {
         restore(&self.root, &self.journal)?;
-        remove_journal(&self.journal_path)?;
-        self.finished = true;
-        Ok(())
+        remove_journal(&self.journal_path)
     }
+}
+
+/// Commits an operation whose host mutations succeeded and whose final state
+/// has subsequently been persisted by the caller.
+pub fn commit_pending(root: &Path) -> Result<()> {
+    remove_journal(&rooted(root, JOURNAL))
 }
 
 /// Restores a transaction interrupted by process termination or a host reboot.
@@ -279,5 +284,14 @@ mod tests {
 
         assert!(recover_pending(root.path()).unwrap());
         assert_eq!(fs::read_to_string(config).unwrap(), "before");
+    }
+
+    #[test]
+    fn committing_removes_the_durable_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let transaction = HostTransaction::begin(root.path()).unwrap();
+        assert!(pending(root.path()));
+        transaction.commit().unwrap();
+        assert!(!pending(root.path()));
     }
 }
