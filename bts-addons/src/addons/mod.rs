@@ -279,6 +279,10 @@ mod tests {
             self.manifest.clone()
         }
 
+        async fn handle_event(&self, _: &dyn AddonContext, _: &Event) -> Result<()> {
+            Ok(())
+        }
+
         async fn presentation_superseded(
             &self,
             _: &dyn AddonContext,
