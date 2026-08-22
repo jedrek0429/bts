@@ -1,4 +1,8 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -241,14 +245,20 @@ pub fn doctor<S: SystemAdapter>(
         }
 
         if *component == Component::Telephony {
+            let configured = fs::read_to_string(root.join("etc/bts/telephony.env"))
+                .ok()
+                .and_then(|text| crate::config::parse_environment(&text).ok());
+            let generated = configured
+                .as_ref()
+                .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated"));
+            let generated_on_root = root.join(generated.strip_prefix("/").unwrap_or(&generated));
             for (path, description) in [
-                ("var/cache/bts/voice", "voice cache"),
-                (
-                    "var/lib/asterisk/sounds/en/bts-generated",
-                    "Asterisk generated-sound namespace",
-                ),
+                (root.join("var/cache/bts/voice"), "voice cache"),
+                (generated_on_root, "Asterisk generated-sound namespace"),
             ] {
-                if !root.join(path).is_dir() {
+                if !path.is_dir() {
                     diagnostics.push(Diagnostic {
                         component: Some(Component::Telephony),
                         severity: Severity::Error,
@@ -262,6 +272,72 @@ pub fn doctor<S: SystemAdapter>(
                         component: Some(Component::Telephony),
                         severity: Severity::Ok,
                         message: format!("Telephony {description} is available."),
+                        suggested_action: None,
+                    });
+                }
+            }
+            if root == Path::new("/") {
+                let inaccessible = generated
+                    .parent()
+                    .into_iter()
+                    .flat_map(Path::ancestors)
+                    .take_while(|path| *path != Path::new("/"))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .find(|path| {
+                        system
+                            .run_quiet(
+                                "runuser",
+                                &[
+                                    "-u".into(),
+                                    "bts".into(),
+                                    "--".into(),
+                                    "test".into(),
+                                    "-x".into(),
+                                    path.display().to_string(),
+                                ],
+                            )
+                            .is_err()
+                    });
+                if let Some(path) = inaccessible {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Telephony runtime account cannot traverse {} on the way to generated Asterisk sounds.",
+                            path.display()
+                        ),
+                        suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                    });
+                } else if system
+                    .run_quiet(
+                        "runuser",
+                        &[
+                            "-u".into(),
+                            "bts".into(),
+                            "--".into(),
+                            "test".into(),
+                            "-w".into(),
+                            generated.display().to_string(),
+                        ],
+                    )
+                    .is_err()
+                {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Telephony runtime account cannot write generated Asterisk sounds at {}.",
+                            generated.display()
+                        ),
+                        suggested_action: Some("Re-run: sudo bts-install add telephony".into()),
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        component: Some(Component::Telephony),
+                        severity: Severity::Ok,
+                        message: "Telephony Asterisk generated-sound namespace is accessible to the runtime account.".into(),
                         suggested_action: None,
                     });
                 }
@@ -503,5 +579,132 @@ mod tests {
         let error = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
             .context("protected configuration");
         assert!(is_permission_denied(&error));
+    }
+
+    #[test]
+    fn doctor_checks_asterisk_namespace_as_telephony_runtime_identity() {
+        let mut system = RecordingSystem::default();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let _ = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "runuser"
+                && arguments
+                    .iter()
+                    .take(4)
+                    .map(String::as_str)
+                    .eq(["-u", "bts", "--", "test"])
+        }));
+    }
+
+    #[test]
+    fn doctor_reports_the_first_parent_the_runtime_identity_cannot_traverse() {
+        struct RestrictedParent(RecordingSystem);
+        impl SystemAdapter for RestrictedParent {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn run_quiet(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                if program == "runuser"
+                    && arguments
+                        .iter()
+                        .rev()
+                        .take(2)
+                        .map(String::as_str)
+                        .eq(["/var/lib/asterisk", "-x"])
+                {
+                    anyhow::bail!("injected traversal denial");
+                }
+                self.0.run_quiet(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+        let mut system = RestrictedParent(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot traverse /var/lib/asterisk on the way")
+        }));
+    }
+
+    #[test]
+    fn doctor_reports_runtime_identity_cannot_write_generated_namespace() {
+        struct ReadOnlyNamespace(RecordingSystem);
+        impl SystemAdapter for ReadOnlyNamespace {
+            fn run(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                self.0.run(program, arguments)
+            }
+
+            fn run_quiet(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<()> {
+                if program == "runuser" && arguments.iter().any(|argument| argument == "-w") {
+                    anyhow::bail!("injected write denial");
+                }
+                self.0.run_quiet(program, arguments)
+            }
+
+            fn output(&mut self, program: &str, arguments: &[String]) -> anyhow::Result<String> {
+                self.0.output(program, arguments)
+            }
+
+            fn exists(&self, path: &Path) -> bool {
+                self.0.exists(path)
+            }
+        }
+        let mut system = ReadOnlyNamespace(RecordingSystem::default());
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot write generated Asterisk sounds")
+        }));
+    }
+
+    #[test]
+    fn doctor_uses_the_configured_generated_sound_namespace() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/bts")).unwrap();
+        fs::write(
+            root.path().join("etc/bts/telephony.env"),
+            concat!(
+                "BTS_ARI_URL=http://127.0.0.1:8088\n",
+                "BTS_ARI_USERNAME=bts\n",
+                "BTS_ARI_PASSWORD=secret\n",
+                "BTS_CORE_URL=http://127.0.0.1:3100\n",
+                "BTS_KOKORO_URL=http://127.0.0.1:8880/v1/audio/speech\n",
+                "BTS_ASTERISK_GENERATED_SOUNDS_DIR=/srv/asterisk/custom/bts-generated\n",
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("var/cache/bts/voice")).unwrap();
+        fs::create_dir_all(root.path().join("srv/asterisk/custom/bts-generated")).unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let report = doctor(root.path(), Some(&state), &mut RecordingSystem::default());
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generated-sound namespace is unavailable")
+        }));
     }
 }
