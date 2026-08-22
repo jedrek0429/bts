@@ -309,12 +309,18 @@ pub fn doctor<S: SystemAdapter>(
                 });
             }
             if *component == Component::Display {
-                for executable in ["/usr/bin/cage", "/usr/bin/seatd"] {
-                    if !system.exists(Path::new(executable)) {
+                for (dependency, candidates) in [
+                    ("cage", &["/usr/bin/cage"] as &[&str]),
+                    ("seatd", &["/usr/bin/seatd", "/usr/sbin/seatd"] as &[&str]),
+                ] {
+                    if !candidates
+                        .iter()
+                        .any(|candidate| system.exists(Path::new(candidate)))
+                    {
                         diagnostics.push(Diagnostic {
                             component: Some(*component),
                             severity: Severity::Error,
-                            message: format!("Display runtime dependency {executable} is missing."),
+                            message: format!("Display runtime dependency {dependency} is missing."),
                             suggested_action: Some("Re-run: sudo bts-install add display".into()),
                         });
                     }
@@ -331,9 +337,13 @@ pub fn doctor<S: SystemAdapter>(
                         });
                     }
                 }
-                if system
-                    .output("getent", &["passwd".into(), "bts-display".into()])
-                    .is_ok()
+                let seat_group_exists = system
+                    .output("getent", &["group".into(), "seat".into()])
+                    .is_ok_and(|entry| !entry.trim().is_empty());
+                if seat_group_exists
+                    && system
+                        .output("getent", &["passwd".into(), "bts-display".into()])
+                        .is_ok()
                     && system
                         .output("id", &["-nG".into(), "bts-display".into()])
                         .is_ok_and(|groups| !groups.split_whitespace().any(|group| group == "seat"))
@@ -478,6 +488,27 @@ mod tests {
                 .filter(|value| value.severity == Severity::Error)
                 .all(|value| value.suggested_action.is_some())
         );
+    }
+
+    #[test]
+    fn doctor_accepts_debian_seatd_location() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("usr/bin")).unwrap();
+        fs::create_dir_all(root.path().join("usr/sbin")).unwrap();
+        fs::write(root.path().join("usr/bin/cage"), "").unwrap();
+        fs::write(root.path().join("usr/sbin/seatd"), "").unwrap();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::Aarch64);
+        state.installed_components.insert(Component::Display);
+        let mut system = RecordingSystem {
+            root: root.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let report = doctor(root.path(), Some(&state), &mut system);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "Display runtime dependency seatd is missing."
+        }));
     }
 
     #[test]
