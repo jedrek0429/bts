@@ -4,7 +4,9 @@ use bts_protocol::addons::v2::{
     API_VERSION, ActionId, ActionRegistration, Addon, AddonCapability, AddonContext, AddonId,
     AddonManifest, MenuEntry,
 };
-use bts_protocol::{DisplayLeaseId, DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind};
+use bts_protocol::{
+    DisplayLeaseId, DisplayState, DtmfMenuKey, Event, EventKind, ScreenKind, TerminalTarget,
+};
 use chrono::Local;
 use std::time::Duration;
 use tokio::{
@@ -21,12 +23,14 @@ pub(crate) const ACTION: &str = "clock.show";
 pub(crate) struct ClockAddon {
     task: Mutex<Option<JoinHandle<()>>>,
     lease: Mutex<Option<DisplayLeaseId>>,
+    target: Mutex<Option<TerminalTarget>>,
 }
 impl ClockAddon {
     pub(crate) fn new() -> Self {
         Self {
             task: Mutex::new(None),
             lease: Mutex::new(None),
+            target: Mutex::new(None),
         }
     }
 }
@@ -66,6 +70,7 @@ impl Addon for ClockAddon {
         self.stop(context).await?;
         let lease = context.show(clock_state(), 10).await?;
         *self.lease.lock().await = Some(lease);
+        *self.target.lock().await = context.selected_target().cloned();
         let context = context.clone_box();
         let task = tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(1));
@@ -82,6 +87,18 @@ impl Addon for ClockAddon {
         Ok(())
     }
 
+    async fn presentation_superseded(
+        &self,
+        context: &dyn AddonContext,
+        target: &TerminalTarget,
+    ) -> Result<()> {
+        let same_target = self.target.lock().await.as_ref() == Some(target);
+        if same_target {
+            self.stop(context).await?;
+        }
+        Ok(())
+    }
+
     async fn stop(&self, context: &dyn AddonContext) -> Result<()> {
         if let Some(task) = self.task.lock().await.take() {
             task.abort();
@@ -89,6 +106,7 @@ impl Addon for ClockAddon {
         if let Some(lease) = self.lease.lock().await.take() {
             let _ = context.release(lease).await;
         }
+        *self.target.lock().await = None;
         Ok(())
     }
 }
