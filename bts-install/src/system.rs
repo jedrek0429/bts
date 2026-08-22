@@ -191,4 +191,13 @@ mod tests {
                 .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
         );
     }
+
+    #[test]
+    fn generic_service_account_creation_does_not_grant_asterisk_access() {
+        let mut system = MissingSeatSystem::default();
+        create_service_account(&mut system, Path::new("/"), "bts").unwrap();
+        assert!(!system.commands.iter().any(|(program, arguments)| {
+            program == "usermod" && arguments == &["-aG", "asterisk", "bts"]
+        }));
+    }
 }

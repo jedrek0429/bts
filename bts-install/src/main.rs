@@ -2254,6 +2254,34 @@ mod tests {
     }
 
     #[test]
+    fn telephony_component_reconciliation_includes_runtime_filesystem_access() {
+        let mut system = RecordingSystem::default();
+        system.outputs.insert("stat".into(), "asterisk".into());
+        system
+            .outputs
+            .insert("getent".into(), "asterisk:x:995:".into());
+        system.outputs.insert("id".into(), "bts".into());
+
+        let changed = reconcile_component_runtime_access(
+            &mut system,
+            Path::new("/"),
+            Component::Telephony,
+            Path::new("/srv/asterisk/sounds/custom/bts-generated"),
+        )
+        .unwrap();
+
+        assert!(changed);
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "usermod" && arguments == &["-aG", "asterisk", "bts"]
+        }));
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "install"
+                && arguments.last().map(String::as_str)
+                    == Some("/srv/asterisk/sounds/custom/bts-generated")
+        }));
+    }
+
+    #[test]
     fn display_configuration_requires_identity_and_uses_terminal_endpoint() {
         let root = tempfile::tempdir().unwrap();
         let cli = Cli::parse([

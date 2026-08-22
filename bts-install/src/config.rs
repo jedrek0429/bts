@@ -424,6 +424,12 @@ mod tests {
         let mut invalid_voice = values.clone();
         invalid_voice.insert("BTS_KOKORO_SPEED".into(), "0".into());
         assert!(validate_telephony(&invalid_voice).is_err());
+        let mut relative_generated_sounds = values.clone();
+        relative_generated_sounds.insert(
+            "BTS_ASTERISK_GENERATED_SOUNDS_DIR".into(),
+            "sounds/bts-generated".into(),
+        );
+        assert!(validate_telephony(&relative_generated_sounds).is_err());
         assert!(validate_cage_args("-m extend -- bts-display").is_err());
         validate_cage_args("-m extend -s").unwrap();
         assert!(validate_cage_args("-m 'unterminated").is_err());
