@@ -1,17 +1,22 @@
 use std::{
     ffi::OsString,
+    fs,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use bts_install::{
     INSTALLER_VERSION, LOCAL_RELEASE_CHANNEL,
     cli::{Cli, Command},
+    config,
     release::ReleaseClient,
+    runtime_access,
     self_update::{SelfUpdateOutcome, target_is_newer, update_from_manifest},
     state::InstallerState,
+    system::RealSystem,
+    transaction,
 };
 
 fn main() {
@@ -36,14 +41,71 @@ fn bootstrap() -> Result<()> {
         Command::SelfUpdate => run_self_update(&cli),
         Command::Install { .. } | Command::Add(_) | Command::Upgrade(_) => {
             preflight_release_operation(&cli)?;
-            legacy::invoke();
-            Ok(())
+            invoke_installation_command(&cli)
         }
-        _ => {
-            legacy::invoke();
-            Ok(())
+        Command::Remove(_) | Command::Configure(_) | Command::Uninstall(_) => {
+            invoke_installation_command(&cli)
+        }
+        _ => legacy::invoke_result(),
+    }
+}
+
+fn invoke_installation_command(cli: &Cli) -> Result<()> {
+    if cli.dry_run {
+        return legacy::invoke_result();
+    }
+
+    if transaction::recover_pending(&cli.root)? && !cli.quiet && !cli.json {
+        println!("Recovered an interrupted BTS installer transaction.");
+    }
+    let transaction = transaction::HostTransaction::begin(&cli.root)?;
+    let result = (|| -> Result<()> {
+        let mut runtime_groups_changed = reconcile_configured_telephony(cli)?;
+        legacy::invoke_result()?;
+        runtime_groups_changed |= reconcile_configured_telephony(cli)?;
+        if runtime_groups_changed && cli.root == Path::new("/") {
+            let status = ProcessCommand::new("systemctl")
+                .args(["try-restart", "bts-telephony.service"])
+                .status()
+                .context("Could not refresh bts-telephony after runtime group reconciliation")?;
+            ensure!(
+                status.success(),
+                "Could not refresh bts-telephony after runtime group reconciliation."
+            );
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => transaction.commit(),
+        Err(error) => {
+            let rollback = transaction.rollback();
+            bail!(
+                "Installer transaction failed: {error:#}; rollback {}.",
+                if rollback.is_ok() {
+                    "succeeded"
+                } else {
+                    "failed"
+                }
+            )
         }
     }
+}
+
+fn reconcile_configured_telephony(cli: &Cli) -> Result<bool> {
+    if cli.root != Path::new("/") {
+        return Ok(false);
+    }
+    let config_path = rooted(&cli.root, "/etc/bts/telephony.env");
+    let Ok(contents) = fs::read_to_string(config_path) else {
+        return Ok(false);
+    };
+    let values = config::parse_environment(&contents)?;
+    let generated = values
+        .get("BTS_ASTERISK_GENERATED_SOUNDS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated"));
+    runtime_access::reconcile_telephony_runtime_access(&mut RealSystem, &cli.root, &generated)
 }
 
 fn requires_local_preflight(command: &Command) -> bool {
@@ -243,8 +305,11 @@ mod bootstrap_tests {
 }
 
 mod legacy {
-    pub(super) fn invoke() {
-        main();
+    use anyhow::Result;
+
+    pub(super) fn invoke_result() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(run())
     }
 
     include!("main.rs");
