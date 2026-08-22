@@ -278,9 +278,7 @@ pub fn doctor<S: SystemAdapter>(
                     .as_ref()
                     .and_then(|values| values.get("BTS_ASTERISK_GENERATED_SOUNDS_DIR"))
                     .map(PathBuf::from)
-                    .unwrap_or_else(|| {
-                        PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated")
-                    });
+                    .unwrap_or_else(|| PathBuf::from("/var/lib/asterisk/sounds/en/bts-generated"));
                 let inaccessible = generated
                     .parent()
                     .into_iter()
@@ -622,12 +620,7 @@ mod tests {
 
         assert!(system.commands.iter().any(|(program, arguments)| {
             program == "runuser"
-                && arguments.starts_with(&[
-                    "-u".into(),
-                    "bts".into(),
-                    "--".into(),
-                    "test".into(),
-                ])
+                && arguments.starts_with(&["-u".into(), "bts".into(), "--".into(), "test".into()])
         }));
     }
 }
