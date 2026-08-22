@@ -63,3 +63,77 @@ pub fn reconcile_telephony_runtime_access<S: SystemAdapter>(
 
     Ok(membership_changed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system::RecordingSystem;
+
+    #[test]
+    fn restrictive_asterisk_parent_adds_runtime_group_and_owns_only_generated_namespace() {
+        let mut system = RecordingSystem::default();
+        system.outputs.insert("stat".into(), "asterisk".into());
+        system
+            .outputs
+            .insert("getent".into(), "asterisk:x:995:bts".into());
+        system.outputs.insert("id".into(), "bts".into());
+
+        let changed = reconcile_telephony_runtime_access(
+            &mut system,
+            Path::new("/"),
+            Path::new("/var/lib/asterisk/sounds/en/bts-generated"),
+        )
+        .unwrap();
+
+        assert!(changed);
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "usermod"
+                && arguments == &["-aG".into(), "asterisk".into(), "bts".into()]
+        }));
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "install"
+                && arguments.ends_with(&["/var/lib/asterisk/sounds/en/bts-generated".into()])
+        }));
+    }
+
+    #[test]
+    fn existing_runtime_group_membership_is_idempotent() {
+        let mut system = RecordingSystem::default();
+        system.outputs.insert("stat".into(), "asterisk".into());
+        system
+            .outputs
+            .insert("getent".into(), "asterisk:x:995:bts".into());
+        system.outputs.insert("id".into(), "bts asterisk".into());
+
+        let changed = reconcile_telephony_runtime_access(
+            &mut system,
+            Path::new("/"),
+            Path::new("/var/lib/asterisk/sounds/en/bts-generated"),
+        )
+        .unwrap();
+
+        assert!(!changed);
+        assert!(
+            !system
+                .commands
+                .iter()
+                .any(|(program, _)| program == "usermod")
+        );
+    }
+
+    #[test]
+    fn non_host_root_does_not_mutate_runtime_accounts() {
+        let root = tempfile::tempdir().unwrap();
+        let mut system = RecordingSystem::default();
+
+        let changed = reconcile_telephony_runtime_access(
+            &mut system,
+            root.path(),
+            Path::new("/var/lib/asterisk/sounds/en/bts-generated"),
+        )
+        .unwrap();
+
+        assert!(!changed);
+        assert!(system.commands.is_empty());
+    }
+}
