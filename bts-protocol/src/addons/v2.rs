@@ -158,6 +158,16 @@ pub trait Addon: Send + Sync {
         Ok(())
     }
     async fn handle_event(&self, context: &dyn AddonContext, event: &Event) -> Result<()>;
+    /// Called before another explicit display action replaces this addon's
+    /// presentation on the same target. Stateful/background addons can stop
+    /// refresh work so they do not reclaim a deliberately superseded screen.
+    async fn presentation_superseded(
+        &self,
+        _context: &dyn AddonContext,
+        _target: &TerminalTarget,
+    ) -> Result<()> {
+        Ok(())
+    }
     async fn stop(&self, _context: &dyn AddonContext) -> Result<()> {
         Ok(())
     }

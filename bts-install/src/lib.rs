@@ -15,6 +15,7 @@ pub mod self_update;
 pub mod services;
 pub mod state;
 pub mod system;
+pub mod transaction;
 
 pub const INSTALLER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_REPOSITORY: &str = "jedrek0429/bts";

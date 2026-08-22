@@ -101,6 +101,16 @@ pub fn systemctl<S: SystemAdapter>(
     system.run_quiet("systemctl", &arguments)
 }
 
+fn ensure_system_group<S: SystemAdapter>(system: &mut S, group: &str) -> Result<()> {
+    if system
+        .output("getent", &["group".into(), group.into()])
+        .is_err()
+    {
+        system.run("groupadd", &["--system".into(), group.into()])?;
+    }
+    Ok(())
+}
+
 pub fn create_service_account<S: SystemAdapter>(
     system: &mut S,
     root: &Path,
@@ -109,11 +119,13 @@ pub fn create_service_account<S: SystemAdapter>(
     if root != Path::new("/") {
         return Ok(());
     }
-    if system
-        .output("getent", &["group".into(), account.into()])
-        .is_err()
-    {
-        system.run("groupadd", &["--system".into(), account.into()])?;
+    ensure_system_group(system, account)?;
+    if account == "bts-display" {
+        // The shipped display unit names `seat` in SupplementaryGroups. Debian's
+        // seatd package does not create that group consistently, so make the
+        // unit's runtime contract explicit instead of letting systemd fail with
+        // 216/GROUP before the display process can start.
+        ensure_system_group(system, "seat")?;
     }
     if system.output("id", &["-u".into(), account.into()]).is_err() {
         system.run(
@@ -131,5 +143,52 @@ pub fn create_service_account<S: SystemAdapter>(
             ],
         )?;
     }
+    if account == "bts"
+        && system
+            .output("getent", &["group".into(), "asterisk".into()])
+            .is_ok()
+    {
+        system.run("usermod", &["-aG".into(), "asterisk".into(), "bts".into()])?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct MissingSeatSystem {
+        commands: Vec<(String, Vec<String>)>,
+    }
+
+    impl SystemAdapter for MissingSeatSystem {
+        fn run(&mut self, program: &str, arguments: &[String]) -> Result<()> {
+            self.commands.push((program.into(), arguments.to_vec()));
+            Ok(())
+        }
+
+        fn output(&mut self, program: &str, arguments: &[String]) -> Result<String> {
+            self.commands.push((program.into(), arguments.to_vec()));
+            if program == "getent" && arguments == ["group", "seat"] {
+                bail!("seat group missing");
+            }
+            Ok(String::new())
+        }
+
+        fn exists(&self, _path: &Path) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn display_account_reconciles_the_seat_group() {
+        let mut system = MissingSeatSystem::default();
+        create_service_account(&mut system, Path::new("/"), "bts-display").unwrap();
+        assert!(
+            system
+                .commands
+                .contains(&("groupadd".into(), vec!["--system".into(), "seat".into()]))
+        );
+    }
 }

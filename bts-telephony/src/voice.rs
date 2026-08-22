@@ -147,7 +147,35 @@ impl<S: SpeechSynthesizer> VoiceCache<S> {
         }
     }
 
+    /// Resolves an already rendered prompt without contacting the synthesiser.
+    /// This is the live-call fast path: a cache miss is reported immediately.
+    pub async fn cached(&self, text: &str) -> anyhow::Result<Option<RenderedPrompt>> {
+        let key = cache_key(text, &self.settings);
+        let cache_path = self.cache_dir.join(format!("{key}.wav"));
+        if !valid_wave(&cache_path).await {
+            return Ok(None);
+        }
+        let sound_path = self.sounds_dir.join(format!("{key}.wav"));
+        fs::create_dir_all(&self.sounds_dir)
+            .await
+            .with_context(|| format!("failed to create {}", self.sounds_dir.display()))?;
+        if !valid_wave(&sound_path).await && fs::hard_link(&cache_path, &sound_path).await.is_err()
+        {
+            fs::copy(&cache_path, &sound_path)
+                .await
+                .with_context(|| format!("failed to expose cached voice prompt {text:?}"))?;
+        }
+        Ok(Some(RenderedPrompt {
+            cache_key: key.clone(),
+            cache_path,
+            media_uri: format!("sound:bts-generated/{key}"),
+        }))
+    }
+
     pub async fn render(&self, text: &str) -> anyhow::Result<RenderedPrompt> {
+        if let Some(prompt) = self.cached(text).await? {
+            return Ok(prompt);
+        }
         let key = cache_key(text, &self.settings);
         let lock = {
             let mut locks = self.locks.lock().await;
@@ -157,8 +185,10 @@ impl<S: SpeechSynthesizer> VoiceCache<S> {
                 .clone()
         };
         let _guard = lock.lock().await;
+        if let Some(prompt) = self.cached(text).await? {
+            return Ok(prompt);
+        }
         let cache_path = self.cache_dir.join(format!("{key}.wav"));
-        let sound_path = self.sounds_dir.join(format!("{key}.wav"));
 
         fs::create_dir_all(&self.cache_dir)
             .await
@@ -167,38 +197,27 @@ impl<S: SpeechSynthesizer> VoiceCache<S> {
             .await
             .with_context(|| format!("failed to create {}", self.sounds_dir.display()))?;
 
-        if !valid_wave(&cache_path).await {
-            let audio = self
-                .synthesizer
-                .synthesise(text, &self.settings)
-                .await
-                .with_context(|| format!("failed to render voice prompt {text:?}"))?;
-            if !valid_wave_bytes(&audio) {
-                bail!("TTS returned malformed WAV audio for prompt {text:?}");
-            }
-            let temporary = self
-                .cache_dir
-                .join(format!(".{key}.{}.tmp", Uuid::new_v4()));
-            fs::write(&temporary, audio)
-                .await
-                .with_context(|| format!("failed to write voice cache entry for {text:?}"))?;
-            fs::rename(&temporary, &cache_path)
-                .await
-                .with_context(|| format!("failed to publish voice cache entry for {text:?}"))?;
+        let audio = self
+            .synthesizer
+            .synthesise(text, &self.settings)
+            .await
+            .with_context(|| format!("failed to render voice prompt {text:?}"))?;
+        if !valid_wave_bytes(&audio) {
+            bail!("TTS returned malformed WAV audio for prompt {text:?}");
         }
+        let temporary = self
+            .cache_dir
+            .join(format!(".{key}.{}.tmp", Uuid::new_v4()));
+        fs::write(&temporary, audio)
+            .await
+            .with_context(|| format!("failed to write voice cache entry for {text:?}"))?;
+        fs::rename(&temporary, &cache_path)
+            .await
+            .with_context(|| format!("failed to publish voice cache entry for {text:?}"))?;
 
-        if !valid_wave(&sound_path).await && fs::hard_link(&cache_path, &sound_path).await.is_err()
-        {
-            fs::copy(&cache_path, &sound_path)
-                .await
-                .with_context(|| format!("failed to expose cached voice prompt {text:?}"))?;
-        }
-
-        Ok(RenderedPrompt {
-            cache_key: key.clone(),
-            cache_path,
-            media_uri: format!("sound:bts-generated/{key}"),
-        })
+        self.cached(text)
+            .await?
+            .context("fresh voice cache entry could not be exposed")
     }
 }
 
@@ -226,7 +245,7 @@ async fn valid_wave(path: &Path) -> bool {
     }
 }
 
-fn valid_wave_bytes(bytes: &[u8]) -> bool {
+pub fn valid_wave_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE"
 }
 
@@ -278,6 +297,16 @@ mod tests {
         assert_eq!(first.cache_key, repeated.cache_key);
         assert_ne!(first.cache_key, changed.cache_key);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn live_cache_miss_never_synthesises() {
+        let (_root, calls, cache) = fixture(VoiceSettings::default());
+        assert!(cache.cached("Welcome.").await.unwrap().is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        cache.render("Welcome.").await.unwrap();
+        assert!(cache.cached("Welcome.").await.unwrap().is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -336,5 +365,11 @@ mod tests {
         );
         let error = cache.render("Optional description").await.unwrap_err();
         assert!(error.to_string().contains("Optional description"));
+    }
+
+    #[test]
+    fn streamed_riff_length_is_valid_wave() {
+        assert!(valid_wave_bytes(b"RIFF\xff\xff\xff\xffWAVEdata"));
+        assert!(!valid_wave_bytes(b"RIFF\xff\xff\xff\xffNOPEdata"));
     }
 }
