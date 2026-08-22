@@ -1269,6 +1269,18 @@ enum TtsProbe {
     Unreachable,
 }
 
+fn tts_probe_failure_message(probe: TtsProbe) -> &'static str {
+    match probe {
+        TtsProbe::InvalidResponse => {
+            "Kokoro TTS returned HTTP 200 with an unusable TTS response: the decoded body was not a RIFF/WAVE stream."
+        }
+        TtsProbe::UnreadableResponse => {
+            "Kokoro TTS returned HTTP 200 with an unusable TTS response because its body could not be read."
+        }
+        _ => "Kokoro TTS did not render test speech.",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoreProbe {
     Reachable,
@@ -1731,7 +1743,7 @@ async fn extend_remote_diagnostics(
                             suggested_action: Some(telephony_diagnostic_action()),
                         });
                     }
-                    TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse => {
+                    probe @ (TtsProbe::InvalidResponse | TtsProbe::UnreadableResponse) => {
                         report.diagnostics.push(diagnostics::Diagnostic {
                             component: Some(Component::Telephony),
                             severity: diagnostics::Severity::Ok,
@@ -1744,7 +1756,8 @@ async fn extend_remote_diagnostics(
                             component: Some(Component::Telephony),
                             severity: diagnostics::Severity::Error,
                             message: format!(
-                                "Kokoro TTS responded but returned an unusable TTS response.\n  Endpoint: {tts_endpoint}"
+                                "{}\n  Endpoint: {tts_endpoint}",
+                                tts_probe_failure_message(probe)
                             ),
                             suggested_action: Some(telephony_diagnostic_action()),
                         });
