@@ -13,8 +13,9 @@ use bts_protocol::addons::v2::{
 };
 use bts_protocol::{
     AssetRef, AssetUpload, BtsState, DisplayCommand, DisplayLease, DisplayLeaseId, DisplayState,
-    DtmfMenuKey, EventKind, NewEvent, PresentationId, PresentationRequest, TerminalCapabilities,
-    TerminalCapability, TerminalTarget,
+    DtmfMenuKey, EventKind, NewEvent, PresentationId, PresentationRequest, TagMatch, TargetScope,
+    TerminalCapabilities, TerminalCapability, TerminalListResource, TerminalResource,
+    TerminalTarget,
 };
 use reqwest::Client;
 
@@ -153,8 +154,22 @@ impl HttpAddonContext {
     }
 
     pub async fn update(&self, lease_id: DisplayLeaseId, display: DisplayState) -> Result<()> {
-        if let Some(event) = self.presentation_event(display.clone()) {
-            return self.publish(event).await;
+        if let Some(target) = &self.selected_target {
+            for target in self.owned_terminal_targets(target).await? {
+                self.publish(EventKind::PresentationRequested {
+                    request: PresentationRequest {
+                        id: PresentationId::new(),
+                        target,
+                        required_capabilities: TerminalCapabilities::new([
+                            TerminalCapability::new(TerminalCapability::RENDER_TEXT)
+                                .expect("the built-in capability identifier is valid"),
+                        ]),
+                        display: display.clone(),
+                    },
+                })
+                .await?;
+            }
+            return Ok(());
         }
         self.publish(EventKind::DisplayRequested {
             command: DisplayCommand::Update {
@@ -164,6 +179,40 @@ impl HttpAddonContext {
             },
         })
         .await
+    }
+
+    async fn owned_terminal_targets(&self, target: &TerminalTarget) -> Result<Vec<TerminalTarget>> {
+        let endpoint = format!(
+            "{}{}",
+            self.core_http_url.trim_end_matches('/'),
+            bts_protocol::core::CORE_ADMIN_TERMINALS_PATH
+        );
+        let terminals: TerminalListResource = self
+            .http
+            .get(endpoint)
+            .send()
+            .await
+            .context("failed to inspect terminal presentation ownership")?
+            .error_for_status()
+            .context("BTS Core rejected terminal presentation inspection")?
+            .json()
+            .await
+            .context("failed to decode terminal presentation ownership")?;
+        Ok(terminals
+            .terminals
+            .into_iter()
+            .filter(|terminal| target_matches_terminal(target, terminal))
+            .filter(|terminal| {
+                terminal
+                    .presentation
+                    .as_ref()
+                    .is_some_and(|presentation| presentation.source == self.addon_id.as_str())
+            })
+            .map(|terminal| TerminalTarget::Terminal {
+                id: terminal.id,
+                scope: target.scope(),
+            })
+            .collect())
     }
 
     pub async fn release(&self, lease_id: DisplayLeaseId) -> Result<()> {
@@ -218,6 +267,22 @@ impl HttpAddonContext {
             .json()
             .await
             .context("failed to decode BTS Core asset reference")
+    }
+}
+
+fn target_matches_terminal(target: &TerminalTarget, terminal: &TerminalResource) -> bool {
+    let online = terminal.presence.is_some();
+    if target.scope() == TargetScope::Online && !online {
+        return false;
+    }
+    match target {
+        TerminalTarget::Terminal { id, .. } => terminal.id == *id,
+        TerminalTarget::Group { id, .. } => terminal.groups.contains(id),
+        TerminalTarget::Tags { query, .. } => match query.match_kind {
+            TagMatch::All => query.tags.iter().all(|tag| terminal.tags.contains(tag)),
+            TagMatch::Any => query.tags.iter().any(|tag| terminal.tags.contains(tag)),
+        },
+        TerminalTarget::All { .. } => true,
     }
 }
 
