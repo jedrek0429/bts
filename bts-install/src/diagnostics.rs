@@ -504,4 +504,44 @@ mod tests {
             .context("protected configuration");
         assert!(is_permission_denied(&error));
     }
+
+    #[test]
+    fn doctor_accepts_debian_usr_sbin_seatd() {
+        let fake_root = tempdir().unwrap();
+        fs::create_dir_all(fake_root.path().join("usr/sbin")).unwrap();
+        fs::write(fake_root.path().join("usr/sbin/seatd"), "").unwrap();
+        fs::create_dir_all(fake_root.path().join("usr/bin")).unwrap();
+        fs::write(fake_root.path().join("usr/bin/cage"), "").unwrap();
+        let mut system = RecordingSystem {
+            root: fake_root.path().to_path_buf(),
+            ..RecordingSystem::default()
+        };
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::Aarch64);
+        state.installed_components.insert(Component::Display);
+
+        let report = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == Severity::Error && diagnostic.message.contains("seatd")
+        }));
+    }
+
+    #[test]
+    fn doctor_checks_asterisk_namespace_as_telephony_runtime_identity() {
+        let mut system = RecordingSystem::default();
+        let mut state = InstallerState::new("0.3.0", Platform::Debian, Architecture::X86_64);
+        state.installed_components.insert(Component::Telephony);
+
+        let _ = doctor(Path::new("/"), Some(&state), &mut system);
+
+        assert!(system.commands.iter().any(|(program, arguments)| {
+            program == "runuser"
+                && arguments.starts_with(&[
+                    "-u".into(),
+                    "bts".into(),
+                    "--".into(),
+                    "test".into(),
+                ])
+        }));
+    }
 }
