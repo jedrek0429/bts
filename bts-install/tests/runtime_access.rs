@@ -6,7 +6,9 @@ use bts_install::{runtime_access::reconcile_telephony_runtime_access, system::Re
 fn restrictive_asterisk_parent_adds_runtime_group_and_owns_only_generated_namespace() {
     let mut system = RecordingSystem::default();
     system.outputs.insert("stat".into(), "asterisk".into());
-    system.outputs.insert("getent".into(), "asterisk:x:995:bts".into());
+    system
+        .outputs
+        .insert("getent".into(), "asterisk:x:995:bts".into());
     system.outputs.insert("id".into(), "bts".into());
 
     let changed = reconcile_telephony_runtime_access(
@@ -18,8 +20,7 @@ fn restrictive_asterisk_parent_adds_runtime_group_and_owns_only_generated_namesp
 
     assert!(changed);
     assert!(system.commands.iter().any(|(program, arguments)| {
-        program == "usermod"
-            && arguments == &["-aG".into(), "asterisk".into(), "bts".into()]
+        program == "usermod" && arguments == &["-aG".into(), "asterisk".into(), "bts".into()]
     }));
     assert!(system.commands.iter().any(|(program, arguments)| {
         program == "install"
@@ -31,7 +32,9 @@ fn restrictive_asterisk_parent_adds_runtime_group_and_owns_only_generated_namesp
 fn existing_runtime_group_membership_is_idempotent() {
     let mut system = RecordingSystem::default();
     system.outputs.insert("stat".into(), "asterisk".into());
-    system.outputs.insert("getent".into(), "asterisk:x:995:bts".into());
+    system
+        .outputs
+        .insert("getent".into(), "asterisk:x:995:bts".into());
     system.outputs.insert("id".into(), "bts asterisk".into());
 
     let changed = reconcile_telephony_runtime_access(
@@ -42,5 +45,10 @@ fn existing_runtime_group_membership_is_idempotent() {
     .unwrap();
 
     assert!(!changed);
-    assert!(!system.commands.iter().any(|(program, _)| program == "usermod"));
+    assert!(
+        !system
+            .commands
+            .iter()
+            .any(|(program, _)| program == "usermod")
+    );
 }
