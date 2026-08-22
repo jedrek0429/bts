@@ -31,6 +31,12 @@ fn display_unit_expands_installer_managed_cage_arguments() {
 }
 
 #[test]
+fn display_unit_does_not_require_optional_distribution_groups() {
+    let unit = std::fs::read_to_string("../deploy/systemd/bts-display.service").unwrap();
+    assert!(!unit.contains("SupplementaryGroups="));
+}
+
+#[test]
 fn every_service_uses_only_its_component_environment_after_a_safe_default() {
     for component in ["core", "display", "telephony", "addons"] {
         let unit =
